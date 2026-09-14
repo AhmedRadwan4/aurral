@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import path from "node:path";
 
 process.env.NODE_ENV = "test";
 
@@ -191,6 +192,121 @@ test("a full refresh upgrades a pending local-only scan", () => {
   }
 });
 
+test("pending watcher scans merge changed paths into one job", () => {
+  const queue = getLibraryScanQueue();
+  clearScheduledLibraryScan();
+  let jobId;
+  try {
+    jobId = scheduleLibraryScan({
+      includeLidarr: false,
+      changedPaths: ["/data/music/Artist/Album/01 Track.flac"],
+    });
+    assert.equal(scheduleLibraryScan({
+      changedPaths: ["/data/music/Artist/Album/02 Track.flac"],
+    }), jobId);
+    assert.deepEqual(dbOps.getJSONSetting("pendingLibraryScanJob").changedPaths, [
+      "/data/music/Artist/Album/01 Track.flac",
+      "/data/music/Artist/Album/02 Track.flac",
+    ]);
+  } finally {
+    if (jobId) queue.cancel(jobId);
+    clearScheduledLibraryScan();
+  }
+});
+
+test("watcher paths do not downgrade a queued full scan", () => {
+  const queue = getLibraryScanQueue();
+  clearScheduledLibraryScan();
+  let jobId;
+  try {
+    jobId = scheduleLibraryScan({ includeLidarr: false });
+    assert.equal(scheduleLibraryScan({
+      includeLidarr: false,
+      changedPaths: ["/data/music/Artist/Album/01 Track.flac"],
+    }), jobId);
+    assert.equal("changedPaths" in dbOps.getJSONSetting("pendingLibraryScanJob"), false);
+  } finally {
+    if (jobId) queue.cancel(jobId);
+    clearScheduledLibraryScan();
+  }
+});
+
+test("an oversized active watcher merge requests a full rescan", () => {
+  const queue = getLibraryScanQueue();
+  clearScheduledLibraryScan();
+  let jobId;
+  try {
+    jobId = scheduleLibraryScan({
+      includeLidarr: false,
+      changedPaths: ["/data/music/in-flight.flac"],
+    });
+    assert.equal(queue.claimOne("overflow-library-scan-test")?.id, jobId);
+    assert.equal(claimScheduledLibraryScanJob(jobId), true);
+    dbOps.setJSONSetting("pendingLibraryScanJob", {
+      jobId,
+      includeLidarr: false,
+      changedPaths: Array.from({ length: 4096 }, (_, index) => `/data/music/${index}.flac`),
+      inFlightActive: true,
+      inFlightPaths: ["/data/music/in-flight.flac"],
+      fullRescanPending: false,
+    });
+
+    scheduleLibraryScan({
+      includeLidarr: false,
+      changedPaths: ["/data/music/overflow.flac"],
+    });
+
+    const registry = dbOps.getJSONSetting("pendingLibraryScanJob");
+    assert.equal(registry.fullRescanPending, true);
+    assert.deepEqual(registry.changedPaths, []);
+  } finally {
+    if (jobId) queue.cancel(jobId);
+    clearScheduledLibraryScan();
+  }
+});
+
+test("stale targeted scans retain in-flight and pending paths", () => {
+  const queue = getLibraryScanQueue();
+  clearScheduledLibraryScan();
+  let staleJobId;
+  let replacementJobId;
+  try {
+    staleJobId = scheduleLibraryScan({
+      includeLidarr: false,
+      changedPaths: ["/data/music/initial.flac"],
+    });
+    assert.equal(queue.claimOne("stale-targeted-library-scan-test")?.id, staleJobId);
+    assert.equal(claimScheduledLibraryScanJob(staleJobId), true);
+    dbOps.setJSONSetting("pendingLibraryScanJob", {
+      jobId: staleJobId,
+      includeLidarr: false,
+      changedPaths: ["/data/music/pending.flac"],
+      inFlightActive: true,
+      inFlightPaths: ["/data/music/in-flight.flac"],
+      fullRescanPending: false,
+    });
+    db.prepare("UPDATE _honker_live SET claim_expires_at = ? WHERE id = ?").run(
+      Math.floor(Date.now() / 1000) - 1,
+      staleJobId,
+    );
+
+    replacementJobId = scheduleLibraryScan({
+      includeLidarr: false,
+      changedPaths: ["/data/music/new.flac"],
+    });
+
+    assert.deepEqual(dbOps.getJSONSetting("pendingLibraryScanJob").changedPaths, [
+      "/data/music/in-flight.flac",
+      "/data/music/pending.flac",
+      "/data/music/new.flac",
+    ]);
+  } finally {
+    if (staleJobId) queue.cancel(staleJobId);
+    if (replacementJobId) queue.cancel(replacementJobId);
+    clearScheduledLibraryScan();
+  }
+});
+
 test("claiming an unregistered scan does not inherit stale Lidarr mode", () => {
   const queue = getLibraryScanQueue();
   clearScheduledLibraryScan();
@@ -232,6 +348,7 @@ test("library file watcher debounces library changes and ignores generated folde
   let onChange;
   let scheduled = 0;
   let changedRoots = [];
+  let changedPaths = [];
   const watcher = createLibraryFileWatcher({
     roots: [process.cwd()],
     debounceMs: 5,
@@ -239,9 +356,10 @@ test("library file watcher debounces library changes and ignores generated folde
       onChange = callback;
       return { close() {} };
     },
-    onChange: (roots) => {
+    onChange: (roots, paths) => {
       scheduled += 1;
       changedRoots = roots;
+      changedPaths = paths;
     },
   });
 
@@ -250,6 +368,9 @@ test("library file watcher debounces library changes and ignores generated folde
   await new Promise((resolve) => setTimeout(resolve, 15));
   assert.equal(scheduled, 1);
   assert.deepEqual(changedRoots, [process.cwd()]);
+  assert.deepEqual(changedPaths, [
+    path.join(process.cwd(), "Artist/Album/track.flac"),
+  ]);
 
   onChange("change", "aurral-weekly-flow/flow/track.flac");
   onChange("change", "_staging/track.flac");
