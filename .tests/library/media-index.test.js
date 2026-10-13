@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -2441,14 +2441,15 @@ test("an unchanged local rescan skips metadata parsing", async () => {
   }
 });
 
-test("a targeted local rescan only parses changed files", async () => {
+test("a targeted local rescan refreshes a named file even when its size and timestamp are unchanged", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "aurral-library-targeted-"));
   const source = `test-targeted-${process.pid}`;
   const filePaths = [];
   const metadataReads = [];
+  let currentMetadata = metadata;
   const metadataReader = async (filePath) => {
     metadataReads.push(filePath);
-    return metadata;
+    return currentMetadata;
   };
   try {
     filePaths.push(await createAudioFile(root, "Artist/Album/01 First.flac"));
@@ -2456,7 +2457,11 @@ test("a targeted local rescan only parses changed files", async () => {
 
     await scanMusicRoot({ rootPath: root, source, metadataReader });
     metadataReads.length = 0;
-    await writeFile(filePaths[0], "changed fixture");
+    currentMetadata = { ...metadata, common: { ...metadata.common, title: "Updated Step" } };
+    const indexed = getLibrarySnapshot().files.find((file) => file.path === filePaths[0]);
+    await utimes(filePaths[0], indexed.mtime_ms / 1000, indexed.mtime_ms / 1000);
+    db.prepare("UPDATE library_media_files SET mtime_ms = ? WHERE source = ? AND path = ?")
+      .run((await stat(filePaths[0])).mtimeMs, source, filePaths[0]);
     await scanMusicRoot({
       rootPath: root,
       source,
@@ -2465,6 +2470,7 @@ test("a targeted local rescan only parses changed files", async () => {
     });
 
     assert.deepEqual(metadataReads, [filePaths[0]]);
+    assert.equal(getLibrarySnapshot().tracks.find((track) => track.id === indexed.track_id).title, "Updated Step");
   } finally {
     for (const filePath of filePaths) deleteIndexedFile(source, filePath);
     await rm(root, { recursive: true, force: true });

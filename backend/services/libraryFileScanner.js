@@ -239,6 +239,7 @@ export function createPathScopeMatcher(scopes = []) {
 
 async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
   const filePaths = new Set();
+  const namedFilePaths = new Set();
   const reconcilePaths = new Set();
 
   for (const value of Array.isArray(changedPaths) ? changedPaths : []) {
@@ -246,6 +247,8 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
     if (!rawPath) continue;
     const changedPath = path.resolve(rawPath);
     if (!isPathWithin(rootPath, changedPath) || isExcluded(changedPath)) continue;
+    const relativeParts = path.relative(rootPath, changedPath).split(path.sep);
+    if (relativeParts.slice(0, -1).some(isLibraryScanExcludedDirectory)) continue;
 
     let stat = null;
     let missing = false;
@@ -260,6 +263,7 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
     }
 
     if (stat?.isDirectory()) {
+      if (isLibraryScanExcludedDirectory(relativeParts.at(-1))) continue;
       reconcilePaths.add(changedPath);
       try {
         for await (const filePath of walkAudioFiles(changedPath, isExcluded)) filePaths.add(filePath);
@@ -271,6 +275,7 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
 
     if (stat?.isFile() || missing || AUDIO_EXTENSIONS.has(path.extname(changedPath).toLowerCase())) {
       filePaths.add(changedPath);
+      namedFilePaths.add(changedPath);
       reconcilePaths.add(changedPath);
       continue;
     }
@@ -280,6 +285,7 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
 
   return {
     filePaths: [...filePaths],
+    namedFilePaths,
     reconcilePaths: [...reconcilePaths],
   };
 }
@@ -363,6 +369,7 @@ export async function scanMusicRoot({
           const existing = getLibraryMediaFile({ source, path: filePath });
           if (
             force !== true &&
+            !changed?.namedFilePaths.has(filePath) &&
             !legacyKeyed.paths.has(filePath) &&
             existing?.available === 1 &&
             Number(existing.size) === stat.size &&
