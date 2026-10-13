@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import v8 from "node:v8";
+import { setupIsolatedBackend, cleanupIsolatedState } from "./helpers/backendTestHarness.js";
 import { createBackgroundProcessSupervisor } from "../backend/services/backgroundProcessSupervisor.js";
 import {
   ISOLATED_WORKER_GROUPS,
@@ -432,4 +433,122 @@ test("a heap limit set in NODE_OPTIONS reaches background workers unchanged", as
   t.after(() => supervisor.stop());
   supervisor.start();
   assert.equal(await reported.promise, expected);
+});
+
+test("a failed deadline inspection retries without requiring another commit", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 0 });
+  const { launches, forkProcess } = createFakeFork();
+  let fail = true;
+  const supervisor = createBackgroundProcessSupervisor({
+    groups: ["library"], forkProcess, logger: quietLogger,
+    getWorkRevision: () => "unchanged",
+    getNextWorkAt: () => Date.now() < 1000 ? 1000 : null,
+    findGroupsWithWork: () => {
+      if (Date.now() < 1000) return [];
+      if (fail) { fail = false; throw new Error("Database temporarily busy"); }
+      return ["library"];
+    },
+  });
+  try {
+    supervisor.start();
+    t.mock.timers.tick(1000);
+    assert.deepEqual(launches, []);
+    t.mock.timers.tick(1000);
+    assert.deepEqual(supervisor.getGroups(), ["library"]);
+  } finally {
+    await supervisor.stop();
+  }
+});
+
+test("idle demand checks skip queue scans and discover unannounced commits", async (t) => {
+  const [state, { db }, honker] = await setupIsolatedBackend(
+    "idle-demand", "backend/config/db-sqlite.js", "backend/services/honkerDb.js",
+  );
+  const queue = honker.getMaintenanceTaskQueue();
+  const revision = db.prepare("SELECT data_version, total_changes() AS changes FROM pragma_data_version");
+  const { launches, forkProcess } = createFakeFork();
+  let inspections = 0;
+  let crossDeadline = false;
+  const supervisor = createBackgroundProcessSupervisor({
+    groups: ["maintenance", "scheduler"],
+    forkProcess,
+    getWorkRevision: () => JSON.stringify(revision.get()),
+    getNextWorkAt: honker.getNextBackgroundWorkAt,
+    findGroupsWithWork: (now) => {
+      inspections++;
+      const groups = honker.listBackgroundGroupsWithWork(now);
+      if (crossDeadline) {
+        crossDeadline = false;
+        t.mock.timers.setTime(Date.now() + 1100);
+      }
+      return groups;
+    },
+  });
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"], now: Math.floor(Date.now() / 1000) * 1000 });
+  try {
+    supervisor.start();
+    t.mock.timers.tick(60000);
+    assert.equal(inspections, 1, "an unchanged database must not be repeatedly scanned");
+    assert.deepEqual(launches, []);
+    const delayedId = queue.enqueue({ kind: "session-cleanup" }, { runAt: Math.floor(Date.now() / 1000) + 5 });
+    t.mock.timers.tick(2000);
+    assert.deepEqual(launches, [], "a future job must stay pending");
+    t.mock.timers.tick(3000);
+    assert.deepEqual(supervisor.getGroups(), ["maintenance"], "unchanged delayed work must wake at its deadline");
+    launches[0].emit("message", { type: "ready" });
+    launches[0].emit("message", { type: "idle" });
+    queue.cancel(delayedId);
+    exitIdle(launches[0]);
+    await flush();
+    t.mock.timers.tick(2000);
+    assert.deepEqual(supervisor.getGroups(), []);
+    const immediateId = queue.enqueue({ kind: "session-cleanup" });
+    t.mock.timers.tick(2000);
+    assert.deepEqual(supervisor.getGroups(), ["maintenance"]);
+    queue.cancel(immediateId);
+    launches[1].emit("message", { type: "ready" });
+    launches[1].emit("message", { type: "idle" });
+    exitIdle(launches[1]);
+    await flush();
+    t.mock.timers.tick(2000);
+    for (const kind of ["pending", "processing", "schedule"]) {
+      const dueAt = Math.floor(Date.now() / 1000) + 1;
+      let crossingId;
+      let scheduler;
+      const name = "disposable-crossing-schedule";
+      if (kind === "schedule") {
+        scheduler = honker.getHonkerDb().scheduler();
+        scheduler.add({ name, queue: "system-task-maintenance", schedule: "@every 1h", payload: { kind: "session-cleanup" } });
+        const tx = honker.getHonkerDb().transaction();
+        tx.execute("UPDATE _honker_scheduler_tasks SET next_fire_at = ? WHERE name = ?", [dueAt, name]);
+        tx.commit();
+      } else {
+        crossingId = queue.enqueue({ kind: "session-cleanup" }, { runAt: kind === "pending" ? dueAt : dueAt - 120 });
+        if (kind === "processing") {
+          assert.equal(queue.claimOne("disposable-crossing-owner")?.id, crossingId);
+          const tx = honker.getHonkerDb().transaction();
+          tx.execute("UPDATE _honker_live SET claim_expires_at = ? WHERE id = ?", [dueAt, crossingId]);
+          tx.commit();
+        }
+      }
+      crossDeadline = true;
+      const group = kind === "schedule" ? "scheduler" : "maintenance";
+      supervisor.wake(group);
+      t.mock.timers.tick(1);
+      assert.deepEqual(supervisor.getGroups(), [group], `${kind} work crossed during inspection must still launch its owner`);
+      if (scheduler) scheduler.remove(name);
+      else queue.cancel(crossingId);
+      const child = launches.at(-1);
+      child.emit("message", { type: "ready" });
+      child.emit("message", { type: "idle" });
+      exitIdle(child);
+      await flush();
+      t.mock.timers.tick(2000);
+      assert.deepEqual(supervisor.getGroups(), []);
+    }
+  } finally {
+    await supervisor.stop();
+    t.mock.timers.reset();
+    await cleanupIsolatedState(state);
+  }
 });
