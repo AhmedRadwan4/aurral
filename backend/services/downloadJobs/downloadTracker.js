@@ -588,17 +588,9 @@ export class DownloadTracker {
       && entry.payload.albumGroupJobIds?.includes(jobId)) || null;
   }
 
-  // The download worker never takes an upgrade, so an upgrade an attempt
-  // gives back searches for its track at once.
   releaseFromAlbumGrab(id, reason = null, options = {}) {
     setActiveDownloadAttemptId(id, null);
-    if (!this.jobs.get(id)?.upgradeForJobId) return this.setPending(id, reason, options);
-    if (!this.setPending(id, reason)) return false;
-    this.pendingSet.delete(id);
-    this._removeFromPendingQueues(id);
-    this.setAlbumGrabAttempted(id, true);
-    this.enqueueDownloadPipeline(id);
-    return false;
+    return this.setPending(id, reason, options);
   }
 
   // Album attempts that ended on a step that failed every retry since the
@@ -616,10 +608,6 @@ export class DownloadTracker {
     updateAlbumGrabFailuresStmt.run(count, job.id);
   }
 
-  // A track that starts its search by release, so the worker resolves its
-  // release before it is queued. An upgrade reads its release where it is
-  // queued, a manual search never searches by release, and a track a release
-  // attempt already tried searches for itself.
   canSearchByRelease(job) {
     return !job.upgradeForJobId && searchesByRelease(job) && isAlbumGrabSourceConfigured();
   }
@@ -918,7 +906,7 @@ export class DownloadTracker {
     this.pendingRetrySet = new Set();
     for (const job of this.jobs.values()) {
       this._applyStatusDelta(job.playlistType, null, job.status);
-      if (job.status === "pending" && !job.upgradeForJobId) {
+      if (job.status === "pending" && !job.manualReplacementSearch) {
         this.pendingFreshQueue.push(job.id);
         this.pendingSet.add(job.id);
       }
@@ -1193,11 +1181,13 @@ export class DownloadTracker {
     });
     const job = this.jobs.get(id);
     job.upgradeForJobId = sourceJob.id;
-    this.pendingSet.delete(id);
-    this.pendingRetrySet.delete(id);
-    this._removeFromPendingQueues(id);
     this._update(job);
     return id;
+  }
+
+  queueFirst(ids) {
+    const first = new Set(ids);
+    this.pendingFreshQueue = [...ids, ...this.pendingFreshQueue.filter((id) => !first.has(id))];
   }
 
   addReplacementSearchJob(sourceJob) {
