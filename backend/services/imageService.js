@@ -9,7 +9,6 @@ import {
 } from "./releaseGroupCoverService.js";
 
 const MAX_NEGATIVE_CACHE = 1000;
-const MAX_PENDING_REQUESTS = 100;
 const NEGATIVE_CACHE_TTL_MS = 60 * 60 * 1000;
 const RELEASE_GROUP_CONCURRENCY = 4;
 const negativeImageCache = new Map();
@@ -152,12 +151,10 @@ const hasFreshNegativeCache = (mbid) => {
   return true;
 };
 
-const addToPendingRequests = (mbid, promise) => {
-  if (pendingImageRequests.size >= MAX_PENDING_REQUESTS) {
-    const firstKey = pendingImageRequests.keys().next().value;
-    pendingImageRequests.delete(firstKey);
-  }
-  pendingImageRequests.set(mbid, promise);
+export const invalidateArtistImage = (mbid) => {
+  pendingImageRequests.delete(mbid);
+  negativeImageCache.delete(mbid);
+  dbOps.deleteImage(mbid);
 };
 
 const getCachedUrl = (cacheKey) => {
@@ -287,26 +284,30 @@ export const getArtistImage = async (
     dbOps.deleteImage(mbid);
   }
 
-  if (
+  const pending = pendingImageRequests.get(mbid);
+  if (pending && (pending.forceRefresh || !forceRefresh)) {
+    return pending.promise;
+  }
+
+  const recoverOnly =
     !forceRefresh &&
-    ((cachedImage && cachedImage.imageUrl === "NOT_FOUND") || hasFreshNegativeCache(mbid))
-  ) {
-    const override = dbOps.getArtistOverride(mbid);
-    const resolvedMbid = override?.musicbrainzId || mbid;
-    const recovered = await recoverArtistCoverFromCachedReleaseGroups(resolvedMbid);
-    if (recovered?.url) {
-      negativeImageCache.delete(mbid);
-      dbOps.setImage(mbid, recovered.url, recovered.images);
-      return recovered;
-    }
-    return { url: null, images: [], notFound: true };
-  }
-
-  if (pendingImageRequests.has(mbid)) {
-    return pendingImageRequests.get(mbid);
-  }
-
+    ((cachedImage && cachedImage.imageUrl === "NOT_FOUND") || hasFreshNegativeCache(mbid));
+  const isCurrentRequest = () => pendingImageRequests.get(mbid)?.promise === fetchPromise;
   const fetchPromise = (async () => {
+    if (recoverOnly) {
+      const override = dbOps.getArtistOverride(mbid);
+      const resolvedMbid = override?.musicbrainzId || mbid;
+      const recovered = await recoverArtistCoverFromCachedReleaseGroups(resolvedMbid);
+      if (recovered?.url) {
+        if (isCurrentRequest()) {
+          negativeImageCache.delete(mbid);
+          dbOps.setImage(mbid, recovered.url, recovered.images);
+        }
+        return recovered;
+      }
+      return { url: null, images: [], notFound: true };
+    }
+
     let metadataArtist = null;
     let resolvedMbid = mbid;
     let override = null;
@@ -318,8 +319,10 @@ export const getArtistImage = async (
       const images = buildDirectArtistImagePayload(directArtistImages);
       const primaryImage = images.find((image) => image.front) || images[0];
       if (primaryImage?.image) {
-        negativeImageCache.delete(mbid);
-        dbOps.setImage(mbid, primaryImage.image, images);
+        if (isCurrentRequest()) {
+          negativeImageCache.delete(mbid);
+          dbOps.setImage(mbid, primaryImage.image, images);
+        }
         return {
           url: primaryImage.image,
           images,
@@ -340,12 +343,14 @@ export const getArtistImage = async (
         sawTransientError = true;
       }
       if (deezerImage) {
-        negativeImageCache.delete(mbid);
         const result = buildArtistCoverFromUrl(
           buildStableImageProxyUrl(deezerImage),
           ["Artist"],
         );
-        dbOps.setImage(mbid, result.url, result.images);
+        if (isCurrentRequest()) {
+          negativeImageCache.delete(mbid);
+          dbOps.setImage(mbid, result.url, result.images);
+        }
         return result;
       }
 
@@ -411,8 +416,10 @@ export const getArtistImage = async (
             },
           ],
         };
-        negativeImageCache.delete(mbid);
-        dbOps.setImage(mbid, artistImageUrl, result.images);
+        if (isCurrentRequest()) {
+          negativeImageCache.delete(mbid);
+          dbOps.setImage(mbid, artistImageUrl, result.images);
+        }
         if (!cachedRg || forceRefresh) {
           dbOps.setDeezerMbidCache(rgCacheKey, foundCover.releaseGroupId);
         }
@@ -441,33 +448,39 @@ export const getArtistImage = async (
         if (siblings.length > 0) {
           siblings.sort((a, b) => b.images.length - a.images.length);
           const sibling = siblings[0];
-          dbOps.setArtistOverride(mbid, {
-            musicbrainzId: sibling.id,
-            deezerArtistId: override?.deezerArtistId || null,
-          });
+          if (isCurrentRequest()) {
+            dbOps.setArtistOverride(mbid, {
+              musicbrainzId: sibling.id,
+              deezerArtistId: override?.deezerArtistId || null,
+            });
+          }
           const siblingResult = await getArtistImage(sibling.id, {
             forceRefresh: false,
             artistName: null,
           });
           if (siblingResult?.url) {
-            negativeImageCache.delete(mbid);
-            dbOps.setImage(mbid, siblingResult.url, siblingResult.images);
+            if (isCurrentRequest()) {
+              negativeImageCache.delete(mbid);
+              dbOps.setImage(mbid, siblingResult.url, siblingResult.images);
+            }
             return siblingResult;
           }
         }
       } catch {}
     }
 
-    addToNegativeCache(mbid);
-    dbOps.setImage(mbid, "NOT_FOUND");
+    if (isCurrentRequest()) {
+      addToNegativeCache(mbid);
+      dbOps.setImage(mbid, "NOT_FOUND");
+    }
 
     return { url: null, images: [], notFound: true };
   })();
 
-  addToPendingRequests(mbid, fetchPromise);
+  pendingImageRequests.set(mbid, { promise: fetchPromise, forceRefresh });
   try {
     return await fetchPromise;
   } finally {
-    pendingImageRequests.delete(mbid);
+    if (isCurrentRequest()) pendingImageRequests.delete(mbid);
   }
 };
