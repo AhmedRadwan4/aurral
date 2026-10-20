@@ -85,7 +85,7 @@ test.after(async () => {
 });
 
 test("deleting a playlist saved by an older version keeps the Library files it reused", async (t) => {
-  for (const name of ["refreshPlaylist", "scheduleScanLibrary", "ensureSmartPlaylists"]) {
+  for (const name of ["requestPlaylistSync", "scheduleScanLibrary"]) {
     t.mock.method(playlistManager, name, async () => {});
   }
   flowPlaylistConfig.createStaticPlaylist({
