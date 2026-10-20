@@ -43,6 +43,99 @@ test("previews and playlist tracks keep their cover so the player and album-art 
   assert.equal(editorialTrack.artwork, "https://c/editorial.jpg");
 });
 
+test("artwork changes update matching queue entries without restarting playback", () => {
+  const playing = startQueue({
+    tracks: [
+      {
+        ...queueTracks[0],
+        libraryTrackId: 10,
+        libraryAlbumId: 20,
+        artwork: "old-track.jpg",
+        artworkSource: "track",
+      },
+      {
+        ...queueTracks[1],
+        libraryTrackId: 11,
+        libraryAlbumId: 20,
+        artwork: "old-album.jpg",
+        artworkSource: "album",
+      },
+      { ...queueTracks[2], artwork: "old-playlist.jpg" },
+    ],
+  });
+
+  const trackUpdated = queueReducer(playing, {
+    type: "UPDATE_ARTWORK",
+    target: { libraryTrackId: 10 },
+    artwork: "new-track.jpg",
+    artworkSource: "track",
+  });
+  assert.equal(trackUpdated.queue[0].artwork, "new-track.jpg");
+  assert.equal(trackUpdated.queue[1].artwork, "old-album.jpg");
+
+  const albumUpdated = queueReducer(trackUpdated, {
+    type: "UPDATE_ARTWORK",
+    target: { libraryAlbumId: 20 },
+    artwork: "new-album.jpg",
+  });
+  assert.equal(albumUpdated.queue[0].artwork, "new-track.jpg");
+  assert.equal(albumUpdated.queue[1].artwork, "new-album.jpg");
+
+  const trackReset = queueReducer(albumUpdated, {
+    type: "UPDATE_ARTWORK",
+    target: { libraryTrackId: 10 },
+    artwork: "new-album.jpg",
+    artworkSource: "album",
+  });
+  const albumUpdatedAgain = queueReducer(trackReset, {
+    type: "UPDATE_ARTWORK",
+    target: { libraryAlbumId: 20 },
+    artwork: "newer-album.jpg",
+    artworkSource: "album",
+  });
+  assert.equal(albumUpdatedAgain.queue[0].artwork, "newer-album.jpg");
+
+  const playlistUpdated = queueReducer(albumUpdatedAgain, {
+    type: "UPDATE_ARTWORK",
+    target: { id: "t2" },
+    artwork: null,
+  });
+  assert.equal(playlistUpdated.queue[2].artwork, null);
+  assert.equal(playlistUpdated.currentIndex, playing.currentIndex);
+  assert.equal(playlistUpdated.queueRevision, playing.queueRevision);
+});
+
+test("album artwork changes preserve track overrides restored from older queues", () => {
+  const restored = queueReducer(initialQueueState, {
+    type: "RESTORE_QUEUE",
+    queue: [
+      {
+        ...queueTracks[0],
+        libraryTrackId: 10,
+        libraryAlbumId: 20,
+        artwork: "/api/library/artwork/track/10?v=old",
+      },
+      {
+        ...queueTracks[1],
+        libraryTrackId: 11,
+        libraryAlbumId: 20,
+        artwork: "/api/library/artwork/album/20?v=old",
+      },
+    ],
+    currentIndex: 0,
+  });
+
+  const updated = queueReducer(restored, {
+    type: "UPDATE_ARTWORK",
+    target: { libraryAlbumId: 20 },
+    artwork: "/api/library/artwork/album/20?v=new",
+    artworkSource: "album",
+  });
+
+  assert.equal(updated.queue[0].artwork, "/api/library/artwork/track/10?v=old");
+  assert.equal(updated.queue[1].artwork, "/api/library/artwork/album/20?v=new");
+});
+
 const queueTracks = Array.from({ length: 8 }, (_, index) => ({
   id: `t${index}`,
   title: `Track ${index}`,
