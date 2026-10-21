@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import Database from "better-sqlite3";
 import {
   applyIsolatedBackendEnv,
@@ -21,7 +21,9 @@ test("startup removes the old stored news state and publisher blocks but keeps o
 
   const { db } = await importFromRepo("backend/config/db-sqlite.js");
   try {
-    const keys = db.prepare("SELECT key FROM settings WHERE key LIKE 'user:%' OR key LIKE 'news:%'").all()
+    const keys = db
+      .prepare("SELECT key FROM settings WHERE key LIKE 'user:%' OR key LIKE 'news:%'")
+      .all()
       .map(({ key }) => key);
     assert.deepEqual(keys, ["user:1:discoverLayout"]);
   } finally {

@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -7,15 +7,14 @@ import {
   resetDatabase,
 } from "../helpers/backendTestHarness.js";
 
-const [isolatedState, { db }, { dbOps }, { runStorageHealthCheck }] =
-  await setupIsolatedBackend(
-    "storage-health-playlist-path",
-    "backend/config/db-sqlite.js",
-    "backend/db/helpers/index.js",
-    "backend/services/storageHealthService.js",
-  );
+const [isolatedState, { db }, { dbOps }, { runStorageHealthCheck }] = await setupIsolatedBackend(
+  "storage-health-playlist-path",
+  "backend/config/db-sqlite.js",
+  "backend/db/helpers/index.js",
+  "backend/services/storageHealthService.js",
+);
 
-test.beforeEach(async () => {
+beforeEach(async () => {
   await resetDatabase(db);
   const downloadFolder = process.env.DOWNLOAD_FOLDER;
   dbOps.updateSettings({
@@ -26,14 +25,17 @@ test.beforeEach(async () => {
   });
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
 test("does not report legacy playlist job paths as storage failures", async () => {
   const result = await runStorageHealthCheck({ force: true });
 
-  assert.equal(result.sections.some((section) => section.id === "playlists"), false);
+  assert.equal(
+    result.sections.some((section) => section.id === "playlists"),
+    false,
+  );
   assert.equal(
     result.sections
       .find((section) => section.id === "downloads")

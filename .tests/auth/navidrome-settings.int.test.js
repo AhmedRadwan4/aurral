@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import path from "node:path";
-import test from "node:test";
+import { test, beforeAll, afterAll } from "vite-plus/test";
 
 import bcrypt from "bcrypt";
 
@@ -46,9 +46,9 @@ async function apiFetch(path, options = {}) {
 async function waitForLibraryRequest(startIndex) {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const request = navidromeRequests.slice(startIndex).find(
-      ({ method, url }) => method === "POST" && url.pathname === "/api/library",
-    );
+    const request = navidromeRequests
+      .slice(startIndex)
+      .find(({ method, url }) => method === "POST" && url.pathname === "/api/library");
     if (request) return request;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -58,16 +58,16 @@ async function waitForLibraryRequest(startIndex) {
 async function waitForLibraryVerification(startIndex) {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const request = navidromeRequests.slice(startIndex).find(
-      ({ method, url }) => method === "GET" && url.pathname === "/api/library",
-    );
+    const request = navidromeRequests
+      .slice(startIndex)
+      .find(({ method, url }) => method === "GET" && url.pathname === "/api/library");
     if (request) return request;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error("Timed out waiting for Navidrome library verification");
 }
 
-test.before(async () => {
+beforeAll(async () => {
   resetDatabase(db);
   dbOps.updateSettings({ integrations: {}, onboardingComplete: true });
   userOps.createUser("admin", bcrypt.hashSync("password123", 4), "admin");
@@ -116,7 +116,7 @@ test.before(async () => {
   assert.equal(login.status, 200);
 });
 
-test.after(async () => {
+afterAll(async () => {
   await aurral?.stop();
   await new Promise((resolve) => navidrome?.close(resolve));
   await cleanupIsolatedState(isolatedState);
@@ -155,10 +155,14 @@ test("admin can update and test Navidrome after onboarding", async () => {
   assert.equal(saved.payload.integrations.navidrome.username, "local-user");
   assert.equal(Object.hasOwn(saved.payload.integrations.navidrome, "m3uPathMode"), false);
   assert.equal(Object.hasOwn(saved.payload.integrations.navidrome, "pathMappings"), false);
-  assert.ok(saved.payload.pathMappings.some((mapping) =>
-    mapping.source === libraryMapping.source
-    && mapping.remote === libraryMapping.remote
-    && mapping.local === libraryMapping.local));
+  assert.ok(
+    saved.payload.pathMappings.some(
+      (mapping) =>
+        mapping.source === libraryMapping.source &&
+        mapping.remote === libraryMapping.remote &&
+        mapping.local === libraryMapping.local,
+    ),
+  );
   const libraryRequest = await waitForLibraryRequest(requestStartIndex);
   await waitForLibraryVerification(requestStartIndex);
   assert.deepEqual(libraryRequest?.body, {

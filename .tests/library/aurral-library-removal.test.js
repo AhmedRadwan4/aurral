@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, afterEach, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -38,10 +38,17 @@ const [
 );
 
 const routes = new Map();
-const route = (method) => (routePath, ...handlers) => {
-  routes.set(`${method} ${routePath}`, handlers.at(-1));
+const route =
+  (method) =>
+  (routePath, ...handlers) => {
+    routes.set(`${method} ${routePath}`, handlers.at(-1));
+  };
+const router = {
+  get: route("GET"),
+  post: route("POST"),
+  put: route("PUT"),
+  delete: route("DELETE"),
 };
-const router = { get: route("GET"), post: route("POST"), put: route("PUT"), delete: route("DELETE") };
 registerAlbums(router);
 registerArtists(router);
 
@@ -73,16 +80,22 @@ async function callRoute(key, params, deleteFiles) {
 }
 
 let sequence = 0;
-async function createAurralAlbum({ trackCount = 2, filesFor = [0, 1], artist: existingArtist = null } = {}) {
+async function createAurralAlbum({
+  trackCount = 2,
+  filesFor = [0, 1],
+  artist: existingArtist = null,
+} = {}) {
   sequence += 1;
   const suffix = String(sequence).padStart(12, "0");
   const artistMbid = `eeeeeeee-eeee-4eee-8eee-${suffix}`;
   const albumMbid = `ffffffff-ffff-4fff-8fff-${suffix}`;
-  const artist = existingArtist || libraryStore.upsertLibraryArtist({
-    identityKey: `mbid:${artistMbid}`,
-    mbid: artistMbid,
-    name: `Removal Artist ${sequence}`,
-  });
+  const artist =
+    existingArtist ||
+    libraryStore.upsertLibraryArtist({
+      identityKey: `mbid:${artistMbid}`,
+      mbid: artistMbid,
+      name: `Removal Artist ${sequence}`,
+    });
   const album = libraryStore.upsertLibraryAlbum({
     identityKey: `release-group:${albumMbid}`,
     mbid: albumMbid,
@@ -101,7 +114,11 @@ async function createAurralAlbum({ trackCount = 2, filesFor = [0, 1], artist: ex
       title: `Track ${index + 1}`,
       artistName: artist.name,
     });
-    libraryStore.linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id, trackNumber: index + 1 });
+    libraryStore.linkLibraryAlbumTrack({
+      albumId: album.id,
+      trackId: track.id,
+      trackNumber: index + 1,
+    });
     let filePath = null;
     if (filesFor.includes(index)) {
       filePath = path.join(albumDir, `${index + 1}.flac`);
@@ -116,7 +133,11 @@ async function createAurralAlbum({ trackCount = 2, filesFor = [0, 1], artist: ex
     }
     tracks.push({ ...track, trackMbid, filePath });
   }
-  managementStore.setLibraryManagement({ entityKind: "album", entityId: album.id, managedBy: "aurral" });
+  managementStore.setLibraryManagement({
+    entityKind: "album",
+    entityId: album.id,
+    managedBy: "aurral",
+  });
   const jobFor = (index) =>
     downloadTracker.addJob(
       {
@@ -135,7 +156,11 @@ async function createAurralAlbum({ trackCount = 2, filesFor = [0, 1], artist: ex
 const artistRow = (id) => db.prepare("SELECT 1 FROM library_artists WHERE id = ?").get(id);
 const albumRow = (id) => db.prepare("SELECT 1 FROM library_albums WHERE id = ?").get(id);
 const trackRow = (id) => db.prepare("SELECT 1 FROM library_tracks WHERE id = ?").get(id);
-const exists = (filePath) => fs.access(filePath).then(() => true, () => false);
+const exists = (filePath) =>
+  fs.access(filePath).then(
+    () => true,
+    () => false,
+  );
 
 function useFailingSlskd() {
   const originalSettings = dbOps.getSettings();
@@ -174,7 +199,7 @@ function registerSlskdSearch(jobId) {
 
 let lidarrCalls;
 let originalRequest;
-test.beforeEach(() => {
+beforeEach(() => {
   downloadTracker.clearAll();
   lidarrCalls = [];
   originalRequest = lidarrClient.request;
@@ -184,12 +209,12 @@ test.beforeEach(() => {
   };
 });
 
-test.afterEach(() => {
+afterEach(() => {
   lidarrClient.request = originalRequest;
   assert.equal(lidarrCalls.length, 0);
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
@@ -250,7 +275,8 @@ test("removing a mixed album keeps the Lidarr file, its track, and the album", a
   assert.notEqual(trackRow(tracks[1].id), undefined);
   assert.notEqual(albumRow(album.id), undefined);
   assert.equal(
-    db.prepare("SELECT available FROM library_media_files WHERE source = ? AND path = ?")
+    db
+      .prepare("SELECT available FROM library_media_files WHERE source = ? AND path = ?")
       .get("lidarr", lidarrPath)?.available,
     1,
   );
@@ -293,14 +319,19 @@ test("removing an album of a monitored artist records an exclusion, and Lidarr a
   assert.equal(albumRow(album.id), undefined);
   assert.equal(await exists(tracks[0].filePath), false);
   assert.deepEqual(
-    libraryManager.listMonitoringExclusions({ artistMbid: artist.mbid })
+    libraryManager
+      .listMonitoringExclusions({ artistMbid: artist.mbid })
       .map(({ kind, mbid, title }) => ({ kind, mbid, title })),
     [{ kind: "album", mbid: album.mbid, title: album.title }],
   );
   assert.ok(managementStore.getLibraryManagementEntry("artist", artist.id)?.monitorRules);
 
   const lidarr = await createAurralAlbum({ trackCount: 1 });
-  managementStore.setLibraryManagement({ entityKind: "album", entityId: lidarr.album.id, managedBy: "lidarr" });
+  managementStore.setLibraryManagement({
+    entityKind: "album",
+    entityId: lidarr.album.id,
+    managedBy: "lidarr",
+  });
   const conflict = await removeAlbum(lidarr.album, true);
   assert.equal(conflict.statusCode, 409);
   assert.equal(conflict.body.code, "album_owner_conflict");
@@ -319,7 +350,7 @@ function makeMonitoredArtist(artist, monitored = true) {
   });
 }
 
-test("removing a monitored Aurral artist clears its albums, files, and monitoring", async (t) => {
+test("removing a monitored Aurral artist clears its albums, files, and monitoring", async () => {
   const first = await createAurralAlbum();
   const second = await createAurralAlbum({ trackCount: 2, filesFor: [0], artist: first.artist });
   makeMonitoredArtist(first.artist);
@@ -341,7 +372,7 @@ test("removing a monitored Aurral artist clears its albums, files, and monitorin
   assert.equal(managementStore.getLibraryManagementEntry("artist", first.artist.id), null);
 
   const planned = [];
-  t.mock.method(libraryManager, "planAurralArtistMonitoring", async (artist) => {
+  vi.spyOn(libraryManager, "planAurralArtistMonitoring").mockImplementation(async (artist) => {
     planned.push(artist.mbid);
     return { releases: [], topTracks: [] };
   });
@@ -363,8 +394,10 @@ test("removing an Aurral artist without files keeps them on disk", async () => {
 });
 
 function withoutMusicBrainzId(artist) {
-  db.prepare("UPDATE library_artists SET mbid = NULL, identity_key = ? WHERE id = ?")
-    .run(`name:artist:untagged ${artist.id}`, artist.id);
+  db.prepare("UPDATE library_artists SET mbid = NULL, identity_key = ? WHERE id = ?").run(
+    `name:artist:untagged ${artist.id}`,
+    artist.id,
+  );
   return { ...artist, mbid: null };
 }
 
@@ -405,7 +438,11 @@ test("removing the last album of an artist Aurral does not follow removes the ar
 test("an artist without a MusicBrainz ID that Lidarr manages is left to Lidarr", async () => {
   const created = await createAurralAlbum();
   const artist = withoutMusicBrainzId(created.artist);
-  managementStore.setLibraryManagement({ entityKind: "album", entityId: created.album.id, managedBy: "lidarr" });
+  managementStore.setLibraryManagement({
+    entityKind: "album",
+    entityId: created.album.id,
+    managedBy: "lidarr",
+  });
 
   const response = await callRoute("DELETE /artists/:mbid", { mbid: String(artist.id) }, true);
 
@@ -447,17 +484,21 @@ test("a failed artist removal stops monitoring and finishes on retry", async () 
   }
 });
 
-test("deleting a Lidarr artist also deletes its Aurral albums and their files", async (t) => {
+test("deleting a Lidarr artist also deletes its Aurral albums and their files", async () => {
   const { artist, album, tracks } = await createAurralAlbum();
-  managementStore.setLibraryManagement({ entityKind: "artist", entityId: artist.id, managedBy: "lidarr" });
+  managementStore.setLibraryManagement({
+    entityKind: "artist",
+    entityId: artist.id,
+    managedBy: "lidarr",
+  });
   const deleted = [];
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  t.mock.method(lidarrClient, "getArtistByMbid", async (mbid) => ({
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  vi.spyOn(lidarrClient, "getArtistByMbid").mockImplementation(async (mbid) => ({
     id: 41,
     foreignArtistId: mbid,
     artistName: artist.name,
   }));
-  t.mock.method(lidarrClient, "deleteArtist", async (id, deleteFiles) => {
+  vi.spyOn(lidarrClient, "deleteArtist").mockImplementation(async (id, deleteFiles) => {
     deleted.push({ id, deleteFiles });
   });
 
@@ -517,7 +558,8 @@ test("album removal never deletes a file Lidarr also lists as available", async 
   assert.equal(await exists(tracks[0].filePath), true);
   assert.equal(await exists(tracks[1].filePath), false);
   assert.equal(
-    db.prepare("SELECT available FROM library_media_files WHERE source = ? AND path = ?")
+    db
+      .prepare("SELECT available FROM library_media_files WHERE source = ? AND path = ?")
       .get("lidarr", tracks[0].filePath)?.available,
     1,
   );

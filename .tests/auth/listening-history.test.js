@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -7,41 +7,34 @@ import {
   resetDatabase,
 } from "../helpers/backendTestHarness.js";
 
-const [isolatedState, { db }, { userOps }, listeningHistoryModule] =
-  await setupIsolatedBackend(
-    "listening-history",
-    "backend/config/db-sqlite.js",
-    "backend/db/helpers/index.js",
-    "backend/services/listeningHistory.js",
-  );
+const [isolatedState, { db }, { userOps }, listeningHistoryModule] = await setupIsolatedBackend(
+  "listening-history",
+  "backend/config/db-sqlite.js",
+  "backend/db/helpers/index.js",
+  "backend/services/listeningHistory.js",
+);
 
 const bcryptModule = await import("bcrypt");
 
 const bcrypt = bcryptModule.default;
-const {
-  getListenHistoryProfile,
-  hasListenHistoryProfile,
-  resolveListenHistorySettings,
-} = listeningHistoryModule;
+const { getListenHistoryProfile, hasListenHistoryProfile, resolveListenHistorySettings } =
+  listeningHistoryModule;
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
 test("normalizes legacy and explicit listening history profiles", () => {
-  assert.deepEqual(
-    getListenHistoryProfile({ lastfm_username: "alice" }),
-    {
-      listenHistoryProvider: "lastfm",
-      listenHistoryUsername: "alice",
-      listenHistoryUrl: null,
-      lastfmUsername: "alice",
-    },
-  );
+  assert.deepEqual(getListenHistoryProfile({ lastfm_username: "alice" }), {
+    listenHistoryProvider: "lastfm",
+    listenHistoryUsername: "alice",
+    listenHistoryUrl: null,
+    lastfmUsername: "alice",
+  });
 
   assert.deepEqual(
     getListenHistoryProfile({

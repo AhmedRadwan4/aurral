@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import express from "express";
@@ -50,13 +50,13 @@ async function complete(body) {
   return { status: response.status, body: await response.json() };
 }
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
   dbOps.updateSettings({ onboardingComplete: false });
   lidarrRequests.length = 0;
 });
 
-test.after(async () => {
+afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
   await lidarr.close();
   db.close();
@@ -72,7 +72,10 @@ test("completes onboarding without Lidarr and stores no Lidarr settings", async 
   assert.equal(settings.integrations?.lidarr?.url || "", "");
   assert.equal(settings.integrations?.lidarr?.apiKey || "", "");
   assert.notEqual(settings.integrations?.lidarr?.enabled, true);
-  assert.deepEqual(userOps.getAllUsers().map((user) => [user.username, user.role]), [["owner", "admin"]]);
+  assert.deepEqual(
+    userOps.getAllUsers().map((user) => [user.username, user.role]),
+    [["owner", "admin"]],
+  );
   assert.deepEqual(lidarrRequests, []);
 });
 
@@ -109,7 +112,12 @@ test("rejects a partial Lidarr connection and stores nothing", async () => {
 test("connected onboarding stores Lidarr and picks its first profiles", async () => {
   const result = await complete({
     ...admin,
-    lidarr: { url: `${lidarr.url}/`, apiKey: " key ", defaultMonitorOption: "none", searchOnAdd: false },
+    lidarr: {
+      url: `${lidarr.url}/`,
+      apiKey: " key ",
+      defaultMonitorOption: "none",
+      searchOnAdd: false,
+    },
   });
 
   assert.equal(result.status, 200);
@@ -122,7 +130,18 @@ test("connected onboarding stores Lidarr and picks its first profiles", async ()
 
 for (const [name, body] of [
   ["without Lidarr", admin],
-  ["with Lidarr", { ...admin, lidarr: { url: "http://lidarr.invalid", apiKey: "key", qualityProfileId: 1, metadataProfileId: 1 } }],
+  [
+    "with Lidarr",
+    {
+      ...admin,
+      lidarr: {
+        url: "http://lidarr.invalid",
+        apiKey: "key",
+        qualityProfileId: 1,
+        metadataProfileId: 1,
+      },
+    },
+  ],
 ]) {
   test(`refuses onboarding ${name} after setup is complete`, async () => {
     dbOps.updateSettings({ ...dbOps.getSettings(), onboardingComplete: true });

@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, afterEach } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,17 +28,17 @@ const [
 
 let root;
 
-test.beforeEach(async () => {
+beforeEach(async () => {
   resetDatabase(db);
   dbOps.updateSettings({ integrations: {}, flows: [], sharedPlaylists: [] });
   root = await mkdtemp(path.join(tmpdir(), "aurral-flow-library-"));
 });
 
-test.afterEach(async () => {
+afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
@@ -93,7 +93,8 @@ function createFlow(name, showInLibrary) {
   return flowPlaylistConfig.updateFlow(flow.id, { showInLibrary });
 }
 
-const scan = (changedPaths = null) => scanConfiguredLibrary({ musicRoot: root, includeLidarr: false, changedPaths });
+const scan = (changedPaths = null) =>
+  scanConfiguredLibrary({ musicRoot: root, includeLidarr: false, changedPaths });
 
 const libraryTrackTitles = () =>
   getLibrary({ availableOnly: true })
@@ -174,10 +175,7 @@ test("a flow track already in the music library appears once", async () => {
 
   await scan();
   assert.deepEqual(libraryTrackTitles(), ["Twice"]);
-  assert.deepEqual(
-    getLibrary({ availableOnly: true }).tracks[0].sources,
-    ["aurral", "flow"],
-  );
+  assert.deepEqual(getLibrary({ availableOnly: true }).tracks[0].sources, ["aurral", "flow"]);
 });
 
 test("a missing flow file leaves the library once its flow stops including it", async () => {

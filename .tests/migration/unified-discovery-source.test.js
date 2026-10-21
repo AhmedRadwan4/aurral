@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { rm } from "node:fs/promises";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import Database from "better-sqlite3";
 
 import { createIsolatedStateDir } from "../helpers/backendTestHarness.js";
@@ -9,20 +9,24 @@ import { createIsolatedStateDir } from "../helpers/backendTestHarness.js";
 test("upgrading drops the shared ListenBrainz genre sections and keeps discovery data", async () => {
   const state = await createIsolatedStateDir("unified-discovery-source-migration");
   const start = () => {
-    const result = spawnSync(process.execPath, [
-      "--input-type=module",
-      "-e",
-      'const { db } = await import("./backend/config/db-sqlite.js"); db.close();',
-    ], {
-      cwd: new URL("../..", import.meta.url),
-      env: {
-        ...process.env,
-        AURRAL_DATA_DIR: state.dataDir,
-        AURRAL_DB_PATH: state.dbPath,
-        NODE_ENV: "test",
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        'const { db } = await import("./backend/config/db-sqlite.js"); db.close();',
+      ],
+      {
+        cwd: new URL("../..", import.meta.url),
+        env: {
+          ...process.env,
+          AURRAL_DATA_DIR: state.dataDir,
+          AURRAL_DB_PATH: state.dbPath,
+          NODE_ENV: "test",
+        },
+        encoding: "utf8",
       },
-      encoding: "utf8",
-    });
+    );
     assert.equal(result.status, 0, result.stderr);
   };
 
@@ -44,7 +48,10 @@ test("upgrading drops the shared ListenBrainz genre sections and keeps discovery
     start();
 
     const rows = Object.fromEntries(
-      db.prepare("SELECT key, value FROM discovery_cache").all().map((row) => [row.key, row.value]),
+      db
+        .prepare("SELECT key, value FROM discovery_cache")
+        .all()
+        .map((row) => [row.key, row.value]),
     );
     assert.deepEqual(Object.keys(rows).sort(), ["globalTop", "provider", "user:1:topGenres"]);
     assert.equal(rows.provider, "listenbrainz");

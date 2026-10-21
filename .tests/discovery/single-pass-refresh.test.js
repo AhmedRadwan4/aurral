@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import {
   importFromRepo,
@@ -9,16 +9,13 @@ import {
 
 const [isolatedState] = await setupIsolatedBackend("single-pass-refresh");
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
 test("single-pass refresh: buildRecommendationsFromSeeds includes candidate tag hydration and second-hop discovery", async () => {
-  const {
-    buildDiscoverySeedList,
-    addRecommendationCandidate,
-    finalizeRecommendationAccumulator,
-  } = await importFromRepo("backend/services/discovery/recommendationPipeline.js");
+  const { buildDiscoverySeedList, addRecommendationCandidate, finalizeRecommendationAccumulator } =
+    await importFromRepo("backend/services/discovery/recommendationPipeline.js");
 
   const seeds = buildDiscoverySeedList({
     libraryArtists: [
@@ -153,8 +150,5 @@ test("single-pass refresh: db discovery cache stores enriched quality after sing
   assert.equal(cache.enrichmentStartedAt, null);
   assert.equal(cache.enrichmentCompletedAt, enrichedAt);
   assert.equal(cache.enrichmentProgressMessage, null);
-  assert.deepEqual(cache.recommendations, [
-    { id: "artist-1", name: "Test Artist" },
-  ]);
+  assert.deepEqual(cache.recommendations, [{ id: "artist-1", name: "Test Artist" }]);
 });
-

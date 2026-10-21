@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeAll, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import path from "node:path";
 
@@ -17,11 +17,22 @@ const [isolatedState, { db }, libraryStore, managementStore, { lidarrClient }, {
 const artistMbid = "e1111111-1111-4111-8111-111111111111";
 const albumMbid = "e2222222-2222-4222-8222-222222222222";
 const trackMbid = "e3333333-3333-4333-8333-333333333333";
-const lidarrArtist = { id: 41, artistName: "Handover Artist", foreignArtistId: artistMbid, monitored: true };
-const lidarrAlbum = { id: 91, artistId: 41, title: "Handover Album", foreignAlbumId: albumMbid, monitored: true };
+const lidarrArtist = {
+  id: 41,
+  artistName: "Handover Artist",
+  foreignArtistId: artistMbid,
+  monitored: true,
+};
+const lidarrAlbum = {
+  id: 91,
+  artistId: 41,
+  title: "Handover Album",
+  foreignAlbumId: albumMbid,
+  monitored: true,
+};
 const originalClient = { ...lidarrClient };
 
-test.before(() => {
+beforeAll(() => {
   lidarrClient.isConfigured = () => true;
   lidarrClient.request = async () => {
     throw new Error("Lidarr scans are not part of this test");
@@ -33,7 +44,7 @@ test.before(() => {
   lidarrClient.getAlbum = async () => lidarrAlbum;
 });
 
-test.beforeEach(() => {
+beforeEach(() => {
   db.prepare("DELETE FROM library_management").run();
   db.prepare("DELETE FROM library_media_files").run();
   db.prepare("DELETE FROM library_album_tracks").run();
@@ -43,7 +54,7 @@ test.beforeEach(() => {
   managementStore.invalidateLibraryManagementCache();
 });
 
-test.after(async () => {
+afterAll(async () => {
   Object.assign(lidarrClient, originalClient);
   await cleanupIsolatedState(isolatedState);
 });
@@ -62,7 +73,12 @@ function seedAlbum({ monitored, monitorMode }) {
     title: "Handover Album",
     metadata: { monitored },
   });
-  managementStore.setLibraryManagement({ entityKind: "album", entityId: album.id, managedBy: "aurral", monitorMode });
+  managementStore.setLibraryManagement({
+    entityKind: "album",
+    entityId: album.id,
+    managedBy: "aurral",
+    monitorMode,
+  });
   const track = libraryStore.upsertLibraryTrack({
     identityKey: `recording:${trackMbid}`,
     mbid: trackMbid,
@@ -95,18 +111,28 @@ test("downloading a single's album with Lidarr hands the album to Lidarr and sto
   await requestFromLidarr();
 
   assert.equal(managementStore.getManagedBy("album", album.id), "lidarr");
-  assert.equal(db.prepare("SELECT monitored FROM library_tracks WHERE id = ?").get(track.id).monitored, 0);
-  const metadata = JSON.parse(db.prepare("SELECT metadata_json FROM library_albums WHERE id = ?").get(album.id).metadata_json);
+  assert.equal(
+    db.prepare("SELECT monitored FROM library_tracks WHERE id = ?").get(track.id).monitored,
+    0,
+  );
+  const metadata = JSON.parse(
+    db.prepare("SELECT metadata_json FROM library_albums WHERE id = ?").get(album.id).metadata_json,
+  );
   assert.equal(typeof metadata.aurralHandoverAt, "number");
 });
 
 test("adding an Aurral album to Lidarr directly hands it to Lidarr too", async () => {
   const { album } = seedAlbum({ monitored: true, monitorMode: "monitored" });
 
-  const added = await libraryManager.addAlbum(String(lidarrArtist.id), albumMbid, "Handover Album", {
-    managedBy: "lidarr",
-    user: { role: "admin" },
-  });
+  const added = await libraryManager.addAlbum(
+    String(lidarrArtist.id),
+    albumMbid,
+    "Handover Album",
+    {
+      managedBy: "lidarr",
+      user: { role: "admin" },
+    },
+  );
 
   assert.equal(added?.error, undefined);
   assert.equal(managementStore.getManagedBy("album", album.id), "lidarr");
@@ -118,7 +144,10 @@ test("an album Aurral was monitoring is handed to Lidarr too", async () => {
   await requestFromLidarr();
 
   assert.equal(managementStore.getManagedBy("album", album.id), "lidarr");
-  assert.equal(db.prepare("SELECT monitored FROM library_tracks WHERE id = ?").get(track.id).monitored, 0);
+  assert.equal(
+    db.prepare("SELECT monitored FROM library_tracks WHERE id = ?").get(track.id).monitored,
+    0,
+  );
 });
 
 test("a Lidarr album in the Library is removed from Lidarr by its MusicBrainz ID", async () => {
@@ -129,7 +158,10 @@ test("a Lidarr album in the Library is removed from Lidarr by its MusicBrainz ID
   };
 
   const removed = await libraryManager.deleteLidarrAlbumByMbid(albumMbid, true);
-  const unknown = await libraryManager.deleteLidarrAlbumByMbid("e9999999-9999-4999-8999-999999999999", true);
+  const unknown = await libraryManager.deleteLidarrAlbumByMbid(
+    "e9999999-9999-4999-8999-999999999999",
+    true,
+  );
 
   assert.equal(removed.success, true);
   assert.equal(unknown.statusCode, 404);

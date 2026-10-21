@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -10,9 +10,7 @@ test("warmPublicImageUrl rejects empty values and failed upstream fetches", asyn
   const originalFetch = global.fetch;
   process.env.AURRAL_DATA_DIR = dataDir;
   try {
-    const { warmPublicImageUrl } = await import(
-      `../backend/services/imageProxyService.js?warm-public=${Date.now()}`
-    );
+    const { warmPublicImageUrl } = await import("../backend/services/imageProxyService.js");
     assert.equal(await warmPublicImageUrl(""), null);
     assert.equal(await warmPublicImageUrl("NOT_FOUND"), null);
     assert.equal(await warmPublicImageUrl(null), null);
@@ -20,10 +18,7 @@ test("warmPublicImageUrl rejects empty values and failed upstream fetches", asyn
     global.fetch = async () => {
       throw new Error("upstream down");
     };
-    assert.equal(
-      await warmPublicImageUrl("https://assets.fanart.tv/fanart/missing.jpg"),
-      null,
-    );
+    assert.equal(await warmPublicImageUrl("https://assets.fanart.tv/fanart/missing.jpg"), null);
   } finally {
     global.fetch = originalFetch;
     if (previousDataDir === undefined) delete process.env.AURRAL_DATA_DIR;

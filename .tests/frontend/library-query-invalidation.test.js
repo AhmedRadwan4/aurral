@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { startFrontendServer } from "../helpers/frontendServer.js";
+import { test, vi } from "vite-plus/test";
 
 const waitForRequestSignal = async (getSignal) => {
   const deadline = Date.now() + 1000;
@@ -10,14 +9,12 @@ const waitForRequestSignal = async (getSignal) => {
   assert.ok(getSignal(), "fetch was not called before the request signal timeout");
 };
 
-test("library cache invalidation does not abort an active request", async (t) => {
-  const vite = await startFrontendServer();
-  t.after(() => vite.close());
+test("library cache invalidation does not abort an active request", async () => {
+  vi.resetModules();
 
-  const { clearLibraryPageCache } = await vite.ssrLoadModule(
-    "/src/utils/api/endpoints/library.js?canonical-invalidation-test",
-  );
-  const { queryClient, queryKeys } = await vite.ssrLoadModule("/src/queryClient.js");
+  const { clearLibraryPageCache } =
+    await import("../../frontend/src/utils/api/endpoints/library.js");
+  const { queryClient, queryKeys } = await import("../../frontend/src/queryClient.js");
   const options = { kind: "artists", page: 1, pageSize: 100 };
   const queryKey = queryKeys.libraryPage(options);
   let resolveRequest;
@@ -25,13 +22,18 @@ test("library cache invalidation does not abort an active request", async (t) =>
   const request = queryClient.fetchQuery({
     queryKey,
     staleTime: 0,
-    queryFn: ({ signal }) => new Promise((resolve, reject) => {
-      resolveRequest = resolve;
-      signal.addEventListener("abort", () => {
-        aborted = true;
-        reject(new Error("aborted"));
-      }, { once: true });
-    }),
+    queryFn: ({ signal }) =>
+      new Promise((resolve, reject) => {
+        resolveRequest = resolve;
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      }),
   });
 
   while (!resolveRequest) await new Promise((resolve) => setImmediate(resolve));
@@ -44,23 +46,22 @@ test("library cache invalidation does not abort an active request", async (t) =>
   queryClient.clear();
 });
 
-test("library requests forward caller cancellation", async (t) => {
-  const vite = await startFrontendServer();
-  t.after(() => vite.close());
+test("library requests forward caller cancellation", async () => {
+  vi.resetModules();
 
-  const { getLibraryPage, getLibraryFavorites } = await vite.ssrLoadModule(
-    "/src/utils/api/endpoints/library.js?library-request-cancellation-test",
-  );
-  const { queryClient, queryKeys } = await vite.ssrLoadModule("/src/queryClient.js");
+  const { getLibraryPage, getLibraryFavorites } =
+    await import("../../frontend/src/utils/api/endpoints/library.js");
+  const { queryClient, queryKeys } = await import("../../frontend/src/queryClient.js");
 
   const assertForwardedCancellation = async (load) => {
     const originalFetch = globalThis.fetch;
     let requestSignal;
     const controller = new AbortController();
-    globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
-      requestSignal = init.signal;
-      init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-    });
+    globalThis.fetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        requestSignal = init.signal;
+        init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
     try {
       const request = load(controller.signal);
       await waitForRequestSignal(() => requestSignal);
@@ -80,10 +81,11 @@ test("library requests forward caller cancellation", async (t) => {
   const assertQueryCancellation = async (load, queryKey) => {
     const originalFetch = globalThis.fetch;
     let requestSignal;
-    globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
-      requestSignal = init.signal;
-      init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-    });
+    globalThis.fetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        requestSignal = init.signal;
+        init.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
     try {
       const request = load();
       await waitForRequestSignal(() => requestSignal);
@@ -108,14 +110,12 @@ test("library requests forward caller cancellation", async (t) => {
   queryClient.clear();
 });
 
-test("artist batch lookup stays within the API batch limit", async (t) => {
-  const vite = await startFrontendServer();
-  t.after(() => vite.close());
+test("artist batch lookup stays within the API batch limit", async () => {
+  vi.resetModules();
 
-  const { lookupArtistsInLibraryBatch } = await vite.ssrLoadModule(
-    "/src/utils/api/endpoints/library.js?artist-batch-limit-test",
-  );
-  const { queryClient } = await vite.ssrLoadModule("/src/queryClient.js");
+  const { lookupArtistsInLibraryBatch } =
+    await import("../../frontend/src/utils/api/endpoints/library.js");
+  const { queryClient } = await import("../../frontend/src/queryClient.js");
   const originalFetch = globalThis.fetch;
   const requestSizes = [];
   globalThis.fetch = async (_url, init) => {
@@ -138,22 +138,23 @@ test("artist batch lookup stays within the API batch limit", async (t) => {
   }
 });
 
-test("artist adds publish an immediate shared library lookup", async (t) => {
-  const vite = await startFrontendServer();
-  t.after(() => vite.close());
+test("artist adds publish an immediate shared library lookup", async () => {
+  vi.resetModules();
 
-  const { addArtistToLibrary } = await vite.ssrLoadModule(
-    "/src/utils/api/endpoints/library.js?artist-add-lookup-test",
-  );
-  const { queryClient, queryKeys } = await vite.ssrLoadModule("/src/queryClient.js");
+  const { addArtistToLibrary } = await import("../../frontend/src/utils/api/endpoints/library.js");
+  const { queryClient, queryKeys } = await import("../../frontend/src/queryClient.js");
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    foreignArtistId: "artist-1",
-    artist: { mbid: "artist-1", artistName: "Artist" },
-  }), {
-    status: 201,
-    headers: { "content-type": "application/json" },
-  });
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        foreignArtistId: "artist-1",
+        artist: { mbid: "artist-1", artistName: "Artist" },
+      }),
+      {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      },
+    );
 
   try {
     await addArtistToLibrary({ foreignArtistId: "artist-1", artistName: "Artist" });
@@ -164,14 +165,12 @@ test("artist adds publish an immediate shared library lookup", async (t) => {
   }
 });
 
-test("library refresh starts a new lookup after cancelling an active request", async (t) => {
-  const vite = await startFrontendServer();
-  t.after(() => vite.close());
+test("library refresh starts a new lookup after cancelling an active request", async () => {
+  vi.resetModules();
 
-  const { lookupArtistInLibrary } = await vite.ssrLoadModule(
-    "/src/utils/api/endpoints/library.js?library-refresh-cancellation-test",
-  );
-  const { queryClient, queryKeys } = await vite.ssrLoadModule("/src/queryClient.js");
+  const { lookupArtistInLibrary } =
+    await import("../../frontend/src/utils/api/endpoints/library.js");
+  const { queryClient, queryKeys } = await import("../../frontend/src/queryClient.js");
   const originalFetch = globalThis.fetch;
   let requestCount = 0;
   let firstRequestSignal;
@@ -185,10 +184,12 @@ test("library refresh starts a new lookup after cancelling an active request", a
         });
       });
     }
-    return Promise.resolve(new Response(JSON.stringify({ exists: true }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
+    return Promise.resolve(
+      new Response(JSON.stringify({ exists: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
   };
 
   try {

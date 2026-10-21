@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,10 +17,12 @@ function runCallback(env) {
   globalThis.window = env;
   globalThis.location = env.location;
   globalThis.BroadcastChannel = env.BroadcastChannel;
-  globalThis.setTimeout = env.setTimeout || ((fn) => {
-    fn();
-    return 0;
-  });
+  globalThis.setTimeout =
+    env.setTimeout ||
+    ((fn) => {
+      fn();
+      return 0;
+    });
   try {
     new Function(readFileSync(callbackPath, "utf8"))();
   } finally {

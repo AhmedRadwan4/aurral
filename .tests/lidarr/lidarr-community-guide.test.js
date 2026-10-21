@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import { applyLidarrCommunityGuide } from "../../backend/services/lidarrCommunityGuide.js";
@@ -79,9 +79,7 @@ test("applies the guide with Lidarr custom-format and profile contracts", async 
   assert.equal(client.state.customFormatPayloads.length, 5);
   assert.ok(
     client.state.customFormatPayloads.every((format) =>
-      format.specifications.every((specification) =>
-        Array.isArray(specification.fields),
-      ),
+      format.specifications.every((specification) => Array.isArray(specification.fields)),
     ),
   );
   assert.deepEqual(
@@ -100,9 +98,6 @@ test("applies the guide with Lidarr custom-format and profile contracts", async 
 test("does not submit a quality profile when a guide format fails", async () => {
   const client = createClient({ failCustomFormats: true });
 
-  await assert.rejects(
-    () => applyLidarrCommunityGuide(client),
-    /Failed to apply custom formats/,
-  );
+  await assert.rejects(() => applyLidarrCommunityGuide(client), /Failed to apply custom formats/);
   assert.equal(client.state.qualityProfileCalls, 0);
 });

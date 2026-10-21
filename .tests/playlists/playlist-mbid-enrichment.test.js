@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -15,10 +15,7 @@ const [
   { downloadTracker },
   { playlistManager },
   { getPlaylistMbidEnrichmentQueue },
-  {
-    enrichStaticPlaylistMbids,
-    schedulePlaylistMbidEnrichmentForMissingPlaylists,
-  },
+  { enrichStaticPlaylistMbids, schedulePlaylistMbidEnrichmentForMissingPlaylists },
 ] = await setupIsolatedBackend(
   "playlist-mbid-enrichment",
   "backend/config/db-sqlite.js",
@@ -30,7 +27,7 @@ const [
   "backend/services/playlistMbidEnrichmentService.js",
 );
 
-test.beforeEach(() => {
+beforeEach(() => {
   downloadTracker.clearAll();
   resetDatabase(db);
   dbOps.updateSettings({
@@ -41,7 +38,7 @@ test.beforeEach(() => {
   });
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
@@ -79,8 +76,7 @@ test("enrichStaticPlaylistMbids fills missing playlist and job MBIDs", async () 
     }),
   });
 
-  const storedTrack =
-    flowPlaylistConfig.getStaticPlaylist(playlist.id)?.tracks?.[0];
+  const storedTrack = flowPlaylistConfig.getStaticPlaylist(playlist.id)?.tracks?.[0];
   const storedJob = downloadTracker.getJob(jobId);
 
   assert.equal(result.changed, true);
@@ -97,7 +93,7 @@ test("enrichStaticPlaylistMbids fills missing playlist and job MBIDs", async () 
   assert.equal(storedJob.albumTrackCount, 12);
 });
 
-test("enrichStaticPlaylistMbids rescans the library after updating a downloaded job", async (t) => {
+test("enrichStaticPlaylistMbids rescans the library after updating a downloaded job", async () => {
   const playlist = flowPlaylistConfig.createStaticPlaylist({
     name: "Downloaded",
     tracks: [{ artistName: "Refused", trackName: "New Noise" }],
@@ -107,11 +103,9 @@ test("enrichStaticPlaylistMbids rescans the library after updating a downloaded 
     playlist.id,
   );
   downloadTracker.setDone(jobId, "/library/Refused/New Noise.flac");
-  const scheduleScanLibrary = t.mock.method(
-    playlistManager,
-    "scheduleScanLibrary",
-    () => 1,
-  );
+  const scheduleScanLibrary = vi
+    .spyOn(playlistManager, "scheduleScanLibrary")
+    .mockImplementation(() => 1);
 
   await enrichStaticPlaylistMbids(playlist.id, {
     resolveTrackContext: (track) => ({
@@ -122,7 +116,7 @@ test("enrichStaticPlaylistMbids rescans the library after updating a downloaded 
     }),
   });
 
-  assert.equal(scheduleScanLibrary.mock.callCount(), 1);
+  assert.equal(scheduleScanLibrary.mock.calls.length, 1);
 });
 
 test("enrichStaticPlaylistMbids returns missing when playlistId is empty", async () => {
@@ -144,7 +138,9 @@ test("enrichStaticPlaylistMbids handles resolveTrackContext throwing by falling 
   });
 
   const result = await enrichStaticPlaylistMbids(playlist.id, {
-    resolveTrackContext: () => { throw new Error("resolve failed"); },
+    resolveTrackContext: () => {
+      throw new Error("resolve failed");
+    },
   });
 
   assert.equal(result.changed, false);
@@ -155,12 +151,14 @@ test("enrichStaticPlaylistMbids handles resolveTrackContext throwing by falling 
 test("enrichStaticPlaylistMbids leaves already-enriched tracks unchanged", async () => {
   const playlist = flowPlaylistConfig.createStaticPlaylist({
     name: "Enriched",
-    tracks: [{
-      artistName: "Radiohead",
-      trackName: "Creep",
-      artistMbid: "radiohead-mbid",
-      trackMbid: "creep-mbid",
-    }],
+    tracks: [
+      {
+        artistName: "Radiohead",
+        trackName: "Creep",
+        artistMbid: "radiohead-mbid",
+        trackMbid: "creep-mbid",
+      },
+    ],
   });
 
   const result = await enrichStaticPlaylistMbids(playlist.id, {
@@ -178,13 +176,15 @@ test("enrichStaticPlaylistMbids leaves already-enriched tracks unchanged", async
 test("enrichStaticPlaylistMbids does not re-resolve complete tracks", async () => {
   const playlist = flowPlaylistConfig.createStaticPlaylist({
     name: "Complete",
-    tracks: [{
-      artistName: "Radiohead",
-      trackName: "Creep",
-      artistMbid: "radiohead-mbid",
-      albumMbid: "pablo-honey-mbid",
-      trackMbid: "creep-mbid",
-    }],
+    tracks: [
+      {
+        artistName: "Radiohead",
+        trackName: "Creep",
+        artistMbid: "radiohead-mbid",
+        albumMbid: "pablo-honey-mbid",
+        trackMbid: "creep-mbid",
+      },
+    ],
   });
   let resolverCalls = 0;
 
@@ -202,13 +202,15 @@ test("enrichStaticPlaylistMbids does not re-resolve complete tracks", async () =
 test("enrichStaticPlaylistMbids can reconcile complete tracks once when explicitly requested", async () => {
   const playlist = flowPlaylistConfig.createStaticPlaylist({
     name: "Needs artist repair",
-    tracks: [{
-      artistName: "Radiohead",
-      trackName: "Creep",
-      artistMbid: "wrong-artist-mbid",
-      albumMbid: "pablo-honey-mbid",
-      trackMbid: "creep-mbid",
-    }],
+    tracks: [
+      {
+        artistName: "Radiohead",
+        trackName: "Creep",
+        artistMbid: "wrong-artist-mbid",
+        albumMbid: "pablo-honey-mbid",
+        trackMbid: "creep-mbid",
+      },
+    ],
   });
 
   const result = await enrichStaticPlaylistMbids(playlist.id, {
@@ -229,13 +231,15 @@ test("enrichStaticPlaylistMbids can reconcile complete tracks once when explicit
 test("startup artist reconciliation is scheduled only once", () => {
   const playlist = flowPlaylistConfig.createStaticPlaylist({
     name: "One-time artist repair",
-    tracks: [{
-      artistName: "Radiohead",
-      trackName: "Creep",
-      artistMbid: "radiohead-mbid",
-      albumMbid: "pablo-honey-mbid",
-      trackMbid: "creep-mbid",
-    }],
+    tracks: [
+      {
+        artistName: "Radiohead",
+        trackName: "Creep",
+        artistMbid: "radiohead-mbid",
+        albumMbid: "pablo-honey-mbid",
+        trackMbid: "creep-mbid",
+      },
+    ],
   });
 
   const first = schedulePlaylistMbidEnrichmentForMissingPlaylists({

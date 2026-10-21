@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
@@ -83,7 +83,9 @@ test("import sync delegates to the flow owner without blocking the web event loo
   const originalTestServer = process.env.AURRAL_TEST_SERVER;
   let resolveWorker;
   let request;
-  const workerResult = new Promise((resolve) => { resolveWorker = resolve; });
+  const workerResult = new Promise((resolve) => {
+    resolveWorker = resolve;
+  });
   configureDownloadOwnerClient({
     request: (method, args, options) => {
       request = { method, args, options };
@@ -101,9 +103,13 @@ test("import sync delegates to the flow owner without blocking the web event loo
     });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(request.method, "syncStaticPlaylistImport");
-    assert.deepEqual(request.args, [{
-      playlistId: "playlist-id", user: { id: 7, role: "admin" }, force: true,
-    }]);
+    assert.deepEqual(request.args, [
+      {
+        playlistId: "playlist-id",
+        user: { id: 7, role: "admin" },
+        force: true,
+      },
+    ]);
     assert.equal(request.options.timeoutMs, 5 * 60 * 1000);
     resolveWorker({ ok: true, result: { trackCount: 1001, tracksQueued: 1 } });
     assert.deepEqual(await sync, { trackCount: 1001, tracksQueued: 1 });
@@ -131,18 +137,18 @@ test("import sync delegates to the flow owner without blocking the web event loo
   }
 });
 
-test("mutation release unblocks every playlist and prunes after an unblock error", async (t) => {
+test("mutation release unblocks every playlist and prunes after an unblock error", async () => {
   const { beginPlaylistMutation } = await importFromRepo(
     "backend/services/downloadJobs/mutationGuards.js",
   );
   const calls = [];
-  t.mock.method(downloadWorker, "blockPlaylist", async () => true);
-  t.mock.method(downloadWorker, "waitForPlaylistIdle", async () => {});
-  t.mock.method(downloadWorker, "unblockPlaylist", async (id) => {
+  vi.spyOn(downloadWorker, "blockPlaylist").mockImplementation(async () => true);
+  vi.spyOn(downloadWorker, "waitForPlaylistIdle").mockImplementation(async () => {});
+  vi.spyOn(downloadWorker, "unblockPlaylist").mockImplementation(async (id) => {
     calls.push(`unblock:${id}`);
     if (id === "first") throw new Error("unblock failed");
   });
-  t.mock.method(downloadWorker, "pruneOrphanedJobState", async () => {
+  vi.spyOn(downloadWorker, "pruneOrphanedJobState").mockImplementation(async () => {
     calls.push("prune");
   });
 
@@ -157,14 +163,22 @@ test("flow settings locks serialize with playlist mutations", async () => {
   );
   let signalMutationEntered;
   let releaseMutation;
-  const mutationEntered = new Promise((resolve) => { signalMutationEntered = resolve; });
-  const mutationGate = new Promise((resolve) => { releaseMutation = resolve; });
+  const mutationEntered = new Promise((resolve) => {
+    signalMutationEntered = resolve;
+  });
+  const mutationGate = new Promise((resolve) => {
+    releaseMutation = resolve;
+  });
   let updateEntered = false;
   let update;
-  const mutation = withPlaylistMutation("flow-settings-lock", async () => {
-    signalMutationEntered();
-    await mutationGate;
-  }, { clearPending: false });
+  const mutation = withPlaylistMutation(
+    "flow-settings-lock",
+    async () => {
+      signalMutationEntered();
+      await mutationGate;
+    },
+    { clearPending: false },
+  );
 
   try {
     await mutationEntered;
@@ -198,7 +212,7 @@ async function writeReusableTrack(track, playlistType = "source-playlist") {
   return { jobId, sourcePath };
 }
 
-test.beforeEach(async () => {
+beforeEach(async () => {
   await resetDatabase(db);
   dbOps.updateSettings({
     integrations: {},
@@ -214,13 +228,15 @@ test.beforeEach(async () => {
   await fs.rm(downloadRoot, { recursive: true, force: true });
 });
 
-test("import enqueue logs a queued operation without claiming completion", async (t) => {
+test("import enqueue logs a queued operation without claiming completion", async () => {
   const messages = [];
-  const enqueue = t.mock.method(playlistOperationQueue, "enqueuePayload", async () => ({
-    queued: true,
-    operationId: 42,
-  }));
-  t.mock.method(logger, "info", (_category, message, details) => {
+  const enqueue = vi
+    .spyOn(playlistOperationQueue, "enqueuePayload")
+    .mockImplementation(async () => ({
+      queued: true,
+      operationId: 42,
+    }));
+  vi.spyOn(logger, "info").mockImplementation((_category, message, details) => {
     messages.push({ message, details });
   });
 
@@ -234,9 +250,12 @@ test("import enqueue logs a queued operation without claiming completion", async
     syncEnabled: false,
   });
 
-  assert.equal(enqueue.mock.callCount(), 1);
+  assert.equal(enqueue.mock.calls.length, 1);
   assert.equal(result.queued, true);
-  assert.deepEqual(messages.map((entry) => entry.message), ["Playlist import queued"]);
+  assert.deepEqual(
+    messages.map((entry) => entry.message),
+    ["Playlist import queued"],
+  );
   assert.equal(messages[0].details.provider, "spotify-playlist");
   assert.equal(messages[0].details.playlistName, "Imported Mix");
   assert.equal(messages[0].details.operationId, 42);
@@ -249,15 +268,15 @@ test("import enqueue logs a queued operation without claiming completion", async
 const waitForImportLog = async (mock, message) => {
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    const call = mock.mock.calls.find((entry) => entry.arguments[1] === message);
-    if (call) return call.arguments[2];
+    const call = mock.mock.calls.find((entry) => entry[1] === message);
+    if (call) return call[2];
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for ${message}`);
 };
 
-test("background import logs completion only after the playlist exists", async (t) => {
-  const info = t.mock.method(logger, "info", () => {});
+test("background import logs completion only after the playlist exists", async () => {
+  const info = vi.spyOn(logger, "info").mockImplementation(() => {});
   const { stopPlaylistOperationWorker } = await importFromRepo(
     "backend/services/playlists/playlistOperationWorker.js",
   );
@@ -271,10 +290,9 @@ test("background import logs completion only after the playlist exists", async (
       syncEnabled: false,
     });
     const completed = await waitForImportLog(info, "Playlist import job completed");
-    const started = info.mock.calls.find((call) =>
-      call.arguments[1] === "Playlist import job started");
+    const started = info.mock.calls.find((call) => call[1] === "Playlist import job started");
     assert.ok(started);
-    assert.equal(started.arguments[2].operationId, completed.operationId);
+    assert.equal(started[2].operationId, completed.operationId);
     assert.equal(completed.provider, "spotify-playlist");
     assert.equal(completed.playlistName, "Completed Import");
     assert.ok(flowPlaylistConfig.getStaticPlaylist(completed.playlistId));
@@ -285,8 +303,8 @@ test("background import logs completion only after the playlist exists", async (
   }
 });
 
-test("background import logs a permanent failure with its reason", async (t) => {
-  const errors = t.mock.method(logger, "error", () => {});
+test("background import logs a permanent failure with its reason", async () => {
+  const errors = vi.spyOn(logger, "error").mockImplementation(() => {});
   const { stopPlaylistOperationWorker } = await importFromRepo(
     "backend/services/playlists/playlistOperationWorker.js",
   );
@@ -313,7 +331,7 @@ test("background import logs a permanent failure with its reason", async (t) => 
   }
 });
 
-test("external import routes log fetch failures with the provider reason", async (t) => {
+test("external import routes log fetch failures with the provider reason", async () => {
   const [spotifyRoutes, listenbrainzRoutes, lastfmRoutes] = await Promise.all([
     importFromRepo("backend/routes/playlists/handlers/spotifyImport.js"),
     importFromRepo("backend/routes/playlists/handlers/listenbrainzImport.js"),
@@ -323,70 +341,103 @@ test("external import routes log fetch failures with the provider reason", async
   const router = {
     get() {},
     delete() {},
-    post(route, handler) { handlers.set(route, handler); },
+    post(route, handler) {
+      handlers.set(route, handler);
+    },
   };
   spotifyRoutes.registerSpotifyImport(router);
   listenbrainzRoutes.registerListenBrainzImport(router);
   lastfmRoutes.registerLastfmImport(router);
-  const failures = t.mock.method(logger, "error", () => {});
+  const failures = vi.spyOn(logger, "error").mockImplementation(() => {});
   const providers = [
     ["/import/spotify", spotifyClient, "listPlaylistTracks", "Spotify timed out"],
-    ["/import/listenbrainz", listenbrainzPlaylistClient, "getPlaylistTracks", "ListenBrainz timed out"],
+    [
+      "/import/listenbrainz",
+      listenbrainzPlaylistClient,
+      "getPlaylistTracks",
+      "ListenBrainz timed out",
+    ],
     ["/import/lastfm", lastfmStationClient, "getStationTracks", "Last.fm timed out"],
   ];
 
   for (const [route, client, method, reason] of providers) {
-    t.mock.method(client, method, async () => { throw new Error(reason); });
+    vi.spyOn(client, method).mockImplementation(async () => {
+      throw new Error(reason);
+    });
     const response = {
       statusCode: 200,
-      status(code) { this.statusCode = code; return this; },
-      json(body) { this.body = body; return this; },
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body) {
+        this.body = body;
+        return this;
+      },
     };
-    await handlers.get(route)({
-      user: { id: 7 },
-      body: { playlistId: "external-playlist", name: "Test Mix", username: "listener" },
-    }, response);
+    await handlers.get(route)(
+      {
+        user: { id: 7 },
+        body: { playlistId: "external-playlist", name: "Test Mix", username: "listener" },
+      },
+      response,
+    );
     assert.equal(response.statusCode, 500);
     const logged = failures.mock.calls.at(-1);
-    assert.equal(logged?.arguments[2]?.playlistName, "Test Mix");
-    assert.equal(logged?.arguments[2]?.stage, "fetch");
-    assert.equal(logged?.arguments[2]?.reason, reason);
+    assert.equal(logged?.[2]?.playlistName, "Test Mix");
+    assert.equal(logged?.[2]?.stage, "fetch");
+    assert.equal(logged?.[2]?.reason, reason);
   }
 });
 
-test("YouTube Music preview and import trust the refetched source title", async (t) => {
+test("YouTube Music preview and import trust the refetched source title", async () => {
   const { registerYoutubeMusicImport } = await importFromRepo(
     "backend/routes/playlists/handlers/youtubeMusicImport.js",
   );
   const handlers = new Map();
   registerYoutubeMusicImport({
-    post(route, handler) { handlers.set(route, handler); },
+    post(route, handler) {
+      handlers.set(route, handler);
+    },
   });
-  const getPlaylist = t.mock.method(youtubeMusicPlaylistClient, "getPlaylist", async () => ({
-    id: "PLabcdefghij_123",
-    name: "Refetched source title",
-    tracks: [
-      { artistName: "Artist A", trackName: "Track A", albumName: "Album A" },
-      { artistName: "Artist B", trackName: "Track B", albumName: null },
-    ],
-    stats: { sourceItems: 3, unavailable: 1, podcast: 0, incomplete: 0, duplicate: 0 },
-    excluded: [{ position: 3, reason: "unavailable" }],
-  }));
-  const enqueue = t.mock.method(playlistOperationQueue, "enqueuePayload", async () => ({
-    queued: true,
-    operationId: 71,
-  }));
+  const getPlaylist = vi
+    .spyOn(youtubeMusicPlaylistClient, "getPlaylist")
+    .mockImplementation(async () => ({
+      id: "PLabcdefghij_123",
+      name: "Refetched source title",
+      tracks: [
+        { artistName: "Artist A", trackName: "Track A", albumName: "Album A" },
+        { artistName: "Artist B", trackName: "Track B", albumName: null },
+      ],
+      stats: { sourceItems: 3, unavailable: 1, podcast: 0, incomplete: 0, duplicate: 0 },
+      excluded: [{ position: 3, reason: "unavailable" }],
+    }));
+  const enqueue = vi
+    .spyOn(playlistOperationQueue, "enqueuePayload")
+    .mockImplementation(async () => ({
+      queued: true,
+      operationId: 71,
+    }));
   const response = () => ({
     statusCode: 200,
-    status(code) { this.statusCode = code; return this; },
-    json(body) { this.body = body; return this; },
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return this;
+    },
   });
 
   const previewResponse = response();
-  await handlers.get("/import/youtube-music/preview")({
-    user: { id: 7 },
-    body: { url: "https://music.youtube.com/playlist?list=PLabcdefghij_123" },
-  }, previewResponse);
+  await handlers.get("/import/youtube-music/preview")(
+    {
+      user: { id: 7 },
+      body: { url: "https://music.youtube.com/playlist?list=PLabcdefghij_123" },
+    },
+    previewResponse,
+  );
   assert.equal(previewResponse.statusCode, 200);
   assert.deepEqual(previewResponse.body, {
     playlist: { id: "PLabcdefghij_123", name: "Refetched source title" },
@@ -399,21 +450,24 @@ test("YouTube Music preview and import trust the refetched source title", async 
   });
 
   const importResponse = response();
-  await handlers.get("/import/youtube-music")({
-    user: { id: 7 },
-    body: {
-      playlistId: "PLabcdefghij_123",
-      name: "My imported mix",
-      externalName: "Spoofed client title",
-      syncEnabled: true,
-      syncIntervalHours: 12,
-      keepRemovedTracks: false,
+  await handlers.get("/import/youtube-music")(
+    {
+      user: { id: 7 },
+      body: {
+        playlistId: "PLabcdefghij_123",
+        name: "My imported mix",
+        externalName: "Spoofed client title",
+        syncEnabled: true,
+        syncIntervalHours: 12,
+        keepRemovedTracks: false,
+      },
     },
-  }, importResponse);
+    importResponse,
+  );
   assert.equal(importResponse.statusCode, 200);
-  assert.equal(getPlaylist.mock.callCount(), 2);
-  assert.equal(enqueue.mock.callCount(), 1);
-  const queued = enqueue.mock.calls[0].arguments[0];
+  assert.equal(getPlaylist.mock.calls.length, 2);
+  assert.equal(enqueue.mock.calls.length, 1);
+  const queued = enqueue.mock.calls[0][0];
   assert.equal(queued.importSource.provider, "youtube-music-playlist");
   assert.equal(queued.importSource.externalId, "PLabcdefghij_123");
   assert.equal(queued.importSource.externalName, "Refetched source title");
@@ -423,44 +477,62 @@ test("YouTube Music preview and import trust the refetched source title", async 
   assert.equal(JSON.stringify(queued).includes("Spoofed client title"), false);
 
   const invalidIntervalResponse = response();
-  await handlers.get("/import/youtube-music")({
-    user: { id: 7 },
-    body: {
-      playlistId: "PLabcdefghij_123",
-      name: "Invalid schedule",
-      syncIntervalHours: "not-a-number",
+  await handlers.get("/import/youtube-music")(
+    {
+      user: { id: 7 },
+      body: {
+        playlistId: "PLabcdefghij_123",
+        name: "Invalid schedule",
+        syncIntervalHours: "not-a-number",
+      },
     },
-  }, invalidIntervalResponse);
+    invalidIntervalResponse,
+  );
   assert.equal(invalidIntervalResponse.statusCode, 400);
-  assert.deepEqual(invalidIntervalResponse.body, { error: "syncIntervalHours must be zero or greater" });
-  assert.equal(getPlaylist.mock.callCount(), 2);
-  assert.equal(enqueue.mock.callCount(), 1);
+  assert.deepEqual(invalidIntervalResponse.body, {
+    error: "syncIntervalHours must be zero or greater",
+  });
+  assert.equal(getPlaylist.mock.calls.length, 2);
+  assert.equal(enqueue.mock.calls.length, 1);
 });
 
-test("YouTube Music route maps provider failures without logging submitted references", async (t) => {
+test("YouTube Music route maps provider failures without logging submitted references", async () => {
   const { registerYoutubeMusicImport } = await importFromRepo(
     "backend/routes/playlists/handlers/youtubeMusicImport.js",
   );
   const handlers = new Map();
   registerYoutubeMusicImport({
-    post(route, handler) { handlers.set(route, handler); },
+    post(route, handler) {
+      handlers.set(route, handler);
+    },
   });
   const error = new Error("YouTube Music took too long to respond");
   error.code = "YOUTUBE_PLAYLIST_TIMEOUT";
   error.statusCode = 504;
-  t.mock.method(youtubeMusicPlaylistClient, "getPlaylist", async () => { throw error; });
-  const warnings = t.mock.method(logger, "warn", () => {});
-  const failures = t.mock.method(logger, "error", () => {});
+  vi.spyOn(youtubeMusicPlaylistClient, "getPlaylist").mockImplementation(async () => {
+    throw error;
+  });
+  const warnings = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  const failures = vi.spyOn(logger, "error").mockImplementation(() => {});
   const response = {
     statusCode: 200,
-    status(code) { this.statusCode = code; return this; },
-    json(body) { this.body = body; return this; },
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(body) {
+      this.body = body;
+      return this;
+    },
   };
 
-  await handlers.get("/import/youtube-music/preview")({
-    user: { id: 7 },
-    body: { url: "https://music.youtube.com/playlist?list=PLsecretUnlisted_123" },
-  }, response);
+  await handlers.get("/import/youtube-music/preview")(
+    {
+      user: { id: 7 },
+      body: { url: "https://music.youtube.com/playlist?list=PLsecretUnlisted_123" },
+    },
+    response,
+  );
 
   assert.equal(response.statusCode, 504);
   assert.deepEqual(response.body, {
@@ -473,7 +545,7 @@ test("YouTube Music route maps provider failures without logging submitted refer
   assert.equal(logs.includes("music.youtube.com/playlist"), false);
 });
 
-test.after(async () => {
+afterAll(async () => {
   downloadWorker.stop();
   await cleanupIsolatedState(isolatedState);
 });
@@ -648,8 +720,12 @@ test("a failed flow plan leaves the current playlist and jobs untouched", async 
     });
     flowPlaylistConfig.setEnabled(flow.id, true);
     const jobId = downloadTracker.addJob({ artistName: "Artist", trackName: "Track" }, flow.id);
-    flowTrackSource.buildFlowRunPlan = async () => { throw new Error("Planning unavailable"); };
-    playlistManager.weeklyReset = async () => { resets += 1; };
+    flowTrackSource.buildFlowRunPlan = async () => {
+      throw new Error("Planning unavailable");
+    };
+    playlistManager.weeklyReset = async () => {
+      resets += 1;
+    };
 
     await assert.rejects(
       processPlaylistOperation({ kind: "scheduled-flow-refresh", flowId: flow.id }),
@@ -668,8 +744,12 @@ test("a stale flow plan does not cancel jobs when settings change during plannin
   const originalBuildPlan = flowTrackSource.buildFlowRunPlan;
   let signalPlanning;
   let resolvePlan;
-  const planningStarted = new Promise((resolve) => { signalPlanning = resolve; });
-  const deferredPlan = new Promise((resolve) => { resolvePlan = resolve; });
+  const planningStarted = new Promise((resolve) => {
+    signalPlanning = resolve;
+  });
+  const deferredPlan = new Promise((resolve) => {
+    resolvePlan = resolve;
+  });
   try {
     dbOps.updateSettings({
       ...dbOps.getSettings(),
@@ -717,7 +797,6 @@ test("a stale flow plan does not cancel jobs when settings change during plannin
   }
 });
 
-
 test("a queued flow stops before mutation when its owner becomes suspended", async () => {
   const originalBuildPlan = flowTrackSource.buildFlowRunPlan;
   const originalReset = playlistManager.weeklyReset;
@@ -747,7 +826,9 @@ test("a queued flow stops before mutation when its owner becomes suspended", asy
         diagnostics: { targets: { primary: 0 }, achieved: { primary: 0, reserve: 0 } },
       };
     };
-    playlistManager.weeklyReset = async () => { resets += 1; };
+    playlistManager.weeklyReset = async () => {
+      resets += 1;
+    };
 
     const result = await processPlaylistOperation({
       kind: "scheduled-flow-refresh",
@@ -804,14 +885,9 @@ test("download pipeline work is deferred while its playlist owner is suspended",
     scheduleDays: [1],
     ownerUserId: owner.id,
   });
-  const jobId = downloadTracker.addJob(
-    { artistName: "Artist", trackName: "Track" },
-    flow.id,
-  );
+  const jobId = downloadTracker.addJob({ artistName: "Artist", trackName: "Track" }, flow.id);
   userOps.updateUser(owner.id, { status: "suspended" });
-  const { processPipelinePayload } = await importFromRepo(
-    "backend/services/downloadPipeline.js",
-  );
+  const { processPipelinePayload } = await importFromRepo("backend/services/downloadPipeline.js");
 
   const payload = { phase: "search", source: "slskd", jobId };
   assert.deepEqual(await processPipelinePayload(payload), {
@@ -1013,11 +1089,15 @@ test("imported playlist sync preserves enriched jobs while replacing removed tra
   downloadWorker.start = async () => false;
   try {
     const pending = {
-      artistName: "Artist", trackName: "Pending", albumName: "Album",
+      artistName: "Artist",
+      trackName: "Pending",
+      albumName: "Album",
       artistMbid: "11111111-1111-1111-1111-111111111111",
     };
     const completed = {
-      artistName: "Artist", trackName: "Completed", albumName: "Album",
+      artistName: "Artist",
+      trackName: "Completed",
+      albumName: "Album",
       albumMbid: "22222222-2222-2222-2222-222222222222",
     };
     const removed = { artistName: "Artist", trackName: "Removed", albumName: "Album" };
@@ -1062,18 +1142,19 @@ test("imported playlist sync preserves enriched jobs while replacing removed tra
     assert.equal(downloadTracker.getJob(completedJobId)?.status, "done");
     await fs.access(completedPath);
     assert.equal(downloadTracker.getJob(removedJobId), null);
-    assert.ok(downloadTracker.getByPlaylistType(playlist.id).some((job) => job.trackName === "New"));
+    assert.ok(
+      downloadTracker.getByPlaylistType(playlist.id).some((job) => job.trackName === "New"),
+    );
   } finally {
     downloadWorker.start = originalStart;
     downloadWorker.stop();
   }
 });
 
-test("ListenBrainz sync uses the shared import update path", async (t) => {
+test("ListenBrainz sync uses the shared import update path", async () => {
   const originalStart = downloadWorker.start;
-  const originalGetGeneratedPlaylistTracks =
-    listenbrainzPlaylistClient.getGeneratedPlaylistTracks;
-  const info = t.mock.method(logger, "info", () => {});
+  const originalGetGeneratedPlaylistTracks = listenbrainzPlaylistClient.getGeneratedPlaylistTracks;
+  const info = vi.spyOn(logger, "info").mockImplementation(() => {});
   downloadWorker.start = async () => false;
   try {
     const playlist = flowPlaylistConfig.createStaticPlaylist({
@@ -1089,7 +1170,15 @@ test("ListenBrainz sync uses the shared import update path", async (t) => {
     });
     const releaseMbid = "6d2e1b50-3a4c-4e5f-8a6b-7c8d9e0f1a2b";
     listenbrainzPlaylistClient.getGeneratedPlaylistTracks = async () => ({
-      tracks: [{ artistName: "New Artist", trackName: "New Song", releaseMbid, trackNumber: 3, discNumber: 2 }],
+      tracks: [
+        {
+          artistName: "New Artist",
+          trackName: "New Song",
+          releaseMbid,
+          trackNumber: 3,
+          discNumber: 2,
+        },
+      ],
       stats: { incomplete: 0, duplicate: 0 },
     });
 
@@ -1102,34 +1191,39 @@ test("ListenBrainz sync uses the shared import update path", async (t) => {
     const syncedTracks = flowPlaylistConfig.getStaticPlaylist(playlist.id).tracks;
     assert.ok(syncedTracks[0].membershipId);
     assert.notEqual(syncedTracks[0].membershipId, playlist.tracks[0].membershipId);
-    assert.deepEqual(syncedTracks.map(({ membershipId: _membershipId, ...track }) => track), [
-      {
-        artistName: "New Artist",
-        trackName: "New Song",
-        albumName: null,
-        artistMbid: null,
-        albumMbid: null,
-        trackMbid: null,
-        releaseYear: null,
-        durationMs: null,
-        artistAliases: [],
-        reason: null,
-        releaseMbid,
-        trackNumber: 3,
-        discNumber: 2,
-      },
-    ]);
     assert.deepEqual(
-      db.prepare("SELECT track_name, release_mbid, track_number, disc_number FROM playlist_download_jobs WHERE playlist_type = ?")
+      syncedTracks.map(({ membershipId: _membershipId, ...track }) => track),
+      [
+        {
+          artistName: "New Artist",
+          trackName: "New Song",
+          albumName: null,
+          artistMbid: null,
+          albumMbid: null,
+          trackMbid: null,
+          releaseYear: null,
+          durationMs: null,
+          artistAliases: [],
+          reason: null,
+          releaseMbid,
+          trackNumber: 3,
+          discNumber: 2,
+        },
+      ],
+    );
+    assert.deepEqual(
+      db
+        .prepare(
+          "SELECT track_name, release_mbid, track_number, disc_number FROM playlist_download_jobs WHERE playlist_type = ?",
+        )
         .all(playlist.id),
       [{ track_name: "New Song", release_mbid: releaseMbid, track_number: 3, disc_number: 2 }],
     );
-    const completed = info.mock.calls.find((call) =>
-      call.arguments[1] === "Playlist import sync completed");
-    assert.equal(completed?.arguments[2]?.playlistId, playlist.id);
-    assert.equal(completed?.arguments[2]?.playlistTrackCount, 1);
-    assert.equal(completed?.arguments[2]?.tracksAdded, 1);
-    assert.equal(completed?.arguments[2]?.tracksRemoved, 1);
+    const completed = info.mock.calls.find((call) => call[1] === "Playlist import sync completed");
+    assert.equal(completed?.[2]?.playlistId, playlist.id);
+    assert.equal(completed?.[2]?.playlistTrackCount, 1);
+    assert.equal(completed?.[2]?.tracksAdded, 1);
+    assert.equal(completed?.[2]?.tracksRemoved, 1);
   } finally {
     listenbrainzPlaylistClient.getGeneratedPlaylistTracks = originalGetGeneratedPlaylistTracks;
     downloadWorker.start = originalStart;
@@ -1137,16 +1231,18 @@ test("ListenBrainz sync uses the shared import update path", async (t) => {
   }
 });
 
-test("YouTube Music sync uses the shared import path without logging its external ID", async (t) => {
+test("YouTube Music sync uses the shared import path without logging its external ID", async () => {
   const originalStart = downloadWorker.start;
-  const info = t.mock.method(logger, "info", () => {});
-  const getPlaylist = t.mock.method(youtubeMusicPlaylistClient, "getPlaylist", async () => ({
-    id: "PLsecretUnlisted_123",
-    name: "Source title",
-    tracks: [{ artistName: "New Artist", trackName: "New Song", durationMs: 180_000 }],
-    stats: { sourceItems: 1, unavailable: 0, podcast: 0, incomplete: 0, duplicate: 0 },
-    excluded: [],
-  }));
+  const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+  const getPlaylist = vi
+    .spyOn(youtubeMusicPlaylistClient, "getPlaylist")
+    .mockImplementation(async () => ({
+      id: "PLsecretUnlisted_123",
+      name: "Source title",
+      tracks: [{ artistName: "New Artist", trackName: "New Song", durationMs: 180_000 }],
+      stats: { sourceItems: 1, unavailable: 0, podcast: 0, incomplete: 0, duplicate: 0 },
+      excluded: [],
+    }));
   downloadWorker.start = async () => false;
   try {
     const playlist = flowPlaylistConfig.createStaticPlaylist({
@@ -1168,11 +1264,8 @@ test("YouTube Music sync uses the shared import path without logging its externa
       force: true,
     });
 
-    assert.equal(getPlaylist.mock.callCount(), 1);
-    assert.deepEqual(getPlaylist.mock.calls[0].arguments, [
-      "PLsecretUnlisted_123",
-      { forceRefresh: true },
-    ]);
+    assert.equal(getPlaylist.mock.calls.length, 1);
+    assert.deepEqual(getPlaylist.mock.calls[0], ["PLsecretUnlisted_123", { forceRefresh: true }]);
     assert.equal(result.trackCount, 1);
     assert.equal(flowPlaylistConfig.getStaticPlaylist(playlist.id).tracks[0].trackName, "New Song");
     assert.equal(JSON.stringify(info.mock.calls).includes("PLsecretUnlisted_123"), false);
@@ -1182,10 +1275,10 @@ test("YouTube Music sync uses the shared import path without logging its externa
   }
 });
 
-test("Spotify sync logs replacement tracks and excluded entries separately from download jobs", async (t) => {
+test("Spotify sync logs replacement tracks and excluded entries separately from download jobs", async () => {
   const originalStart = downloadWorker.start;
   const originalListPlaylistTracks = spotifyClient.listPlaylistTracks;
-  const info = t.mock.method(logger, "info", () => {});
+  const info = vi.spyOn(logger, "info").mockImplementation(() => {});
   downloadWorker.start = async () => false;
   try {
     const keep = { artistName: "Artist", trackName: "Keep", albumName: "Album" };
@@ -1216,16 +1309,15 @@ test("Spotify sync logs replacement tracks and excluded entries separately from 
     assert.equal(result.trackCount, 2);
     assert.equal(result.tracksQueued, 2);
     assert.equal(flowPlaylistConfig.getStaticPlaylist(playlist.id).trackCount, 2);
-    const completed = info.mock.calls.find((call) =>
-      call.arguments[1] === "Playlist import sync completed");
-    assert.equal(completed?.arguments[2]?.previousTrackCount, 2);
-    assert.equal(completed?.arguments[2]?.sourceEntryCount, 3);
-    assert.equal(completed?.arguments[2]?.acceptedTrackCount, 2);
-    assert.equal(completed?.arguments[2]?.playlistTrackCount, 2);
-    assert.equal(completed?.arguments[2]?.tracksAdded, 1);
-    assert.equal(completed?.arguments[2]?.tracksRemoved, 1);
-    assert.equal(completed?.arguments[2]?.acceptedNotStoredCount, 0);
-    assert.equal(completed?.arguments[2]?.sourceSkipped.unavailable, 1);
+    const completed = info.mock.calls.find((call) => call[1] === "Playlist import sync completed");
+    assert.equal(completed?.[2]?.previousTrackCount, 2);
+    assert.equal(completed?.[2]?.sourceEntryCount, 3);
+    assert.equal(completed?.[2]?.acceptedTrackCount, 2);
+    assert.equal(completed?.[2]?.playlistTrackCount, 2);
+    assert.equal(completed?.[2]?.tracksAdded, 1);
+    assert.equal(completed?.[2]?.tracksRemoved, 1);
+    assert.equal(completed?.[2]?.acceptedNotStoredCount, 0);
+    assert.equal(completed?.[2]?.sourceSkipped.unavailable, 1);
   } finally {
     spotifyClient.listPlaylistTracks = originalListPlaylistTracks;
     downloadWorker.start = originalStart;
@@ -1233,13 +1325,11 @@ test("Spotify sync logs replacement tracks and excluded entries separately from 
   }
 });
 
-test("Spotify sync identifies source tracks dropped before playlist storage", async (t) => {
+test("Spotify sync identifies source tracks dropped before playlist storage", async () => {
   const originalStart = downloadWorker.start;
   const originalListPlaylistTracks = spotifyClient.listPlaylistTracks;
-  const { addDiscoveryFeedback } = await importFromRepo(
-    "backend/services/discovery/feedback.js",
-  );
-  const info = t.mock.method(logger, "info", () => {});
+  const { addDiscoveryFeedback } = await importFromRepo("backend/services/discovery/feedback.js");
+  const info = vi.spyOn(logger, "info").mockImplementation(() => {});
   downloadWorker.start = async () => false;
   try {
     addDiscoveryFeedback("7", { artistName: "Blocked Artist", action: "block_artist" });
@@ -1266,12 +1356,11 @@ test("Spotify sync identifies source tracks dropped before playlist storage", as
     });
 
     assert.equal(result.trackCount, 2);
-    const completed = info.mock.calls.find((call) =>
-      call.arguments[1] === "Playlist import sync completed");
-    assert.equal(completed?.arguments[2]?.sourceEntryCount, 2);
-    assert.equal(completed?.arguments[2]?.acceptedTrackCount, 2);
-    assert.equal(completed?.arguments[2]?.acceptedNotStoredCount, 1);
-    assert.equal(completed?.arguments[2]?.playlistTrackCount, 1);
+    const completed = info.mock.calls.find((call) => call[1] === "Playlist import sync completed");
+    assert.equal(completed?.[2]?.sourceEntryCount, 2);
+    assert.equal(completed?.[2]?.acceptedTrackCount, 2);
+    assert.equal(completed?.[2]?.acceptedNotStoredCount, 1);
+    assert.equal(completed?.[2]?.playlistTrackCount, 1);
   } finally {
     spotifyClient.listPlaylistTracks = originalListPlaylistTracks;
     downloadWorker.start = originalStart;
@@ -1279,10 +1368,9 @@ test("Spotify sync identifies source tracks dropped before playlist storage", as
   }
 });
 
-test("failed import sync logs the reason and preserves it on the playlist", async (t) => {
-  const originalGetGeneratedPlaylistTracks =
-    listenbrainzPlaylistClient.getGeneratedPlaylistTracks;
-  const errors = t.mock.method(logger, "error", () => {});
+test("failed import sync logs the reason and preserves it on the playlist", async () => {
+  const originalGetGeneratedPlaylistTracks = listenbrainzPlaylistClient.getGeneratedPlaylistTracks;
+  const errors = vi.spyOn(logger, "error").mockImplementation(() => {});
   try {
     const playlist = flowPlaylistConfig.createStaticPlaylist({
       name: "Unavailable Mix",
@@ -1304,10 +1392,9 @@ test("failed import sync logs the reason and preserves it on the playlist", asyn
       /ListenBrainz request timed out/,
     );
 
-    const failed = errors.mock.calls.find((call) =>
-      call.arguments[1] === "Playlist import sync failed");
-    assert.equal(failed?.arguments[2]?.playlistId, playlist.id);
-    assert.equal(failed?.arguments[2]?.reason, "ListenBrainz request timed out");
+    const failed = errors.mock.calls.find((call) => call[1] === "Playlist import sync failed");
+    assert.equal(failed?.[2]?.playlistId, playlist.id);
+    assert.equal(failed?.[2]?.reason, "ListenBrainz request timed out");
     assert.equal(
       flowPlaylistConfig.getStaticPlaylist(playlist.id).importSource.lastSyncError,
       "ListenBrainz request timed out",
@@ -1518,12 +1605,19 @@ test("Spotify status asks the owner to reconnect only when synced imports lost t
   );
   const handlers = new Map();
   spotifyRoutes.registerSpotifyImport({
-    get(route, handler) { handlers.set(route, handler); },
+    get(route, handler) {
+      handlers.set(route, handler);
+    },
     post() {},
     delete() {},
   });
   const statusFor = (userId) => {
-    const response = { json(body) { this.body = body; return this; } };
+    const response = {
+      json(body) {
+        this.body = body;
+        return this;
+      },
+    };
     handlers.get("/import/spotify/status")({ user: { id: userId } }, response);
     return response.body;
   };
@@ -1543,10 +1637,7 @@ test("Spotify status asks the owner to reconnect only when synced imports lost t
     assert.equal(statusFor(42).reconnectRequired, false);
 
     spotifyConnectionStore.saveConnection(41, { accessToken: "access", refreshToken: "refresh" });
-    assert.deepEqual(
-      [statusFor(41).connected, statusFor(41).reconnectRequired],
-      [true, false],
-    );
+    assert.deepEqual([statusFor(41).connected, statusFor(41).reconnectRequired], [true, false]);
   } finally {
     spotifyConnectionStore.clearConnection(41);
     flowPlaylistConfig.deleteStaticPlaylist(playlist.id);

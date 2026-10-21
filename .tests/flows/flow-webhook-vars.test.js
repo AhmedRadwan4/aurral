@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import path from "node:path";
@@ -27,7 +27,7 @@ const [
   "backend/services/playlists/playlistManager.js",
 );
 
-test.beforeEach(() => {
+beforeEach(() => {
   downloadTracker.clearAll();
   resetDatabase(db);
   dbOps.updateSettings({
@@ -38,7 +38,7 @@ test.beforeEach(() => {
   });
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
@@ -47,10 +47,7 @@ test("flow completion sends display name and track library path", async () => {
     name: "Late Night",
     tracks: [{ artistName: "Artist", trackName: "Track" }],
   });
-  const jobId = downloadTracker.addJob(
-    { artistName: "Artist", trackName: "Track" },
-    playlist.id,
-  );
+  const jobId = downloadTracker.addJob({ artistName: "Artist", trackName: "Track" }, playlist.id);
   downloadTracker.setDone(jobId, path.join(process.env.WEEKLY_FLOW_FOLDER, "track.mp3"));
 
   const requests = [];

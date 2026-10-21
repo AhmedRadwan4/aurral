@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeAll, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import http from "node:http";
 
@@ -52,16 +52,14 @@ async function startFakeLidarr() {
 
     if (
       req.method === "GET" &&
-      (url.pathname === "/api/v1/qualityprofile" ||
-        url.pathname === "/api/qualityprofile")
+      (url.pathname === "/api/v1/qualityprofile" || url.pathname === "/api/qualityprofile")
     ) {
       return json(res, 200, [{ id: 1, name: "Aurral - HQ" }]);
     }
 
     if (
       req.method === "GET" &&
-      (url.pathname === "/api/v1/metadataprofile" ||
-        url.pathname === "/api/metadataprofile")
+      (url.pathname === "/api/v1/metadataprofile" || url.pathname === "/api/metadataprofile")
     ) {
       return json(res, 200, [{ id: 2, name: "Aurral - Standard" }]);
     }
@@ -88,7 +86,7 @@ async function startFakeLidarr() {
 let server = null;
 let fakeLidarr = null;
 
-test.before(async () => {
+beforeAll(async () => {
   resetDatabase(db);
   dbOps.updateSettings({
     integrations: {},
@@ -98,21 +96,18 @@ test.before(async () => {
   server = await startServerProcess();
 });
 
-test.after(async () => {
+afterAll(async () => {
   await server?.stop();
   await fakeLidarr?.stop();
   await cleanupIsolatedState(isolatedState);
 });
 
 test("POST /api/onboarding/lidarr/test uses supplied credentials before onboarding is complete", async () => {
-  const response = await fetch(
-    `http://127.0.0.1:${server.port}/api/onboarding/lidarr/test`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: fakeLidarr.url, apiKey: "fake-key" }),
-    },
-  );
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/onboarding/lidarr/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: fakeLidarr.url, apiKey: "fake-key" }),
+  });
   const payload = await response.json();
 
   assert.equal(response.status, 200, JSON.stringify(payload));
@@ -125,14 +120,11 @@ test("POST /api/onboarding/lidarr/test uses supplied credentials before onboardi
 });
 
 test("POST /api/onboarding/lidarr/profiles uses supplied credentials before onboarding is complete", async () => {
-  const response = await fetch(
-    `http://127.0.0.1:${server.port}/api/onboarding/lidarr/profiles`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: fakeLidarr.url, apiKey: "fake-key" }),
-    },
-  );
+  const response = await fetch(`http://127.0.0.1:${server.port}/api/onboarding/lidarr/profiles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: fakeLidarr.url, apiKey: "fake-key" }),
+  });
   const payload = await response.json();
 
   assert.equal(response.status, 200, JSON.stringify(payload));

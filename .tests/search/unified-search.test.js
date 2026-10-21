@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -57,7 +57,10 @@ test("searchLocalFromData does not let duplicate artist projections consume resu
     2,
   );
 
-  assert.deepEqual(result.artists.map((artist) => artist.name), ["Artist One", "Artist Two"]);
+  assert.deepEqual(
+    result.artists.map((artist) => artist.name),
+    ["Artist One", "Artist Two"],
+  );
 });
 
 test("searchLocalFromData ignores library artists that only share article words", () => {
@@ -303,4 +306,3 @@ test("applyCatalogSearchContext preserves artist bucket order", () => {
   assert.equal(catalog.artists[0].name, "The Used");
   assert.equal(catalog.tracks[0].title, "The Band the Used");
 });
-

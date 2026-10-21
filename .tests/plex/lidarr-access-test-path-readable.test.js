@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeAll, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
@@ -8,11 +8,11 @@ import { pathIsReadable } from "../../backend/services/lidarrLibraryAccessTest.j
 
 let tempDir;
 
-test.before(async () => {
+beforeAll(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "aurral-path-readable-"));
 });
 
-test.after(async () => {
+afterAll(async () => {
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
@@ -34,9 +34,7 @@ test("pathIsReadable falls back to a mapped path when the reported path isn't di
   await fs.mkdir(path.dirname(localPath), { recursive: true });
   await fs.writeFile(localPath, "x");
   const reportedPath = "/media/Music/Artist/Track.flac";
-  const mappings = [
-    { source: "plex", remote: "/media/Music", local: path.join(tempDir, "Music") },
-  ];
+  const mappings = [{ source: "plex", remote: "/media/Music", local: path.join(tempDir, "Music") }];
   const result = await pathIsReadable(reportedPath, mappings);
   assert.equal(result, localPath);
 });

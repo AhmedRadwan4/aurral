@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "fs/promises";
 import path from "path";
@@ -25,13 +25,13 @@ const [
 
 const downloadRoot = process.env.WEEKLY_FLOW_FOLDER;
 
-test.beforeEach(async () => {
+beforeEach(async () => {
   await resetDatabase(db);
   downloadTracker.clearAll();
   await fs.rm(downloadRoot, { recursive: true, force: true });
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
@@ -55,7 +55,10 @@ test("preserves static playlist track order", async () => {
   downloadTracker.setDone(firstJobId, firstPath, "Album");
 
   const entries = await collectPlaybackPlaylistTracks(playlist.id, { downloadRoot });
-  assert.deepEqual(entries.map((entry) => entry.path), [secondPath, firstPath]);
+  assert.deepEqual(
+    entries.map((entry) => entry.path),
+    [secondPath, firstPath],
+  );
 });
 
 test("keeps completed tracks after metadata correction", async () => {
@@ -74,7 +77,10 @@ test("keeps completed tracks after metadata correction", async () => {
   downloadTracker.setDone(jobId, trackPath, "Resolved album");
 
   const entries = await collectPlaybackPlaylistTracks(playlist.id, { downloadRoot });
-  assert.deepEqual(entries.map((entry) => entry.path), [trackPath]);
+  assert.deepEqual(
+    entries.map((entry) => entry.path),
+    [trackPath],
+  );
 });
 
 test("normalizes empty migrated names", async () => {

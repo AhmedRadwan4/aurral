@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import dns from "node:dns";
 import fs from "node:fs/promises";
@@ -53,9 +53,7 @@ test("image proxy validates every hop and bounds untrusted image data", async ()
   process.env.AURRAL_DATA_DIR = dataDir;
 
   try {
-    const { warmImageProxy } = await import(
-      `../backend/services/imageProxyService.js?security-test=${Date.now()}`
-    );
+    const { warmImageProxy } = await import("../backend/services/imageProxyService.js");
 
     let calls = 0;
     global.fetch = async () => {
@@ -65,10 +63,7 @@ test("image proxy validates every hop and bounds untrusted image data", async ()
         headers: { location: "http://127.0.0.1/private.png" },
       });
     };
-    await assert.rejects(
-      warmImageProxy("https://images.example/redirect.png"),
-      /private host/,
-    );
+    await assert.rejects(warmImageProxy("https://images.example/redirect.png"), /private host/);
     assert.equal(calls, 1);
 
     global.fetch = async () =>
@@ -78,10 +73,7 @@ test("image proxy validates every hop and bounds untrusted image data", async ()
           "content-length": String(25 * 1024 * 1024 + 1),
         },
       });
-    await assert.rejects(
-      warmImageProxy("https://images.example/oversized.png"),
-      /size limit/,
-    );
+    await assert.rejects(warmImageProxy("https://images.example/oversized.png"), /size limit/);
 
     global.fetch = async () =>
       new Response("<html>not an image</html>", {
@@ -96,8 +88,7 @@ test("image proxy validates every hop and bounds untrusted image data", async ()
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
       "base64",
     );
-    global.fetch = async () =>
-      new Response(png, { headers: { "content-type": "image/png" } });
+    global.fetch = async () => new Response(png, { headers: { "content-type": "image/png" } });
     const cached = await warmImageProxy("https://images.example/valid.png");
     assert.equal(cached.meta.contentType, "image/webp");
     assert.match(cached.localUrl, /^\/api\/image-proxy\/[a-f0-9]{64}\.webp$/);

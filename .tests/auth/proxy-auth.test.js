@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -41,13 +41,13 @@ function resetProxyEnv() {
   delete process.env.AUTH_PROXY_ADMIN_GROUPS;
 }
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
   resetProxyEnv();
   dbOps.updateSettings({ onboardingComplete: false });
 });
 
-test.after(async () => {
+afterAll(async () => {
   delete process.env.AUTH_PROXY_ENABLED;
   delete process.env.AUTH_PROXY_HEADER;
   delete process.env.AUTH_PROXY_TRUSTED_IPS;
@@ -59,9 +59,7 @@ test.after(async () => {
 });
 
 test("proxy auth creates a persistent user for a new proxied identity", () => {
-  const resolved = resolveProxyUser(
-    proxyRequest({ "x-forwarded-user": "Alice@example.com" }),
-  );
+  const resolved = resolveProxyUser(proxyRequest({ "x-forwarded-user": "Alice@example.com" }));
 
   assert.ok(resolved);
   assert.notEqual(resolved.id, -1);
@@ -76,9 +74,7 @@ test("proxy auth creates a persistent user for a new proxied identity", () => {
   assert.equal(stored?.username, "alice@example.com");
   assert.ok(stored?.passwordHash);
 
-  const secondResolve = resolveProxyUser(
-    proxyRequest({ "x-forwarded-user": "alice@example.com" }),
-  );
+  const secondResolve = resolveProxyUser(proxyRequest({ "x-forwarded-user": "alice@example.com" }));
   assert.equal(secondResolve?.id, resolved.id);
   assert.equal(userOps.getAllUsers().length, 1);
 });
@@ -86,9 +82,7 @@ test("proxy auth creates a persistent user for a new proxied identity", () => {
 test("proxy auth creates configured admin users as admins", () => {
   process.env.AUTH_PROXY_ADMIN_USERS = "sso-admin";
 
-  const resolved = resolveProxyUser(
-    proxyRequest({ "x-forwarded-user": "sso-admin" }),
-  );
+  const resolved = resolveProxyUser(proxyRequest({ "x-forwarded-user": "sso-admin" }));
 
   assert.ok(resolved);
   assert.equal(resolved.role, "admin");
@@ -112,10 +106,7 @@ test("explicitly disabling proxy auth overrides a configured header", () => {
   process.env.AUTH_PROXY_HEADER = "x-authentik-username";
 
   assert.equal(isProxyAuthEnabled(), false);
-  assert.equal(
-    resolveProxyUser(proxyRequest({ "x-authentik-username": "mallory" })),
-    null,
-  );
+  assert.equal(resolveProxyUser(proxyRequest({ "x-authentik-username": "mallory" })), null);
   assert.equal(userOps.getAllUsers().length, 0);
 });
 

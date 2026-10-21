@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -15,21 +15,18 @@ const [isolatedState, { db }, trackerModule] = await setupIsolatedBackend(
 
 const { DownloadTracker } = trackerModule;
 
-test.beforeEach(async () => {
+beforeEach(async () => {
   await resetDatabase(db);
   trackerModule.downloadTracker.clearAll();
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
 test("new jobs default to Aurral ownership", () => {
   const tracker = new DownloadTracker();
-  const jobId = tracker.addJob(
-    { artistName: "Artist", trackName: "Track" },
-    "library",
-  );
+  const jobId = tracker.addJob({ artistName: "Artist", trackName: "Track" }, "library");
   assert.equal(tracker.getJob(jobId).managedBy, "aurral");
   assert.equal(tracker.getJob(jobId).requestGroupId, null);
 });
@@ -64,7 +61,12 @@ test("album jobs can be grouped and owned by lidarr explicitly", () => {
 test("job ownership survives a tracker reload", async () => {
   const tracker = new DownloadTracker();
   const lidarrJobId = tracker.addJob(
-    { artistName: "Artist", trackName: "Reload", managedBy: "lidarr", requestGroupId: "group-reload" },
+    {
+      artistName: "Artist",
+      trackName: "Reload",
+      managedBy: "lidarr",
+      requestGroupId: "group-reload",
+    },
     "library",
   );
 

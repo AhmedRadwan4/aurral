@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import { join } from "node:path";
 import {
   cleanupIsolatedState,
@@ -27,18 +27,19 @@ const [
   "backend/services/honkerDb.js",
 );
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
   dbOps.updateSettings({ integrations: {}, onboardingComplete: true });
 });
 
-test.after(async () => {
+afterAll(async () => {
   db.close();
   await cleanupIsolatedState(isolatedState);
 });
 
 function pendingPlaylistSyncs() {
-  return honker.listHonkerJobs("playback")
+  return honker
+    .listHonkerJobs("playback")
     .filter(({ payload }) => payload?.kind === "playback-playlist-sync")
     .map(({ payload }) => payload);
 }
@@ -51,10 +52,12 @@ function clearPendingPlaylistSyncs() {
 
 test("saving playback settings queues a playlist sync without waiting for the media server", async (t) => {
   clearPendingPlaylistSyncs();
-  t.after(clearPendingPlaylistSyncs);
+  t.onTestFinished(clearPendingPlaylistSyncs);
   const { JellyfinClient } = await import("../../backend/services/jellyfin.js");
-  const jellyfinRequests = t.mock.method(JellyfinClient.prototype, "request", () => new Promise(() => {}));
-  const scan = t.mock.method(playlistManager, "scheduleScanLibrary", () => {});
+  const jellyfinRequests = vi
+    .spyOn(JellyfinClient.prototype, "request")
+    .mockImplementation(() => new Promise(() => {}));
+  const scan = vi.spyOn(playlistManager, "scheduleScanLibrary").mockImplementation(() => {});
   const { postSettings } = captureSettingsRoutes();
 
   const response = await postSettings({
@@ -64,18 +67,25 @@ test("saving playback settings queues a playlist sync without waiting for the me
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.integrations.jellyfin.url, "http://jellyfin.local");
   assert.equal(dbOps.getSettings().integrations.jellyfin.url, "http://jellyfin.local");
-  assert.equal(jellyfinRequests.mock.callCount(), 0);
-  assert.deepEqual(pendingPlaylistSyncs(), [{ kind: "playback-playlist-sync", entityIds: null, attempt: 0 }]);
-  assert.deepEqual(scan.mock.calls.map((call) => call.arguments), [[true]]);
+  assert.equal(jellyfinRequests.mock.calls.length, 0);
+  assert.deepEqual(pendingPlaylistSyncs(), [
+    { kind: "playback-playlist-sync", entityIds: null, attempt: 0 },
+  ]);
+  assert.deepEqual(
+    scan.mock.calls.map((call) => call),
+    [[true]],
+  );
 });
 
-test("saving unrelated settings with unchanged playback configuration skips initialization and scans", async (t) => {
+test("saving unrelated settings with unchanged playback configuration skips initialization and scans", async () => {
   clearPendingPlaylistSyncs();
-  const scan = t.mock.method(playlistManager, "scheduleScanLibrary", () => {});
-  dbOps.updateSettings({ integrations: {
-    jellyfin: { url: "http://jellyfin.local", apiKey: "key", userId: "user" },
-    navidrome: { url: "http://navidrome.local", username: "user", password: "password" },
-  } });
+  const scan = vi.spyOn(playlistManager, "scheduleScanLibrary").mockImplementation(() => {});
+  dbOps.updateSettings({
+    integrations: {
+      jellyfin: { url: "http://jellyfin.local", apiKey: "key", userId: "user" },
+      navidrome: { url: "http://navidrome.local", username: "user", password: "password" },
+    },
+  });
   const { postSettings } = captureSettingsRoutes();
   const current = dbOps.getSettings();
   const response = await postSettings({
@@ -93,13 +103,14 @@ test("saving unrelated settings with unchanged playback configuration skips init
   const unrelated = await postSettings({ dateTimeFormat: "year-first" });
   assert.equal(unrelated.statusCode, 200);
   assert.deepEqual(pendingPlaylistSyncs(), []);
-  assert.equal(scan.mock.callCount(), 0);
+  assert.equal(scan.mock.calls.length, 0);
 });
 
 test("NZBGet leftover deletion defaults on and keeps an opt-out across partial saves", async () => {
   const { postSettings } = captureSettingsRoutes();
-  const enabled = await postSettings({ integrations: { nzbget: { enabled: true,
-    url: "http://nzbget.local", priority: 5 } } });
+  const enabled = await postSettings({
+    integrations: { nzbget: { enabled: true, url: "http://nzbget.local", priority: 5 } },
+  });
   assert.equal(enabled.statusCode, 200);
   assert.equal(enabled.body.integrations.nzbget.deleteLeftovers, true);
   assert.equal(enabled.body.integrations.nzbget.priority, 5);
@@ -111,7 +122,11 @@ test("NZBGet leftover deletion defaults on and keeps an opt-out across partial s
 test("the maximum review wait is validated and kept across partial saves", async () => {
   const { postSettings } = captureSettingsRoutes();
   for (const invalid of [-1, 1.5, 721, "24"]) {
-    assert.equal((await postSettings({ reviewTimeoutHours: invalid })).statusCode, 400, String(invalid));
+    assert.equal(
+      (await postSettings({ reviewTimeoutHours: invalid })).statusCode,
+      400,
+      String(invalid),
+    );
   }
   assert.equal((await postSettings({ reviewTimeoutHours: 48 })).statusCode, 200);
   await postSettings({ integrations: { nzbget: { nzbPriority: 10 } } });
@@ -121,46 +136,65 @@ test("the maximum review wait is validated and kept across partial saves", async
 for (const key of ["jellyfin", "navidrome"]) {
   test(`refreshes playback when ${key} settings change or are cleared`, async (t) => {
     clearPendingPlaylistSyncs();
-    t.after(clearPendingPlaylistSyncs);
-    const scan = t.mock.method(playlistManager, "scheduleScanLibrary", () => {});
+    t.onTestFinished(clearPendingPlaylistSyncs);
+    const scan = vi.spyOn(playlistManager, "scheduleScanLibrary").mockImplementation(() => {});
     const { postSettings } = captureSettingsRoutes();
     for (const url of [`http://${key}.local`, ""]) {
       const response = await postSettings({ integrations: { [key]: { url } } });
       assert.equal(response.statusCode, 200);
       assert.equal(dbOps.getSettings().integrations[key].url, url);
     }
-    assert.deepEqual(pendingPlaylistSyncs(), [{ kind: "playback-playlist-sync", entityIds: null, attempt: 0 }]);
-    assert.equal(scan.mock.callCount(), 2);
+    assert.deepEqual(pendingPlaylistSyncs(), [
+      { kind: "playback-playlist-sync", entityIds: null, attempt: 0 },
+    ]);
+    assert.equal(scan.mock.calls.length, 2);
   });
 }
 
 test("a failure to queue the Library scan or the playlist sync does not block the other or the save", async (t) => {
   clearPendingPlaylistSyncs();
-  t.after(clearPendingPlaylistSyncs);
+  t.onTestFinished(clearPendingPlaylistSyncs);
   const { logger } = await import("../../backend/services/logger.js");
-  const warnings = t.mock.method(logger, "warn", () => {});
-  const scan = t.mock.method(playlistManager, "scheduleScanLibrary", () => {
+  const warnings = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  const scan = vi.spyOn(playlistManager, "scheduleScanLibrary").mockImplementation(() => {
     throw new Error("Scan queue unavailable");
   });
   const { postSettings } = captureSettingsRoutes();
-  const scanFailure = await postSettings({ integrations: { jellyfin: { url: "http://jellyfin.local" } } });
+  const scanFailure = await postSettings({
+    integrations: { jellyfin: { url: "http://jellyfin.local" } },
+  });
   assert.equal(scanFailure.statusCode, 200);
-  assert.deepEqual(warnings.mock.calls.map((call) => call.arguments), [
-    ["settings", "Failed to queue Library scan:", { message: "Scan queue unavailable" }],
+  assert.deepEqual(
+    warnings.mock.calls.map((call) => call),
+    [["settings", "Failed to queue Library scan:", { message: "Scan queue unavailable" }]],
+  );
+  assert.deepEqual(pendingPlaylistSyncs(), [
+    { kind: "playback-playlist-sync", entityIds: null, attempt: 0 },
   ]);
-  assert.deepEqual(pendingPlaylistSyncs(), [{ kind: "playback-playlist-sync", entityIds: null, attempt: 0 }]);
 
-  scan.mock.mockImplementation(() => {});
-  t.mock.method(playlistManager, "requestPlaylistSync", () => {
+  scan.mockImplementation(() => {});
+  vi.spyOn(playlistManager, "requestPlaylistSync").mockImplementation(() => {
     throw new Error("Sync queue unavailable");
   });
-  warnings.mock.resetCalls();
-  const syncFailure = await postSettings({ integrations: { jellyfin: { url: "http://jellyfin.other" } } });
+  warnings.mockClear();
+  const syncFailure = await postSettings({
+    integrations: { jellyfin: { url: "http://jellyfin.other" } },
+  });
   assert.equal(syncFailure.statusCode, 200);
-  assert.deepEqual(warnings.mock.calls.map((call) => call.arguments), [
-    ["settings", "Failed to queue playback playlist sync:", { message: "Sync queue unavailable" }],
-  ]);
-  assert.deepEqual(scan.mock.calls.map((call) => call.arguments), [[true], [true]]);
+  assert.deepEqual(
+    warnings.mock.calls.map((call) => call),
+    [
+      [
+        "settings",
+        "Failed to queue playback playlist sync:",
+        { message: "Sync queue unavailable" },
+      ],
+    ],
+  );
+  assert.deepEqual(
+    scan.mock.calls.map((call) => call),
+    [[true], [true]],
+  );
 });
 
 function captureSettingsRoutes() {
@@ -211,18 +245,24 @@ test("the missing-track search setting keeps fields a save leaves out and never 
   await postSettings({ missingTrackSearch: { enabled: true, intervalDays: 3 } });
   const disabled = await postSettings({ missingTrackSearch: { enabled: false } });
   assert.equal(disabled.statusCode, 200);
-  assert.deepEqual((await getSettings()).body.missingTrackSearch, { enabled: false, intervalDays: 3 });
+  assert.deepEqual((await getSettings()).body.missingTrackSearch, {
+    enabled: false,
+    intervalDays: 3,
+  });
 
   for (const intervalDays of [0, -3, "soon", null]) {
     await postSettings({ missingTrackSearch: { intervalDays } });
     const saved = dbOps.getSettings().missingTrackSearch.intervalDays;
-    assert.ok(Number.isInteger(saved) && saved >= 1, `${String(intervalDays)} was stored as ${saved}`);
+    assert.ok(
+      Number.isInteger(saved) && saved >= 1,
+      `${String(intervalDays)} was stored as ${saved}`,
+    );
   }
 });
 
 test("turning Lidarr off or on starts a Library scan, and other saves do not", async (t) => {
   const { postSettings } = captureSettingsRoutes();
-  t.mock.method(lidarrClient, "getRootFolders", async () => []);
+  vi.spyOn(lidarrClient, "getRootFolders").mockImplementation(async () => []);
   dbOps.updateSettings({
     integrations: { lidarr: { url: "http://127.0.0.1:18686", apiKey: "key", enabled: true } },
   });
@@ -231,14 +271,15 @@ test("turning Lidarr off or on starts a Library scan, and other saves do not", a
     const job = jobId == null ? null : honker.getLibraryScanQueue().getJob(jobId);
     return job ? JSON.parse(job.payload) : null;
   };
-  const releaseTask = () => honker.findActiveHonkerJob(
-    "system-task",
-    (payload) => payload?.kind === "lidarr-files-release",
-    { payloadKind: "lidarr-files-release" },
-  );
+  const releaseTask = () =>
+    honker.findActiveHonkerJob(
+      "system-task",
+      (payload) => payload?.kind === "lidarr-files-release",
+      { payloadKind: "lidarr-files-release" },
+    );
   const clearScan = () => libraryScans.clearScheduledLibraryScan();
   clearScan();
-  t.after(clearScan);
+  t.onTestFinished(clearScan);
 
   await postSettings({ integrations: { lidarr: { insecure: true } } });
   assert.equal(scheduledScan(), null);
@@ -301,7 +342,7 @@ test("does not warn about lidarr roots while lidarr is disabled", async () => {
   assert.deepEqual(current.body.rootWarnings, []);
 });
 
-test("clears saved Lidarr roots when the connection identity changes", async (t) => {
+test("clears saved Lidarr roots when the connection identity changes", async () => {
   const { postSettings } = captureSettingsRoutes();
   dbOps.updateSettings({
     integrations: {
@@ -313,8 +354,8 @@ test("clears saved Lidarr roots when the connection identity changes", async (t)
       },
     },
   });
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  const refresh = t.mock.method(lidarrClient, "getRootFolders", async () => {
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  const refresh = vi.spyOn(lidarrClient, "getRootFolders").mockImplementation(async () => {
     throw new Error("new Lidarr is unavailable");
   });
 
@@ -325,12 +366,12 @@ test("clears saved Lidarr roots when the connection identity changes", async (t)
   });
 
   assert.equal(response.statusCode, 200);
-  assert.equal(refresh.mock.callCount(), 1);
+  assert.equal(refresh.mock.calls.length, 1);
   assert.deepEqual(dbOps.getSettings().integrations.lidarr.rootFolderPaths, []);
   assert.equal(dbOps.getSettings().integrations.lidarr.rootFolderPath, null);
 });
 
-test("preserves saved Lidarr roots when discovery fails for the same connection", async (t) => {
+test("preserves saved Lidarr roots when discovery fails for the same connection", async () => {
   const { postSettings } = captureSettingsRoutes();
   dbOps.updateSettings({
     integrations: {
@@ -342,8 +383,8 @@ test("preserves saved Lidarr roots when discovery fails for the same connection"
       },
     },
   });
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  t.mock.method(lidarrClient, "getRootFolders", async () => {
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  vi.spyOn(lidarrClient, "getRootFolders").mockImplementation(async () => {
     throw new Error("Lidarr is temporarily unavailable");
   });
 
@@ -358,7 +399,7 @@ test("preserves saved Lidarr roots when discovery fails for the same connection"
   assert.equal(dbOps.getSettings().integrations.lidarr.rootFolderPath, "/new/default");
 });
 
-test("preserves saved Lidarr roots for equivalent normalized connection values", async (t) => {
+test("preserves saved Lidarr roots for equivalent normalized connection values", async () => {
   const { postSettings } = captureSettingsRoutes();
   dbOps.updateSettings({
     integrations: {
@@ -370,8 +411,8 @@ test("preserves saved Lidarr roots for equivalent normalized connection values",
       },
     },
   });
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  t.mock.method(lidarrClient, "getRootFolders", async () => {
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  vi.spyOn(lidarrClient, "getRootFolders").mockImplementation(async () => {
     throw new Error("Lidarr is temporarily unavailable");
   });
 
@@ -387,9 +428,8 @@ test("preserves saved Lidarr roots for equivalent normalized connection values",
 });
 
 test("queues a news refresh only when news settings change", async () => {
-  const { findActiveHonkerJob, getMaintenanceTaskQueue } = await import(
-    "../../backend/services/honkerDb.js"
-  );
+  const { findActiveHonkerJob, getMaintenanceTaskQueue } =
+    await import("../../backend/services/honkerDb.js");
   const queuedNewsRefresh = () =>
     findActiveHonkerJob("system-task-maintenance", (payload) => payload?.kind === "news-refresh");
   const clearNewsRefresh = () => {
@@ -404,7 +444,9 @@ test("queues a news refresh only when news settings change", async () => {
   await postSettings({ integrations: { news } });
   assert.equal(queuedNewsRefresh(), null);
 
-  await postSettings({ integrations: { news: { ...news, groups: { ...news.groups, jazz: false } } } });
+  await postSettings({
+    integrations: { news: { ...news, groups: { ...news.groups, jazz: false } } },
+  });
   assert.ok(queuedNewsRefresh());
   clearNewsRefresh();
 });

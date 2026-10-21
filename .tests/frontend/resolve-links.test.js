@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { startFrontendServer } from "../helpers/frontendServer.js";
+import { test, vi } from "vite-plus/test";
 
 async function setup(t, respond) {
-  const vite = await startFrontendServer();
+  vi.resetModules();
   const previousFetch = globalThis.fetch;
   const requests = [];
   globalThis.fetch = async (input, init) => {
@@ -15,13 +14,12 @@ async function setup(t, respond) {
       headers: { "content-type": "application/json" },
     });
   };
-  const links = await vite.ssrLoadModule("/src/navigation/resolveLinks.js");
-  const { prefetchRoute } = await vite.ssrLoadModule("/src/navigation/routePrefetch.js");
-  const { queryClient } = await vite.ssrLoadModule("/src/queryClient.js");
-  t.after(async () => {
+  const links = await import("../../frontend/src/navigation/resolveLinks.js");
+  const { prefetchRoute } = await import("../../frontend/src/navigation/routePrefetch.js");
+  const { queryClient } = await import("../../frontend/src/queryClient.js");
+  t.onTestFinished(async () => {
     queryClient.clear();
     globalThis.fetch = previousFetch;
-    await vite.close();
   });
   const open = (path) => {
     const url = new URL(path, "http://aurral.test");
@@ -71,12 +69,21 @@ test("a library artist link falls back to a name match when the ID lookup misses
   const { links, open } = await setup(t, (url) => {
     if (url.pathname.includes("/library/lookup/")) return { body: { exists: false } };
     if (url.pathname.endsWith("/library/canonical")) {
-      return { body: { items: [{ id: 3, name: "Other" }, { id: 9, canonicalId: "c-9", name: "Wanted Artist" }] } };
+      return {
+        body: {
+          items: [
+            { id: 3, name: "Other" },
+            { id: 9, canonicalId: "c-9", name: "Wanted Artist" },
+          ],
+        },
+      };
     }
     return { body: {} };
   });
 
-  const target = await open(links.resolveLibraryArtistPath({ mbid: "mb-1", name: "wanted artist" }));
+  const target = await open(
+    links.resolveLibraryArtistPath({ mbid: "mb-1", name: "wanted artist" }),
+  );
   assert.equal(target.to, "/library/artist/c-9");
 });
 
@@ -87,7 +94,8 @@ test("hovering a resolver link does the lookup the opened page then reuses", asy
   const path = links.resolveArtistPath({ name: "Hovered" });
 
   await prefetchRoute(path);
-  const lookups = () => requests.filter((url) => url.pathname.endsWith("/discover/editorial/links")).length;
+  const lookups = () =>
+    requests.filter((url) => url.pathname.endsWith("/discover/editorial/links")).length;
   assert.equal(lookups(), 1);
 
   const target = await open(path);

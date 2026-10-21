@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -7,24 +7,18 @@ import {
   resetDatabase,
 } from "../helpers/backendTestHarness.js";
 
-const [
-  isolatedState,
-  {
-    buildSlskdRankingHistoryOptions,
-    recordSlskdTransferOutcome,
-  },
-  { db },
-] = await setupIsolatedBackend(
-  "slskd-transfer-history",
-  "backend/services/slskdTransferHistory.js",
-  "backend/config/db-sqlite.js",
-);
+const [isolatedState, { buildSlskdRankingHistoryOptions, recordSlskdTransferOutcome }, { db }] =
+  await setupIsolatedBackend(
+    "slskd-transfer-history",
+    "backend/services/slskdTransferHistory.js",
+    "backend/config/db-sqlite.js",
+  );
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
@@ -70,14 +64,18 @@ test("buildSlskdRankingHistoryOptions keeps successful peers eligible", () => {
   assert.ok(options.getUserQueuePenalty("recoveredPeer") > 0);
 });
 
-test("a peer that banned Aurral is skipped until it uploads again", (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+test("a peer that banned Aurral is skipped until it uploads again", () => {
+  vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
   recordOutcome("strictPeer", "success");
-  t.mock.timers.tick(1000);
-  recordOutcome("strictPeer", "transfer_failed", "slskd transfer failed: Transfer rejected: Banned");
+  vi.advanceTimersByTime(1000);
+  recordOutcome(
+    "strictPeer",
+    "transfer_failed",
+    "slskd transfer failed: Transfer rejected: Banned",
+  );
   assert.equal(buildSlskdRankingHistoryOptions().isUserBlacklisted("strictPeer"), true);
 
-  t.mock.timers.tick(1000);
+  vi.advanceTimersByTime(1000);
   recordOutcome("strictPeer", "success");
   assert.equal(buildSlskdRankingHistoryOptions().isUserBlacklisted("strictPeer"), false);
 });

@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -66,7 +66,14 @@ const insertJob = seed.prepare(`
   VALUES (?, 'Legacy Band', ?, 'Old Record', ?, ?, 'done', ?, ?, 2000, 1000)
 `);
 insertJob.run("reused", "Reused", playlistId, playlistId, files.reused, null);
-insertJob.run("reused-after-failed-download", "Retried", playlistId, playlistId, files.reusedAfterFailedDownload, 1500);
+insertJob.run(
+  "reused-after-failed-download",
+  "Retried",
+  playlistId,
+  playlistId,
+  files.reusedAfterFailedDownload,
+  1500,
+);
 insertJob.run("downloaded", "Downloaded", playlistId, playlistId, files.downloaded, 1500);
 const insertMedia = seed.prepare(`
   INSERT INTO library_media_files (track_id, source, path, created_at, updated_at) VALUES (?, 'aurral', ?, ?, ?)
@@ -76,22 +83,30 @@ insertMedia.run(2, files.downloaded, 2500, 2500);
 seed.close();
 applyIsolatedBackendEnv(isolatedState);
 
-const { flowPlaylistConfig } = await importFromRepo("backend/services/playlists/flowPlaylistConfig.js");
+const { flowPlaylistConfig } = await importFromRepo(
+  "backend/services/playlists/flowPlaylistConfig.js",
+);
 const { playlistManager } = await importFromRepo("backend/services/playlists/playlistManager.js");
-const { processPlaylistOperation } = await importFromRepo("backend/services/playlists/playlistOperations.js");
+const { processPlaylistOperation } = await importFromRepo(
+  "backend/services/playlists/playlistOperations.js",
+);
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
-test("deleting a playlist saved by an older version keeps the Library files it reused", async (t) => {
+test("deleting a playlist saved by an older version keeps the Library files it reused", async () => {
   for (const name of ["requestPlaylistSync", "scheduleScanLibrary"]) {
-    t.mock.method(playlistManager, name, async () => {});
+    vi.spyOn(playlistManager, name).mockImplementation(async () => {});
   }
   flowPlaylistConfig.createStaticPlaylist({
     id: playlistId,
     name: "Saved before the marker",
-    tracks: ["Reused", "Retried", "Downloaded"].map((trackName) => ({ artistName: "Legacy Band", albumName: "Old Record", trackName })),
+    tracks: ["Reused", "Retried", "Downloaded"].map((trackName) => ({
+      artistName: "Legacy Band",
+      albumName: "Old Record",
+      trackName,
+    })),
   });
 
   await processPlaylistOperation({ kind: "shared-playlist-delete", playlistId });

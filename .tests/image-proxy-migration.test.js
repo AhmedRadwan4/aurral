@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vite-plus/test";
 
 test("image cache migration removes obsolete web image bytes but keeps native bytes", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "aurral-image-migration-"));
@@ -31,9 +31,8 @@ test("image cache migration removes obsolete web image bytes but keeps native by
       );
     }
 
-    const { getImageProxyCacheSizeBytes } = await import(
-      `../backend/services/imageProxyService.js?migration-test=${Date.now()}`
-    );
+    const { getImageProxyCacheSizeBytes } =
+      await import("../backend/services/imageProxyService.js");
     assert.equal(await getImageProxyCacheSizeBytes(), entries[3][0].length);
 
     for (const [cacheKey, profile] of entries) {

@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -29,7 +29,12 @@ test("cutoff activity includes owned files below the preferred quality", () => {
     false,
   );
   assert.equal(
-    isCutoffUnmetAurralJob({ status: "done", qualityOwned: true, qualityState: "upgrade", monitored: false }),
+    isCutoffUnmetAurralJob({
+      status: "done",
+      qualityOwned: true,
+      qualityState: "upgrade",
+      monitored: false,
+    }),
     false,
   );
 });

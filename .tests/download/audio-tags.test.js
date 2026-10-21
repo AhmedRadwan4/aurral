@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, afterAll } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { link, mkdtemp, readFile, rm, stat } from "node:fs/promises";
@@ -23,10 +23,25 @@ const job = {
 
 function makeAudio(name, codec) {
   const filePath = path.join(tempDir, name);
-  const result = spawnSync("ffmpeg", [
-    "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-    "-f", "lavfi", "-i", "anullsrc", "-t", "0.2", ...codec, filePath,
-  ], { encoding: "utf8" });
+  const result = spawnSync(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc",
+      "-t",
+      "0.2",
+      ...codec,
+      filePath,
+    ],
+    { encoding: "utf8" },
+  );
   assert.equal(result.status, 0, result.stderr);
   return filePath;
 }
@@ -45,7 +60,7 @@ const cover = taglib.Picture.fromFullData(
   "",
 );
 
-test.after(async () => {
+afterAll(async () => {
   await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -127,7 +142,12 @@ test("tagging a hardlinked download leaves the other link as it was", async () =
 });
 
 test("tagging a fragmented M4A leaves the file as it was instead of breaking its audio", async () => {
-  const filePath = makeAudio("fragmented.m4a", ["-c:a", "aac", "-movflags", "frag_keyframe+empty_moov"]);
+  const filePath = makeAudio("fragmented.m4a", [
+    "-c:a",
+    "aac",
+    "-movflags",
+    "frag_keyframe+empty_moov",
+  ]);
   const bytes = await readFile(filePath);
 
   await assert.rejects(writeAudioMetadata(filePath, job), { code: "TAGS_UNSUPPORTED" });

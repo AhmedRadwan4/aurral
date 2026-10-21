@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import axios from "../../lib/axiosFetch.js";
@@ -16,10 +16,10 @@ const [isolatedState, { db }, { scrobbleConnectionStore }, { listenbrainzPlaylis
     "backend/services/importLists/listenbrainzPlaylists.js",
   );
 
-test.beforeEach(() => resetDatabase(db));
-test.after(() => cleanupIsolatedState(isolatedState));
+beforeEach(() => resetDatabase(db));
+afterAll(() => cleanupIsolatedState(isolatedState));
 
-test("lists owned and created-for ListenBrainz playlists without duplicates", async (t) => {
+test("lists owned and created-for ListenBrainz playlists without duplicates", async () => {
   const playlistExtension = "https://musicbrainz.org/doc/jspf#playlist";
   const ownedId = "00000000-0000-4000-8000-000000000001";
   const oldExplorationId = "00000000-0000-4000-8000-000000000002";
@@ -49,7 +49,7 @@ test("lists owned and created-for ListenBrainz playlists without duplicates", as
     displayName: "playlist-user",
   });
   const calls = [];
-  t.mock.method(axios, "get", async (url, options) => {
+  vi.spyOn(axios, "get").mockImplementation(async (url, options) => {
     calls.push({ url, options });
     if (url.includes("/1/playlist/")) {
       const id = new URL(url).pathname.split("/").pop();
@@ -101,9 +101,7 @@ test("lists owned and created-for ListenBrainz playlists without duplicates", as
     return {
       data: {
         playlist_count: 1,
-        playlists: [
-          makeEntry({ id: ownedId, title: "Mine" }),
-        ],
+        playlists: [makeEntry({ id: ownedId, title: "Mine" })],
       },
     };
   });
@@ -130,13 +128,8 @@ test("lists owned and created-for ListenBrainz playlists without duplicates", as
     },
   ]);
   assert.deepEqual(
-    calls
-      .filter(({ url }) => url.includes("/1/user/"))
-      .map(({ url }) => new URL(url).pathname),
-    [
-      "/1/user/playlist-user/playlists",
-      "/1/user/playlist-user/playlists/createdfor",
-    ],
+    calls.filter(({ url }) => url.includes("/1/user/")).map(({ url }) => new URL(url).pathname),
+    ["/1/user/playlist-user/playlists", "/1/user/playlist-user/playlists/createdfor"],
   );
   assert.equal(calls.filter(({ url }) => url.includes("/1/playlist/")).length, 3);
   assert.equal(calls[0].options.headers.Authorization, "Token test-token");

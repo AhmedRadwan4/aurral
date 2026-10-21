@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, beforeEach, afterAll, afterEach, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 
 import {
@@ -41,11 +41,7 @@ const { playlistOperationQueue } = operationQueueModule;
 const { downloadWorker } = workerModule;
 const { downloadTracker } = trackerModule;
 const { syncStaticPlaylistImport } = importSyncModule;
-const {
-  addEditorialPlaylistToLibrary,
-  getEditorialPlaylist,
-  getEditorialShelf,
-} = editorialModule;
+const { addEditorialPlaylistToLibrary, getEditorialPlaylist, getEditorialShelf } = editorialModule;
 
 const { synchronizeDiscoveryCacheFromWorker } = persistenceModule;
 const { buildFlowFromTemplate, listFlowTemplates } = flowTemplatesModule;
@@ -69,7 +65,7 @@ const deezerTrack = (title, artist, album = "Album") => ({
 
 function stubDeezer(t, routes) {
   const requests = [];
-  t.mock.method(globalThis, "fetch", async (input) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = new URL(String(input));
     requests.push(`${url.pathname}${url.search}`);
     const route = routes[url.pathname];
@@ -96,38 +92,46 @@ const rockEssentials = (tracks) => ({
   "/playlist/1306931615/tracks": { body: { data: tracks, total: tracks.length } },
 });
 
-const captureEnqueues = (t) => {
+const captureEnqueues = () => {
   const payloads = [];
-  t.mock.method(playlistOperationQueue, "enqueuePayload", async (payload) => {
+  vi.spyOn(playlistOperationQueue, "enqueuePayload").mockImplementation(async (payload) => {
     payloads.push(payload);
     return { queued: true, operationId: payloads.length };
   });
   return payloads;
 };
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
-  dbOps.updateSettings({ integrations: {}, onboardingComplete: true, flows: [], sharedPlaylists: [] });
+  dbOps.updateSettings({
+    integrations: {},
+    onboardingComplete: true,
+    flows: [],
+    sharedPlaylists: [],
+  });
   invalidateFlowPlaylistConfigCache();
 });
 
-test.afterEach(() => {
+afterEach(() => {
   downloadWorker.stop();
 });
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
 test("adding a Deezer playlist creates one synced library playlist with its tracks", async (t) => {
-  t.mock.method(downloadWorker, "start", async () => false);
-  stubDeezer(t, rockEssentials([
-    deezerTrack("Back In Black", "AC/DC"),
-    deezerTrack("Back In Black", "AC/DC"),
-    deezerTrack("Paranoid", "Black Sabbath"),
-    { title: "", artist: { name: "Nobody" } },
-  ]));
-  const payloads = captureEnqueues(t);
+  vi.spyOn(downloadWorker, "start").mockImplementation(async () => false);
+  stubDeezer(
+    t,
+    rockEssentials([
+      deezerTrack("Back In Black", "AC/DC"),
+      deezerTrack("Back In Black", "AC/DC"),
+      deezerTrack("Paranoid", "Black Sabbath"),
+      { title: "", artist: { name: "Nobody" } },
+    ]),
+  );
+  const payloads = captureEnqueues();
 
   const added = await addEditorialPlaylistToLibrary(OWNER, "1306931615");
   assert.equal(payloads.length, 1);
@@ -150,13 +154,16 @@ test("adding a Deezer playlist creates one synced library playlist with its trac
   assert.equal(again.alreadyAdded, true);
   assert.equal(again.playlistId, added.playlistId);
   assert.equal(payloads.length, 1);
-  assert.equal((await getEditorialPlaylist(OWNER, "1306931615")).libraryPlaylistId, added.playlistId);
+  assert.equal(
+    (await getEditorialPlaylist(OWNER, "1306931615")).libraryPlaylistId,
+    added.playlistId,
+  );
   assert.equal((await getEditorialPlaylist({ id: 8 }, "1306931615")).libraryPlaylistId, null);
 });
 
 test("adding the same Deezer playlist twice at once queues it only once", async (t) => {
   stubDeezer(t, rockEssentials([deezerTrack("Paranoid", "Black Sabbath")]));
-  const payloads = captureEnqueues(t);
+  const payloads = captureEnqueues();
 
   const [first, second] = await Promise.all([
     addEditorialPlaylistToLibrary(OWNER, "1306931615"),
@@ -168,8 +175,16 @@ test("adding the same Deezer playlist twice at once queues it only once", async 
 });
 
 test("duplicate Deezer tracks keep the preview and artwork of the first entry", async (t) => {
-  const first = { ...deezerTrack("Paranoid", "Black Sabbath"), preview: "https://p/first.mp3", album: { id: 1, title: "Paranoid", cover_medium: "https://c/first.jpg" } };
-  const later = { ...deezerTrack("Paranoid", "Black Sabbath"), preview: "https://p/later.mp3", album: { id: 2, title: "Paranoid", cover_medium: "https://c/later.jpg" } };
+  const first = {
+    ...deezerTrack("Paranoid", "Black Sabbath"),
+    preview: "https://p/first.mp3",
+    album: { id: 1, title: "Paranoid", cover_medium: "https://c/first.jpg" },
+  };
+  const later = {
+    ...deezerTrack("Paranoid", "Black Sabbath"),
+    preview: "https://p/later.mp3",
+    album: { id: 2, title: "Paranoid", cover_medium: "https://c/later.jpg" },
+  };
   stubDeezer(t, rockEssentials([first, later]));
 
   const { tracks } = await getEditorialPlaylist(OWNER, "1306931615");
@@ -181,20 +196,23 @@ test("duplicate Deezer tracks keep the preview and artwork of the first entry", 
 });
 
 test("a Deezer playlist whose name is taken gets a distinct library name", async (t) => {
-  t.mock.method(downloadWorker, "start", async () => false);
+  vi.spyOn(downloadWorker, "start").mockImplementation(async () => false);
   stubDeezer(t, rockEssentials([deezerTrack("Paranoid", "Black Sabbath")]));
-  const payloads = captureEnqueues(t);
+  const payloads = captureEnqueues();
   flowPlaylistConfig.createStaticPlaylist({ name: "rock essentials", ownerUserId: 7 });
 
   const added = await addEditorialPlaylistToLibrary(OWNER, "1306931615");
   await processPlaylistOperation(payloads[0]);
 
-  assert.equal(flowPlaylistConfig.getStaticPlaylist(added.playlistId)?.name, "Rock Essentials (Deezer)");
+  assert.equal(
+    flowPlaylistConfig.getStaticPlaylist(added.playlistId)?.name,
+    "Rock Essentials (Deezer)",
+  );
 });
 
 test("adding fails without creating anything when Deezer is unavailable", async (t) => {
   stubDeezer(t, { "/playlist/1306931615": { status: 503, body: {} } });
-  const payloads = captureEnqueues(t);
+  const payloads = captureEnqueues();
 
   await assert.rejects(addEditorialPlaylistToLibrary(OWNER, "1306931615"), { statusCode: 502 });
   await assert.rejects(addEditorialPlaylistToLibrary(OWNER, "../admin"), { statusCode: 400 });
@@ -203,7 +221,7 @@ test("adding fails without creating anything when Deezer is unavailable", async 
 });
 
 test("syncing a Deezer library playlist follows the editor's changes", async (t) => {
-  t.mock.method(downloadWorker, "start", async () => false);
+  vi.spyOn(downloadWorker, "start").mockImplementation(async () => false);
   stubDeezer(t, rockEssentials([deezerTrack("Thunderstruck", "AC/DC")]));
   const playlist = flowPlaylistConfig.createStaticPlaylist({
     name: "Rock Essentials",
@@ -218,7 +236,11 @@ test("syncing a Deezer library playlist follows the editor's changes", async (t)
     },
   });
 
-  const result = await syncStaticPlaylistImport({ playlistId: playlist.id, user: OWNER, force: true });
+  const result = await syncStaticPlaylistImport({
+    playlistId: playlist.id,
+    user: OWNER,
+    force: true,
+  });
 
   assert.equal(result.trackCount, 1);
   assert.deepEqual(
@@ -230,7 +252,9 @@ test("syncing a Deezer library playlist follows the editor's changes", async (t)
 test("the shelf keeps genres that loaded and lists each playlist once", async (t) => {
   stubDeezer(t, {
     "/chart/0/playlists": { body: { data: [summary(1, "80s Hits"), summary(2, "Today's Hits")] } },
-    "/chart/152/playlists": { body: { data: [summary(1, "80s Hits"), summary(3, "Rock Essentials")] } },
+    "/chart/152/playlists": {
+      body: { data: [summary(1, "80s Hits"), summary(3, "Rock Essentials")] },
+    },
     "/chart/132/playlists": { status: 500, body: {} },
   });
 
@@ -247,8 +271,11 @@ test("the shelf keeps genres that loaded and lists each playlist once", async (t
 });
 
 test("For you matches Deezer editor playlists to the user's top genres and tags", async (t) => {
-  synchronizeDiscoveryCacheFromWorker({ topGenres: ["Shoegaze"], topTags: ["shoegaze", "Post-Punk"] });
-  t.after(() => synchronizeDiscoveryCacheFromWorker({ topGenres: [], topTags: [] }));
+  synchronizeDiscoveryCacheFromWorker({
+    topGenres: ["Shoegaze"],
+    topTags: ["shoegaze", "Post-Punk"],
+  });
+  t.onTestFinished(() => synchronizeDiscoveryCacheFromWorker({ topGenres: [], topTags: [] }));
   const searches = [];
   stubDeezer(t, {
     "/search/playlist": (url) => {
@@ -271,7 +298,10 @@ test("For you matches Deezer editor playlists to the user's top genres and tags"
   const { forYou, genres } = await getEditorialShelf(OWNER);
 
   assert.deepEqual(searches.sort(), ["post-punk", "shoegaze"]);
-  assert.deepEqual(forYou.map((playlist) => playlist.name), ["Shoegaze Essentials", "Dream Pop & Shoegaze"]);
+  assert.deepEqual(
+    forYou.map((playlist) => playlist.name),
+    ["Shoegaze Essentials", "Dream Pop & Shoegaze"],
+  );
   assert.ok(genres.length > 0);
 });
 
@@ -282,7 +312,9 @@ test("flow templates keep their recipe and need history for Listening History", 
   );
   assert.equal(available["release-radar"], true);
   assert.equal(available["focus-listening-history"], false);
-  await assert.rejects(buildFlowFromTemplate(OWNER, "focus-listening-history"), { statusCode: 400 });
+  await assert.rejects(buildFlowFromTemplate(OWNER, "focus-listening-history"), {
+    statusCode: 400,
+  });
   await assert.rejects(buildFlowFromTemplate(OWNER, "nope"), { statusCode: 400 });
 
   const radar = await buildFlowFromTemplate(OWNER, "release-radar");
@@ -302,8 +334,8 @@ test("flow templates keep their recipe and need history for Listening History", 
   synchronizeDiscoveryCacheFromWorker({ basedOn: [] });
 });
 
-test("retired Last.fm editorial flows keep their tracks and never run again", async (t) => {
-  const plan = t.mock.method(downloadWorker, "prepareFlowRunPlan", async () => ({
+test("retired Last.fm editorial flows keep their tracks and never run again", async () => {
+  const plan = vi.spyOn(downloadWorker, "prepareFlowRunPlan").mockImplementation(async () => ({
     primaryTracks: [{ artistName: "New Artist", trackName: "New Song" }],
     reserveTracks: [],
   }));
@@ -328,13 +360,16 @@ test("retired Last.fm editorial flows keep their tracks and never run again", as
   invalidateFlowPlaylistConfigCache();
   downloadTracker.addJobs([{ artistName: "Old Artist", trackName: "Old Song" }], "metal-mayhem");
 
-  assert.deepEqual(flowPlaylistConfig.getDueForRefresh().map((flow) => flow.id), ["discover-weekly"]);
+  assert.deepEqual(
+    flowPlaylistConfig.getDueForRefresh().map((flow) => flow.id),
+    ["discover-weekly"],
+  );
 
   for (const kind of ["manual-start-flow", "enable-flow-refresh", "scheduled-flow-refresh"]) {
     await processPlaylistOperation({ kind, flowId: "metal-mayhem" });
   }
 
-  assert.equal(plan.mock.callCount(), 0);
+  assert.equal(plan.mock.calls.length, 0);
   assert.deepEqual(
     downloadTracker.getByPlaylistId("metal-mayhem").map((job) => job.trackName),
     ["Old Song"],

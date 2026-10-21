@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, beforeAll, beforeEach, afterAll, vi } from "vite-plus/test";
 import express from "express";
 import sharp from "sharp";
 import {
@@ -8,24 +8,37 @@ import {
   setupIsolatedBackend,
 } from "../helpers/backendTestHarness.js";
 
-const [state, { db }, { dbOps, userOps }, { hashPassword }, { authMiddleware },
-  { default: authRouter }, { default: imageProxyRouter }] = await setupIsolatedBackend(
-  "image-cache", "backend/config/db-sqlite.js", "backend/db/helpers/index.js",
-  "backend/middleware/passwordHash.js", "backend/middleware/auth.js",
-  "backend/routes/auth.js", "backend/routes/imageProxy.js",
+const [
+  state,
+  { db },
+  { dbOps, userOps },
+  { hashPassword },
+  { authMiddleware },
+  { default: authRouter },
+  { default: imageProxyRouter },
+] = await setupIsolatedBackend(
+  "image-cache",
+  "backend/config/db-sqlite.js",
+  "backend/db/helpers/index.js",
+  "backend/middleware/passwordHash.js",
+  "backend/middleware/auth.js",
+  "backend/routes/auth.js",
+  "backend/routes/imageProxy.js",
 );
 
 const realFetch = globalThis.fetch;
 const cover = await sharp({
   create: { width: 64, height: 64, channels: 3, background: { r: 200, g: 40, b: 40 } },
-}).png().toBuffer();
+})
+  .png()
+  .toBuffer();
 let server;
 let baseUrl;
 let token;
 
 function stubCoverHost(t, routes) {
   const requests = [];
-  t.mock.method(globalThis, "fetch", async (input, init) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     if (url.hostname === "127.0.0.1") return realFetch(input, init);
     requests.push(url.href);
@@ -47,7 +60,7 @@ function cacheImage(src, { authenticated = true } = {}) {
   });
 }
 
-test.before(async () => {
+beforeAll(async () => {
   const app = express();
   app.use(express.json());
   app.use(authMiddleware);
@@ -59,7 +72,7 @@ test.before(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
-test.beforeEach(async () => {
+beforeEach(async () => {
   resetDatabase(db);
   dbOps.updateSettings({
     onboardingComplete: true,
@@ -75,7 +88,7 @@ test.beforeEach(async () => {
   token = (await login.json()).token;
 });
 
-test.after(async () => {
+afterAll(async () => {
   await new Promise((resolve) => server?.close(resolve));
   await cleanupIsolatedState(state);
 });
@@ -101,7 +114,10 @@ test("a signed-in user gets a same-origin copy of a cover from a host without CO
 test("caching a cover requires a signed-in user and an http image URL", async (t) => {
   const requests = stubCoverHost(t, {});
 
-  assert.equal((await cacheImage("https://images.example/cover.jpg", { authenticated: false })).status, 401);
+  assert.equal(
+    (await cacheImage("https://images.example/cover.jpg", { authenticated: false })).status,
+    401,
+  );
   assert.equal((await cacheImage("file:///etc/passwd")).status, 400);
   assert.equal((await cacheImage("https://images.example/missing.jpg")).status, 404);
   assert.deepEqual(requests, ["https://images.example/missing.jpg"]);

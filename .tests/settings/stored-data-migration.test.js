@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, afterAll } from "vite-plus/test";
 
 import { cleanupIsolatedState, setupIsolatedBackend } from "../helpers/backendTestHarness.js";
 
@@ -20,7 +20,8 @@ const [
 );
 
 const writeRaw = (key, value) =>
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+  db
+    .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
     .run(key, typeof value === "string" ? value : JSON.stringify(value));
 const readRaw = (key) => db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value;
 const readJson = (key) => {
@@ -41,24 +42,28 @@ const runMigration = async () => {
   invalidateFlowPlaylistConfigCache();
 };
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
 test("stores older settings, flows, worker options, and sign-in in their current form", async () => {
   reset();
-  writeRaw("weeklyFlows", [{
-    id: "discover",
-    name: "Old Discover",
-    size: 20,
-    tags: { ambient: 3, drone: 1 },
-    relatedArtists: { Burial: 2 },
-  }]);
-  writeRaw("sharedFlowPlaylists", [{
-    id: "old-playlist",
-    name: "Old Playlist",
-    tracks: [{ artistName: "Burial", trackName: "Archangel" }],
-  }]);
+  writeRaw("weeklyFlows", [
+    {
+      id: "discover",
+      name: "Old Discover",
+      size: 20,
+      tags: { ambient: 3, drone: 1 },
+      relatedArtists: { Burial: 2 },
+    },
+  ]);
+  writeRaw("sharedFlowPlaylists", [
+    {
+      id: "old-playlist",
+      name: "Old Playlist",
+      tracks: [{ artistName: "Burial", trackName: "Archangel" }],
+    },
+  ]);
   writeRaw("weeklyFlowWorker", { concurrency: 2, existingFileMode: "hardlink" });
   writeRaw("integrations", {
     metadata: { provider: "brainzmash", baseUrl: "https://brainzmash.kell.ly/" },
@@ -86,7 +91,10 @@ test("stores older settings, flows, worker options, and sign-in in their current
 
   assert.equal(readJson("sharedPlaylists")[0].name, "Old Playlist");
   assert.deepEqual(
-    { concurrency: readJson("playlistWorker").concurrency, mode: readJson("playlistWorker").existingFileMode },
+    {
+      concurrency: readJson("playlistWorker").concurrency,
+      mode: readJson("playlistWorker").existingFileMode,
+    },
     { concurrency: 2, mode: "reuse" },
   );
 
@@ -119,9 +127,10 @@ test("keeps current settings when an older key repeats them", async () => {
 
   await runMigration();
 
-  assert.deepEqual(readJson("flows").map((flow) => [flow.id, flow.name, flow.tags]), [
-    ["current-flow", "Current", ["dub"]],
-  ]);
+  assert.deepEqual(
+    readJson("flows").map((flow) => [flow.id, flow.name, flow.tags]),
+    [["current-flow", "Current", ["dub"]]],
+  );
   assert.equal(readRaw("weeklyFlows"), undefined);
   assert.equal(readJson("playlistWorker").existingFileMode, "download");
   assert.equal(readJson("playlistWorker").concurrency, 1);

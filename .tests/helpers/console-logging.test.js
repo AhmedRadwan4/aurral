@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
@@ -13,27 +13,40 @@ test("log diagnostics redact credentials, collapse lines, and cap length", () =>
   error.stack = "stack-secret";
   const diagnostic = safeLogDiagnostic(error);
   assert.match(diagnostic, /Request to \[redacted URL\] failed/);
-  assert.doesNotMatch(diagnostic, /url-secret|bearer-secret|token-secret|arl-secret|stack-secret|\n/);
+  assert.doesNotMatch(
+    diagnostic,
+    /url-secret|bearer-secret|token-secret|arl-secret|stack-secret|\n/,
+  );
   assert.equal(safeLogDiagnostic("Cookie: session=cookie-secret"), "Cookie=[redacted]");
   assert.equal(safeLogDiagnostic({ message: "token=object-secret" }), "token=[redacted]");
-  assert.equal(safeLogDiagnostic('client_secret=snake-value "clientSecret": "camel-value"'),
-    "client_secret=[redacted] clientSecret=[redacted]");
-  assert.equal(safeLogDiagnostic("Could not read /config/private/provider.json"),
-    "Could not read [redacted path]");
-  assert.equal(safeLogDiagnostic("Could not read /volume-one/private/provider.json"),
-    "Could not read [redacted path]");
-  assert.equal(safeLogDiagnostic('Could not read "C:\\Users\\Jane Doe\\secret.json"'),
-    'Could not read "[redacted path]"');
+  assert.equal(
+    safeLogDiagnostic('client_secret=snake-value "clientSecret": "camel-value"'),
+    "client_secret=[redacted] clientSecret=[redacted]",
+  );
+  assert.equal(
+    safeLogDiagnostic("Could not read /config/private/provider.json"),
+    "Could not read [redacted path]",
+  );
+  assert.equal(
+    safeLogDiagnostic("Could not read /volume-one/private/provider.json"),
+    "Could not read [redacted path]",
+  );
+  assert.equal(
+    safeLogDiagnostic('Could not read "C:\\Users\\Jane Doe\\secret.json"'),
+    'Could not read "[redacted path]"',
+  );
   assert.equal(safeLogDiagnostic("x".repeat(1000)).length, 501);
   assert.equal(safeLogDiagnostic("Connection refused"), "Connection refused");
-  const htmlError = new Error("<!DOCTYPE html><html><head><title>524: A timeout occurred</title></head><body>large page</body></html>");
+  const htmlError = new Error(
+    "<!DOCTYPE html><html><head><title>524: A timeout occurred</title></head><body>large page</body></html>",
+  );
   htmlError.statusCode = 524;
   assert.equal(safeLogDiagnostic(htmlError), "Upstream HTML error (524): 524: A timeout occurred");
 });
 
 test("HTML error titles are extracted without repeated scans of malformed input", () => {
   assert.equal(
-    safeLogDiagnostic("<html><head><TITLE class=\"status\">Gateway error</TITLE></head></html>"),
+    safeLogDiagnostic('<html><head><TITLE class="status">Gateway error</TITLE></head></html>'),
     "Upstream HTML error: Gateway error",
   );
   const malformed = `<!doctype html><html><head>${"<title".repeat(5000)}</head></html>`;
@@ -49,15 +62,21 @@ test("logger sink redacts nested provider diagnostics and credential fields", as
   const originalError = console.error;
   console.error = (...args) => output.push(args);
   try {
-    const { logger } = await import(`../../backend/services/logger.js?safety-test=${Date.now()}`);
+    vi.resetModules();
+    const { logger } = await import("../../backend/services/logger.js");
     logger.error("workers", "Provider failed", {
-      reason: new Error("Failed at /config/private/provider.json: https://user:pass@example.test/?token=url-secret"),
+      reason: new Error(
+        "Failed at /config/private/provider.json: https://user:pass@example.test/?token=url-secret",
+      ),
       headers: { authorization: "Bearer bearer-secret", clientSecret: "client-secret" },
       endpoint: "/album",
     });
     const rendered = JSON.stringify(output);
     assert.match(rendered, /Provider failed|redacted/);
-    assert.doesNotMatch(rendered, /\/config\/private|user:pass|url-secret|bearer-secret|client-secret/);
+    assert.doesNotMatch(
+      rendered,
+      /\/config\/private|user:pass|url-secret|bearer-secret|client-secret/,
+    );
     assert.equal(output[0][2].headers.authorization, "[redacted]");
     assert.equal(output[0][2].headers.clientSecret, "[redacted]");
     assert.equal(output[0][2].endpoint, "/album");
@@ -89,16 +108,23 @@ test("simplified logger writes to console with level and category", async () => 
   console.warn = (...args) => output.push(["warn", ...args]);
 
   try {
-    const { logger } = await import(
-      `../../backend/services/logger.js?console-test=${Date.now()}`
-    );
+    vi.resetModules();
+    const { logger } = await import("../../backend/services/logger.js");
     logger.info("test", "Server running on port 3001", { key: "val" });
     logger.warn("test", "warn message");
     logger.error("test", "error message");
 
     const rendered = (entry) => entry.slice(1).map(String).join(" ");
 
-    assert.ok(output.some((entry) => entry[0] === "log" && rendered(entry).includes("[info]") && rendered(entry).includes("[test]") && rendered(entry).includes("Server running")));
+    assert.ok(
+      output.some(
+        (entry) =>
+          entry[0] === "log" &&
+          rendered(entry).includes("[info]") &&
+          rendered(entry).includes("[test]") &&
+          rendered(entry).includes("Server running"),
+      ),
+    );
     assert.ok(output.some((entry) => entry[0] === "warn" && rendered(entry).includes("[warn]")));
     assert.ok(output.some((entry) => entry[0] === "error" && rendered(entry).includes("[error]")));
   } finally {
@@ -122,9 +148,8 @@ test("regular logger hides routine info and debug output", async () => {
 
   try {
     process.env.AURRAL_VERBOSE_LOGS = "";
-    const { logger } = await import(
-      `../../backend/services/logger.js?regular-test=${Date.now()}`
-    );
+    vi.resetModules();
+    const { logger } = await import("../../backend/services/logger.js");
     logger.info("test", "routine info");
     logger.info("playlist-import", "Playlist import job completed");
     logger.debug("test", "debug detail");
@@ -145,17 +170,10 @@ test("regular logger hides routine info and debug output", async () => {
 });
 
 test("regular console keeps startup and problem messages", async () => {
-  const { shouldEmitDefaultConsoleMessage } = await import(
-    `../../backend/services/logger.js?policy-test=${Date.now()}`
-  );
-  assert.equal(
-    shouldEmitDefaultConsoleMessage("log", ["Server running on port 3001"]),
-    true,
-  );
-  assert.equal(
-    shouldEmitDefaultConsoleMessage("log", ["Discovery cache is fresh"]),
-    false,
-  );
+  vi.resetModules();
+  const { shouldEmitDefaultConsoleMessage } = await import("../../backend/services/logger.js");
+  assert.equal(shouldEmitDefaultConsoleMessage("log", ["Server running on port 3001"]), true);
+  assert.equal(shouldEmitDefaultConsoleMessage("log", ["Discovery cache is fresh"]), false);
   assert.equal(shouldEmitDefaultConsoleMessage("warn", ["warning"]), true);
   assert.equal(shouldEmitDefaultConsoleMessage("log", ["Playlist import queued"]), true);
   assert.equal(shouldEmitDefaultConsoleMessage("log", ["Playlist import job completed"]), true);

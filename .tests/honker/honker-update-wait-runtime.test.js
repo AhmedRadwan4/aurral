@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import honker from "@russellthehippo/honker-node";
 
 test(
@@ -32,9 +32,6 @@ test(
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
 
-    assert.ok(
-      final - baseline <= 5,
-      `native task count grew from ${baseline} to ${final}`,
-    );
+    assert.ok(final - baseline <= 5, `native task count grew from ${baseline} to ${final}`);
   },
 );

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { test } from "node:test";
+import { test } from "vite-plus/test";
 import { createFlowPlanRunner } from "../../backend/services/flows/flowPlanRunner.js";
 
 function fakePlanner() {
@@ -18,7 +18,9 @@ function fakePlanner() {
       child.request = message;
     }
   };
-  child.kill = () => { child.killed = true; };
+  child.kill = () => {
+    child.killed = true;
+  };
   return child;
 }
 

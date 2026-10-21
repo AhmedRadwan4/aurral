@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import { createRequire } from "node:module";
 
 const backendRequire = createRequire(new URL("../../backend/package.json", import.meta.url));
@@ -54,7 +54,8 @@ const put = (db, body, id = INSTANCE_ID) =>
   });
 
 const storedUrl = (db) =>
-  db.sqlite.prepare("SELECT tunnel_url FROM instances WHERE id = ?").get(INSTANCE_ID)?.tunnel_url ?? null;
+  db.sqlite.prepare("SELECT tunnel_url FROM instances WHERE id = ?").get(INSTANCE_ID)?.tunnel_url ??
+  null;
 
 test("an instance registers a tunnel only when the tunnel proves it is that instance", async (t) => {
   const db = fakeD1();
@@ -62,7 +63,7 @@ test("an instance registers a tunnel only when the tunnel proves it is that inst
     [`${TUNNEL}/share/.well-known/aurral`]: () => json({ instanceId: "someone-else-id1" }),
     ["https://evil.example.com/share/.well-known/aurral"]: () => json({ instanceId: INSTANCE_ID }),
   });
-  t.after(restore);
+  t.onTestFinished(restore);
 
   assert.equal((await put(db, { secret: SECRET, url: "https://evil.example.com" })).status, 400);
   assert.equal((await put(db, { secret: SECRET, url: `${TUNNEL}/path` })).status, 400);
@@ -77,7 +78,7 @@ test("the first secret owns the instance and other secrets cannot move or clear 
     ["https://other-tunnel-name.trycloudflare.com/share/.well-known/aurral"]: () =>
       json({ instanceId: INSTANCE_ID }),
   });
-  t.after(restore);
+  t.onTestFinished(restore);
 
   assert.equal((await put(db, { secret: SECRET, url: TUNNEL })).status, 204);
   assert.equal(storedUrl(db), TUNNEL);
@@ -89,7 +90,10 @@ test("the first secret owns the instance and other secrets cannot move or clear 
   const clear = await onRequestDelete({
     env: { SHARE_DB: db },
     params: { id: INSTANCE_ID },
-    request: new Request("https://aurral.org", { method: "DELETE", body: JSON.stringify({ secret: "x".repeat(43) }) }),
+    request: new Request("https://aurral.org", {
+      method: "DELETE",
+      body: JSON.stringify({ secret: "x".repeat(43) }),
+    }),
   });
   assert.equal(clear.status, 403);
   assert.equal(storedUrl(db), TUNNEL);
@@ -105,9 +109,10 @@ test("a claim racing the first owner cannot take over the instance", async (t) =
   });
   const restore = tunnelAnswering({
     [`${TUNNEL}/share/.well-known/aurral`]: () => json({ instanceId: INSTANCE_ID }),
-    [`${RIVAL}/share/.well-known/aurral`]: () => rivalVerified.then(() => json({ instanceId: INSTANCE_ID })),
+    [`${RIVAL}/share/.well-known/aurral`]: () =>
+      rivalVerified.then(() => json({ instanceId: INSTANCE_ID })),
   });
-  t.after(restore);
+  t.onTestFinished(restore);
 
   const rival = put(db, { secret: "x".repeat(43), url: RIVAL });
   assert.equal((await put(db, { secret: SECRET, url: TUNNEL })).status, 204);
@@ -131,7 +136,7 @@ test("a listen link plays from the registered tunnel, and says so when the tunne
           })
         : json({ error: "not_found" }, 404),
   });
-  t.after(restore);
+  t.onTestFinished(restore);
   assert.equal((await put(db, { secret: SECRET, url: TUNNEL })).status, 204);
 
   const open = (segment) =>

@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, afterAll, vi } from "vite-plus/test";
 
-import {
-  cleanupIsolatedState,
-  setupIsolatedBackend,
-} from "../helpers/backendTestHarness.js";
+import { cleanupIsolatedState, setupIsolatedBackend } from "../helpers/backendTestHarness.js";
 
 const [isolatedState, { db }, honkerDb, libraryManagerModule, systemTaskWorker] =
   await setupIsolatedBackend(
@@ -35,13 +32,13 @@ async function settleRetryEnqueues() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-test.after(async () => {
+afterAll(async () => {
   await cleanupIsolatedState(isolatedState);
 });
 
-test("unavailable Lidarr keeps one retry job and continues its retry chain", async (t) => {
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  const request = t.mock.method(lidarrClient, "request", async () => {
+test("unavailable Lidarr keeps one retry job and continues its retry chain", async () => {
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  const request = vi.spyOn(lidarrClient, "request").mockImplementation(async () => {
     throw new Error("provider unavailable");
   });
   const queue = honkerDb.getSystemTaskQueue();
@@ -58,7 +55,7 @@ test("unavailable Lidarr keeps one retry job and continues its retry chain", asy
 
   const firstRetryJobs = getPendingRetryJobs();
   assert.equal(firstRetryJobs.length, 1);
-  assert.equal(request.mock.callCount(), 1);
+  assert.equal(request.mock.calls.length, 1);
 
   await systemTaskWorker.stopSystemTaskWorker();
   const firstRetryJob = firstRetryJobs[0];
@@ -69,14 +66,11 @@ test("unavailable Lidarr keeps one retry job and continues its retry chain", asy
   const claimedRetry = queue.claimOne(honkerDb.getWorkerId());
   assert.equal(claimedRetry?.id, firstRetryJob.id);
 
-  await systemTaskWorker.processSystemTask(
-    { kind: "lidarr-retry" },
-    claimedRetry,
-  );
+  await systemTaskWorker.processSystemTask({ kind: "lidarr-retry" }, claimedRetry);
   await settleRetryEnqueues();
 
   const successorJobs = getPendingRetryJobs();
-  assert.equal(request.mock.callCount(), 2);
+  assert.equal(request.mock.calls.length, 2);
   assert.equal(successorJobs.length, 1);
   assert.notEqual(successorJobs[0].id, claimedRetry.id);
 

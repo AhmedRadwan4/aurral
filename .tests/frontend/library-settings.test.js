@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 
 import {
   describeLidarrConnectionState,
@@ -15,7 +15,10 @@ test("a connected, reachable Lidarr shows no reconnect state", () => {
     null,
   );
   assert.equal(
-    describeLidarrConnectionState({ lidarr: { ...connectedLidarr, enabled: undefined }, health: reachableHealth }),
+    describeLidarrConnectionState({
+      lidarr: { ...connectedLidarr, enabled: undefined },
+      health: reachableHealth,
+    }),
     null,
   );
 });

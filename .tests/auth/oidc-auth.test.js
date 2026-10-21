@@ -1,4 +1,4 @@
-import test, { mock } from "node:test";
+import { test, beforeEach, afterAll, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { createSign, generateKeyPairSync } from "node:crypto";
 
@@ -35,7 +35,12 @@ const {
 const completeOnboarding = () => dbOps.updateSettings({ onboardingComplete: true });
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-const oidcKey = { ...publicKey.export({ format: "jwk" }), kid: "test-key", use: "sig", alg: "RS256" };
+const oidcKey = {
+  ...publicKey.export({ format: "jwk" }),
+  kid: "test-key",
+  use: "sig",
+  alg: "RS256",
+};
 
 const createIdToken = (issuer, nonce, claimOverrides = {}) => {
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -173,13 +178,13 @@ async function completeOidcLogin(pending) {
   });
 }
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
   resetOidcEnv();
   dbOps.updateSettings({ onboardingComplete: false });
 });
 
-test.after(async () => {
+afterAll(async () => {
   resetOidcEnv();
   await cleanupIsolatedState(isolatedState);
 });
@@ -272,7 +277,10 @@ test("OIDC callback issues a cookie-bound one-time session exchange", async () =
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
 
     assert.throws(
-      () => exchangeOidcCallback(callback.code, { headers: { cookie: "aurral_oidc_transaction=wrong" } }),
+      () =>
+        exchangeOidcCallback(callback.code, {
+          headers: { cookie: "aurral_oidc_transaction=wrong" },
+        }),
       { status: 400, message: "OIDC login session expired" },
     );
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
@@ -398,7 +406,7 @@ test("OIDC groups claim ignores UserInfo-only admin groups", async () => {
 test("OIDC callback rejects an expired state without creating a session", async () => {
   const pending = await createPendingOidcLogin();
   const now = Date.now();
-  const clock = mock.method(Date, "now", () => now + 11 * 60 * 1000);
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now + 11 * 60 * 1000);
 
   try {
     await assert.rejects(
@@ -412,7 +420,7 @@ test("OIDC callback rejects an expired state without creating a session", async 
     );
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM sessions").get().count, 0);
   } finally {
-    clock.mock.restore();
+    clock.mockRestore();
     await pending.close();
   }
 });
@@ -451,7 +459,10 @@ test("OIDC login falls back to the UserInfo endpoint when the ID token omits pro
         JSON.stringify({
           access_token: "access-token",
           token_type: "Bearer",
-          id_token: createIdToken(issuer, nonce, { preferred_username: undefined, email: undefined }),
+          id_token: createIdToken(issuer, nonce, {
+            preferred_username: undefined,
+            email: undefined,
+          }),
         }),
       );
       return;
@@ -631,7 +642,11 @@ test("OIDC login adopts a legacy account only once an admin has approved that sp
   try {
     const session = await completeOidcLogin(pending);
     const loggedInUser = getSessionByToken(session.token)?.user;
-    assert.equal(loggedInUser?.id, legacy.id, "must adopt the legacy account, not provision a new one");
+    assert.equal(
+      loggedInUser?.id,
+      legacy.id,
+      "must adopt the legacy account, not provision a new one",
+    );
     assert.equal(loggedInUser?.username, "callback-user");
   } finally {
     await pending.close();
@@ -893,7 +908,10 @@ test("OIDC rejects an unrecognized token endpoint auth method instead of silentl
     },
     json() {},
   };
-  await assert.rejects(() => startOidcLogin({}, response), /Unsupported OIDC_TOKEN_ENDPOINT_AUTH_METHOD/);
+  await assert.rejects(
+    () => startOidcLogin({}, response),
+    /Unsupported OIDC_TOKEN_ENDPOINT_AUTH_METHOD/,
+  );
 });
 
 async function createReusableOidcProvider() {
@@ -906,19 +924,23 @@ async function createReusableOidcProvider() {
       return;
     }
     if (request.method === "POST" && request.url === "/token") {
-      response.end(JSON.stringify({
-        access_token: "access-token",
-        token_type: "Bearer",
-        id_token: createIdToken(issuer, nonce),
-      }));
+      response.end(
+        JSON.stringify({
+          access_token: "access-token",
+          token_type: "Bearer",
+          id_token: createIdToken(issuer, nonce),
+        }),
+      );
       return;
     }
-    response.end(JSON.stringify({
-      issuer,
-      authorization_endpoint: `${issuer}authorize`,
-      token_endpoint: `${issuer}token`,
-      jwks_uri: `${issuer}jwks`,
-    }));
+    response.end(
+      JSON.stringify({
+        issuer,
+        authorization_endpoint: `${issuer}authorize`,
+        token_endpoint: `${issuer}token`,
+        jwks_uri: `${issuer}jwks`,
+      }),
+    );
   });
   issuer = `${server.url}/`;
   enableOidcEnv({ OIDC_ISSUER: issuer, OIDC_REDIRECT_URI: `${issuer}callback` });
@@ -975,7 +997,10 @@ test("linking an SSO identity that another user already has is rejected with 409
   try {
     const owner = (await provider.signIn()).user;
     const other = userOps.createUser("bob", "hash", "user", null);
-    await assert.rejects(() => provider.signIn(linkTo(other.id)), (error) => error.status === 409);
+    await assert.rejects(
+      () => provider.signIn(linkTo(other.id)),
+      (error) => error.status === 409,
+    );
     assert.equal(userIdentityOps.countForUser(other.id), 0);
     assert.equal(userIdentityOps.countForUser(owner.id), 1);
   } finally {
@@ -989,7 +1014,10 @@ test("a suspended user cannot complete an SSO link", async () => {
   userOps.updateUser(user.id, { status: "suspended" });
   const provider = await createReusableOidcProvider();
   try {
-    await assert.rejects(() => provider.signIn(linkTo(user.id)), (error) => error.status === 403);
+    await assert.rejects(
+      () => provider.signIn(linkTo(user.id)),
+      (error) => error.status === 403,
+    );
     assert.equal(userIdentityOps.countForUser(user.id), 0);
   } finally {
     await provider.close();

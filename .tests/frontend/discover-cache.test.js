@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vite-plus/test";
 import {
   getStoredRecentlyAddedAt,
   getLibraryArtistImage,
@@ -7,18 +7,30 @@ import {
 } from "../../frontend/src/pages/discoverUtils.js";
 
 test("recent library artwork accepts both providers and prefers portraits over fanart", () => {
-  assert.equal(getLibraryArtistImage({ images: [
-    { kind: "Fanart", url: "/background.jpg" },
-    { kind: "Poster", url: "/portrait.jpg" },
-  ] }), "/portrait.jpg");
-  assert.equal(getLibraryArtistImage({ images: [
-    { coverType: "banner", remoteUrl: "/banner.jpg" },
-    { coverType: "poster", remoteUrl: "/lidarr-portrait.jpg" },
-  ] }), "/lidarr-portrait.jpg");
-  assert.equal(getLibraryArtistImage({ images: [
-    { kind: "Poster" },
-    { CoverType: "Fanart", Url: "/fallback.jpg" },
-  ] }), "/fallback.jpg");
+  assert.equal(
+    getLibraryArtistImage({
+      images: [
+        { kind: "Fanart", url: "/background.jpg" },
+        { kind: "Poster", url: "/portrait.jpg" },
+      ],
+    }),
+    "/portrait.jpg",
+  );
+  assert.equal(
+    getLibraryArtistImage({
+      images: [
+        { coverType: "banner", remoteUrl: "/banner.jpg" },
+        { coverType: "poster", remoteUrl: "/lidarr-portrait.jpg" },
+      ],
+    }),
+    "/lidarr-portrait.jpg",
+  );
+  assert.equal(
+    getLibraryArtistImage({
+      images: [{ kind: "Poster" }, { CoverType: "Fanart", Url: "/fallback.jpg" }],
+    }),
+    "/fallback.jpg",
+  );
   assert.equal(getLibraryArtistImage({ images: null }), null);
 });
 

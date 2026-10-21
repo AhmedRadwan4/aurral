@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, beforeEach, afterAll } from "vite-plus/test";
 
 import {
   cleanupIsolatedState,
@@ -15,12 +15,12 @@ const [isolatedState, playEvents, scrobbleStore, honkerDbModule] = await setupIs
 );
 const { db } = await import("../../backend/config/db-sqlite.js");
 
-test.beforeEach(() => {
+beforeEach(() => {
   resetDatabase(db);
   db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)").run("listener", "test");
 });
 
-test.after(async () => cleanupIsolatedState(isolatedState));
+afterAll(async () => cleanupIsolatedState(isolatedState));
 
 test("records local plays and aggregates artists without provider access", () => {
   const first = playEvents.recordPlayEvent(1, {
@@ -50,9 +50,7 @@ test("records local plays and aggregates artists without provider access", () =>
     lastPlayedAt: 1700000001000,
   });
   assert.deepEqual(
-    db.prepare(
-      "SELECT album_key, play_count FROM play_album_stats WHERE user_id = ?",
-    ).all(1),
+    db.prepare("SELECT album_key, play_count FROM play_album_stats WHERE user_id = ?").all(1),
     [{ album_key: "history-album", play_count: 1 }],
   );
 });
@@ -68,10 +66,9 @@ test("pins each scrobble delivery to the connection active when the play was rec
     title: "One",
     artist: "Artist A",
   });
-  const row = honkerDbModule.getHonkerDb().query(
-    "SELECT payload FROM _honker_live WHERE queue = ?",
-    ["_outbox:play-events"],
-  )[0];
+  const row = honkerDbModule
+    .getHonkerDb()
+    .query("SELECT payload FROM _honker_live WHERE queue = ?", ["_outbox:play-events"])[0];
 
   assert.equal(JSON.parse(row.payload).eventId, event.id);
   assert.equal(JSON.parse(row.payload).connectionRevision, connection.connectionRevision);

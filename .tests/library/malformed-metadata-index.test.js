@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import test from "node:test";
+import { test } from "vite-plus/test";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -108,18 +108,28 @@ test("malformed artist metadata does not break startup or indexed reference look
     assert.deepEqual(evidence.foreignArtistNames, ["Valid Artist"]);
     const indexes = new Map(evidence.indexes.map(({ name, sql }) => [name, sql]));
     assert.match(indexes.get("idx_library_artists_provider_id"), /json_valid\(metadata_json\)/);
-    assert.match(indexes.get("idx_library_artists_provider_id"), /json_extract\(metadata_json, '\$\.id'\)/);
-    assert.match(indexes.get("idx_library_artists_foreign_artist_id"), /json_valid\(metadata_json\)/);
+    assert.match(
+      indexes.get("idx_library_artists_provider_id"),
+      /json_extract\(metadata_json, '\$\.id'\)/,
+    );
+    assert.match(
+      indexes.get("idx_library_artists_foreign_artist_id"),
+      /json_valid\(metadata_json\)/,
+    );
     assert.match(
       indexes.get("idx_library_artists_foreign_artist_id"),
       /json_extract\(metadata_json, '\$\.foreignArtistId'\)/,
     );
     assert.equal(
-      evidence.providerPlan.some(({ detail }) => detail.includes("idx_library_artists_provider_id")),
+      evidence.providerPlan.some(({ detail }) =>
+        detail.includes("idx_library_artists_provider_id"),
+      ),
       true,
     );
     assert.equal(
-      evidence.foreignPlan.some(({ detail }) => detail.includes("idx_library_artists_foreign_artist_id")),
+      evidence.foreignPlan.some(({ detail }) =>
+        detail.includes("idx_library_artists_foreign_artist_id"),
+      ),
       true,
     );
   } finally {

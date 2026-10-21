@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
-import { test } from "node:test";
+import { test } from "vite-plus/test";
 import { fileURLToPath } from "node:url";
 import { createBackgroundProcessSupervisor } from "../backend/services/backgroundProcessSupervisor.js";
 
@@ -10,8 +10,12 @@ test("a blocked background process leaves the web process event loop responsive"
   let child;
   let ready;
   let done;
-  const readyPromise = new Promise((resolve) => { ready = resolve; });
-  const donePromise = new Promise((resolve) => { done = resolve; });
+  const readyPromise = new Promise((resolve) => {
+    ready = resolve;
+  });
+  const donePromise = new Promise((resolve) => {
+    done = resolve;
+  });
   const supervisor = createBackgroundProcessSupervisor({
     groups: ["library"],
     findGroupsWithWork: () => ["library"],

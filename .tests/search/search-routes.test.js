@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, beforeAll, beforeEach, afterAll } from "vite-plus/test";
 import express from "express";
 import {
   cleanupIsolatedState,
@@ -23,7 +23,7 @@ let metadataServer;
 let metadataRequests = [];
 let metadataHandler = null;
 
-test.before(async () => {
+beforeAll(async () => {
   resetDatabase(db);
   metadataServer = await createMockHttpServer((request, response) => {
     metadataRequests.push({ url: request.url, response });
@@ -52,13 +52,13 @@ test.before(async () => {
   });
 });
 
-test.beforeEach(() => {
+beforeEach(() => {
   metadataRequests = [];
   metadataHandler = null;
   provider.clearMetadataProviderCaches();
 });
 
-test.after(async () => {
+afterAll(async () => {
   await new Promise((resolve) => app.server.close(resolve));
   await metadataServer.close();
   await cleanupIsolatedState(isolatedState);
@@ -113,40 +113,44 @@ test("library search answers from the local library without calling the metadata
   assert.equal(metadataRequests.length, 0);
 });
 
-test("a disconnected unified search cancels metadata requests and does not cache empty results", { timeout: 4000 }, async () => {
-  const bothRequestsArrived = new Promise((resolve) => {
-    metadataHandler = () => {
-      if (metadataRequests.length === 2) resolve();
+test(
+  "a disconnected unified search cancels metadata requests and does not cache empty results",
+  { timeout: 4000 },
+  async () => {
+    const bothRequestsArrived = new Promise((resolve) => {
+      metadataHandler = () => {
+        if (metadataRequests.length === 2) resolve();
+      };
+    });
+    const client = new AbortController();
+    const abandoned = fetch(`${app.url}/api/search/unified?q=lantern`, {
+      signal: client.signal,
+    }).catch((error) => error);
+
+    await bothRequestsArrived;
+    const upstreamClosed = Promise.all(
+      metadataRequests.map(
+        ({ response }) => new Promise((resolve) => response.on("close", resolve)),
+      ),
+    );
+    client.abort();
+    assert.equal((await abandoned).name, "AbortError");
+    await upstreamClosed;
+
+    metadataHandler = (request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url.startsWith("/search/artist")) {
+        response.end(JSON.stringify([{ id: "lantern-artist-mbid", artistname: "Lantern" }]));
+        return;
+      }
+      response.end(JSON.stringify([]));
     };
-  });
-  const client = new AbortController();
-  const abandoned = fetch(`${app.url}/api/search/unified?q=lantern`, {
-    signal: client.signal,
-  }).catch((error) => error);
-
-  await bothRequestsArrived;
-  const upstreamClosed = Promise.all(
-    metadataRequests.map(
-      ({ response }) => new Promise((resolve) => response.on("close", resolve)),
-    ),
-  );
-  client.abort();
-  assert.equal((await abandoned).name, "AbortError");
-  await upstreamClosed;
-
-  metadataHandler = (request, response) => {
-    response.setHeader("content-type", "application/json");
-    if (request.url.startsWith("/search/artist")) {
-      response.end(JSON.stringify([{ id: "lantern-artist-mbid", artistname: "Lantern" }]));
-      return;
-    }
-    response.end(JSON.stringify([]));
-  };
-  const retry = await fetch(`${app.url}/api/search/unified?q=lantern`);
-  assert.equal(retry.status, 200);
-  const body = await retry.json();
-  assert.deepEqual(
-    body.catalog.artists.map((artist) => artist.name),
-    ["Lantern"],
-  );
-});
+    const retry = await fetch(`${app.url}/api/search/unified?q=lantern`);
+    assert.equal(retry.status, 200);
+    const body = await retry.json();
+    assert.deepEqual(
+      body.catalog.artists.map((artist) => artist.name),
+      ["Lantern"],
+    );
+  },
+);

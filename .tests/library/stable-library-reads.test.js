@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test, vi } from "vite-plus/test";
 
 import { db } from "../../backend/config/db-sqlite.js";
 import {
@@ -31,7 +31,7 @@ import { getLibraryLidarrArtist } from "../../backend/routes/artists/handlers/de
 import { registerArtists } from "../../backend/routes/library/handlers/artists.js";
 import { getLibrarySearchMatch } from "../../backend/services/librarySearchIndex.js";
 
-test("stable artist and discovery reads do not call Lidarr", async (t) => {
+test("stable artist and discovery reads do not call Lidarr", async () => {
   const identityKey = `stable-read-test:${Date.now()}`;
   const artist = upsertLibraryArtist({
     identityKey,
@@ -40,10 +40,10 @@ test("stable artist and discovery reads do not call Lidarr", async (t) => {
     metadata: { id: 9911, monitored: true },
   });
   const originalConfigured = lidarrClient.isConfigured;
-  const request = t.mock.method(lidarrClient, "request", async () => {
+  const request = vi.spyOn(lidarrClient, "request").mockImplementation(async () => {
     throw new Error("stable reads must not call Lidarr");
   });
-  t.mock.method(lidarrClient, "getAllAlbums", async () => {
+  vi.spyOn(lidarrClient, "getAllAlbums").mockImplementation(async () => {
     throw new Error("stable reads must not call Lidarr");
   });
   lidarrClient.isConfigured = () => true;
@@ -58,14 +58,14 @@ test("stable artist and discovery reads do not call Lidarr", async (t) => {
     assert.equal(projectedArtist?.id, String(artist.id));
     assert.equal(projectedArtist?.canonicalId, String(artist.id));
     assert.deepEqual(releases, []);
-    assert.equal(request.mock.callCount(), 0);
+    assert.equal(request.mock.calls.length, 0);
   } finally {
     lidarrClient.isConfigured = originalConfigured;
     db.prepare("DELETE FROM library_artists WHERE id = ?").run(artist.id);
   }
 });
 
-test("optional Lidarr reads use indexed Aurral media without provider calls", async (t) => {
+test("optional Lidarr reads use indexed Aurral media without provider calls", async () => {
   const key = `optional-lidarr-read-${process.pid}-${Date.now()}`;
   const artist = upsertLibraryArtist({
     identityKey: `${key}:artist`,
@@ -94,8 +94,8 @@ test("optional Lidarr reads use indexed Aurral media without provider calls", as
     path: filePath,
     available: true,
   });
-  t.mock.method(lidarrClient, "isConfigured", () => false);
-  const request = t.mock.method(lidarrClient, "request", async () => {
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => false);
+  const request = vi.spyOn(lidarrClient, "request").mockImplementation(async () => {
     throw new Error("optional reads must not call Lidarr");
   });
   for (const method of [
@@ -105,7 +105,7 @@ test("optional Lidarr reads use indexed Aurral media without provider calls", as
     "getTracksByAlbumId",
     "getTrackFilesByAlbumId",
   ]) {
-    t.mock.method(lidarrClient, method, async () => {
+    vi.spyOn(lidarrClient, method).mockImplementation(async () => {
       throw new Error("optional reads must not call Lidarr");
     });
   }
@@ -131,7 +131,7 @@ test("optional Lidarr reads use indexed Aurral media without provider calls", as
       queue.find((entry) => entry.id === `lib-${artist.id}-${album.id}-${track.id}`)?.streamPath,
       `/library/canonical-stream/${album.id}/${track.id}`,
     );
-    assert.equal(request.mock.callCount(), 0);
+    assert.equal(request.mock.calls.length, 0);
   } finally {
     db.prepare("DELETE FROM library_media_files WHERE path = ?").run(filePath);
     db.prepare("DELETE FROM library_album_tracks WHERE album_id = ?").run(album.id);
@@ -141,7 +141,7 @@ test("optional Lidarr reads use indexed Aurral media without provider calls", as
   }
 });
 
-test("configured Lidarr read failures fall back to the library index", async (t) => {
+test("configured Lidarr read failures fall back to the library index", async () => {
   const key = `fallback-lidarr-read-${process.pid}-${Date.now()}`;
   const artist = upsertLibraryArtist({
     identityKey: `${key}:artist`,
@@ -169,17 +169,17 @@ test("configured Lidarr read failures fall back to the library index", async (t)
     path: filePath,
     available: true,
   });
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  t.mock.method(lidarrClient, "getArtistByMbid", async () => {
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  vi.spyOn(lidarrClient, "getArtistByMbid").mockImplementation(async () => {
     throw new Error("Lidarr connection refused");
   });
-  t.mock.method(lidarrClient, "getArtist", async () => {
+  vi.spyOn(lidarrClient, "getArtist").mockImplementation(async () => {
     throw new Error("Lidarr connection refused");
   });
-  t.mock.method(lidarrClient, "getHistory", async () => {
+  vi.spyOn(lidarrClient, "getHistory").mockImplementation(async () => {
     throw new Error("Lidarr connection refused");
   });
-  t.mock.method(lidarrClient, "getAlbum", async () => {
+  vi.spyOn(lidarrClient, "getAlbum").mockImplementation(async () => {
     throw new Error("Lidarr connection refused");
   });
 
@@ -205,7 +205,7 @@ test("configured Lidarr read failures fall back to the library index", async (t)
   }
 });
 
-test("artist key reads use identity columns and preserve metadata foreign IDs", (t) => {
+test("artist key reads use identity columns and preserve metadata foreign IDs", () => {
   const identityKey = `artist-key-read:${Date.now()}`;
   const foreignArtistId = "artist-key-foreign-id";
   const artist = upsertLibraryArtist({
@@ -215,7 +215,7 @@ test("artist key reads use identity columns and preserve metadata foreign IDs", 
   });
   const prepared = [];
   const prepare = db.prepare.bind(db);
-  t.mock.method(db, "prepare", (sql) => {
+  vi.spyOn(db, "prepare").mockImplementation((sql) => {
     prepared.push(String(sql));
     return prepare(sql);
   });
@@ -240,17 +240,17 @@ test("artist key reads use identity columns and preserve metadata foreign IDs", 
   }
 });
 
-test("artist monitoring mutations dedupe library reconciliation scans", async (t) => {
+test("artist monitoring mutations dedupe library reconciliation scans", async () => {
   clearScheduledLibraryScan();
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  t.mock.method(lidarrClient, "getArtistByMbid", async () => ({
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  vi.spyOn(lidarrClient, "getArtistByMbid").mockImplementation(async () => ({
     id: 9922,
     artistName: "Monitoring Artist",
     foreignArtistId: "33333333-3333-4333-8333-333333333333",
     monitored: false,
   }));
-  t.mock.method(lidarrClient, "updateArtistMonitoring", async () => ({}));
-  t.mock.method(lidarrClient, "getArtist", async () => ({
+  vi.spyOn(lidarrClient, "updateArtistMonitoring").mockImplementation(async () => ({}));
+  vi.spyOn(lidarrClient, "getArtist").mockImplementation(async () => ({
     id: 9922,
     artistName: "Monitoring Artist",
     foreignArtistId: "33333333-3333-4333-8333-333333333333",
@@ -281,7 +281,7 @@ test("artist monitoring mutations dedupe library reconciliation scans", async (t
   }
 });
 
-test("deleting a Lidarr artist clears library provider state for both IDs", async (t) => {
+test("deleting a Lidarr artist clears library provider state for both IDs", async () => {
   const mbid = "89898989-8989-4898-8989-898989898989";
   const foreignArtistId = "8989@deezer";
   const artist = upsertLibraryArtist({
@@ -305,13 +305,13 @@ test("deleting a Lidarr artist clears library provider state for both IDs", asyn
     },
   });
   clearScheduledLibraryScan();
-  t.mock.method(lidarrClient, "isConfigured", () => true);
-  t.mock.method(lidarrClient, "getArtistByMbid", async () => ({
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => true);
+  vi.spyOn(lidarrClient, "getArtistByMbid").mockImplementation(async () => ({
     id: 8989,
     artistName: "Deleted Provider Artist",
     foreignArtistId,
   }));
-  t.mock.method(lidarrClient, "deleteArtist", async () => true);
+  vi.spyOn(lidarrClient, "deleteArtist").mockImplementation(async () => true);
 
   try {
     assert.deepEqual(await libraryManager.deleteArtist(mbid), { success: true });
@@ -372,30 +372,49 @@ test("library artist compatibility reads apply SQL pagination", async () => {
     get(path, ...handlers) {
       routes.set(`GET ${path}`, handlers.at(-1));
     },
-    post() { return this; },
-    put() { return this; },
-    delete() { return this; },
+    post() {
+      return this;
+    },
+    put() {
+      return this;
+    },
+    delete() {
+      return this;
+    },
   });
 
   let body;
   try {
     await routes.get("GET /artists")(
       { query: { readPath: "canonical", source: "lidarr", limit: "1", offset: "1" } },
-      { json(value) { body = value; return this; } },
+      {
+        json(value) {
+          body = value;
+          return this;
+        },
+      },
     );
-    assert.deepEqual(body.map((artist) => artist.name), [`${key} B`]);
+    assert.deepEqual(
+      body.map((artist) => artist.name),
+      [`${key} B`],
+    );
     assert.equal(body[0].canonicalId, artists[1].id);
     assert.equal(body[0].statistics.trackCount, 1);
     assert.equal(body[0].added, body[0].addedAt);
   } finally {
     db.prepare("DELETE FROM library_media_files WHERE path IN (?, ?)").run(...paths);
-    db.prepare("DELETE FROM library_album_tracks WHERE album_id IN (?, ?) OR track_id IN (?, ?)").run(
+    db.prepare(
+      "DELETE FROM library_album_tracks WHERE album_id IN (?, ?) OR track_id IN (?, ?)",
+    ).run(...albums.map((album) => album.id), ...tracks.map((track) => track.id));
+    db.prepare("DELETE FROM library_albums WHERE id IN (?, ?)").run(
       ...albums.map((album) => album.id),
+    );
+    db.prepare("DELETE FROM library_artists WHERE id IN (?, ?)").run(
+      ...artists.map((artist) => artist.id),
+    );
+    db.prepare("DELETE FROM library_tracks WHERE id IN (?, ?)").run(
       ...tracks.map((track) => track.id),
     );
-    db.prepare("DELETE FROM library_albums WHERE id IN (?, ?)").run(...albums.map((album) => album.id));
-    db.prepare("DELETE FROM library_artists WHERE id IN (?, ?)").run(...artists.map((artist) => artist.id));
-    db.prepare("DELETE FROM library_tracks WHERE id IN (?, ?)").run(...tracks.map((track) => track.id));
   }
 });
 
@@ -449,8 +468,9 @@ test("library paginated reads keep tied rows stable", () => {
 
     const expectedProjectionIds = artists.map((artist) => String(artist.id));
     const expectedIds = artists.map((artist) => artist.id);
-    const projectionOffset = db.prepare(
-      `SELECT COUNT(*) AS count
+    const projectionOffset = db
+      .prepare(
+        `SELECT COUNT(*) AS count
        FROM library_artists
        WHERE sort_name IS NULL
           OR sort_name COLLATE NOCASE < ?
@@ -458,38 +478,49 @@ test("library paginated reads keep tied rows stable", () => {
             name COLLATE NOCASE < ?
             OR (name COLLATE NOCASE = ? AND id < ?)
           ))`,
-    ).get(artistName, artistName, artistName, artistName, artists[0].id).count;
+      )
+      .get(artistName, artistName, artistName, artistName, artists[0].id).count;
     assert.deepEqual(
-      getLibraryArtistProjection({ pageSize: 2, offset: projectionOffset })
-        .map((artist) => artist.id),
+      getLibraryArtistProjection({ pageSize: 2, offset: projectionOffset }).map(
+        (artist) => artist.id,
+      ),
       expectedProjectionIds,
     );
     assert.deepEqual(
-      [0, 1].map((offset) => getLibraryArtistProjection({
-        pageSize: 1,
-        offset: projectionOffset + offset,
-      })[0]?.id),
+      [0, 1].map(
+        (offset) =>
+          getLibraryArtistProjection({
+            pageSize: 1,
+            offset: projectionOffset + offset,
+          })[0]?.id,
+      ),
       expectedProjectionIds,
     );
 
     assert.deepEqual(
-      [0, 1].map((offset) => getLibraryArtistPage({
-        source: "lidarr",
-        availableOnly: true,
-        query: artistName,
-        limit: 1,
-        offset,
-      }).artists[0]?.id),
+      [0, 1].map(
+        (offset) =>
+          getLibraryArtistPage({
+            source: "lidarr",
+            availableOnly: true,
+            query: artistName,
+            limit: 1,
+            offset,
+          }).artists[0]?.id,
+      ),
       expectedIds,
     );
     assert.deepEqual(
-      [0, 1].map((offset) => getLibraryAlbumPage({
-        source: "lidarr",
-        availableOnly: true,
-        query: albumTitle,
-        limit: 1,
-        offset,
-      }).albums[0]?.id),
+      [0, 1].map(
+        (offset) =>
+          getLibraryAlbumPage({
+            source: "lidarr",
+            availableOnly: true,
+            query: albumTitle,
+            limit: 1,
+            offset,
+          }).albums[0]?.id,
+      ),
       albums.map((album) => album.id),
     );
     for (const sort of ["name", "artist", "newest"]) {
@@ -502,15 +533,18 @@ test("library paginated reads keep tied rows stable", () => {
         pageSize: 2,
       }).tracks.map((track) => track.id);
       assert.deepEqual(
-        [0, 1].map((offset) => getLibraryPage({
-          source: "lidarr",
-          availableOnly: true,
-          kind: "tracks",
-          query: trackTitle,
-          sort,
-          pageSize: 1,
-          offset,
-        }).tracks[0]?.id),
+        [0, 1].map(
+          (offset) =>
+            getLibraryPage({
+              source: "lidarr",
+              availableOnly: true,
+              kind: "tracks",
+              query: trackTitle,
+              sort,
+              pageSize: 1,
+              offset,
+            }).tracks[0]?.id,
+        ),
         expectedTrackIds,
       );
     }
@@ -520,36 +554,45 @@ test("library paginated reads keep tied rows stable", () => {
     const trackSearchMatch = getLibrarySearchMatch(trackTitle);
     assert.ok(artistSearchMatch && albumSearchMatch && trackSearchMatch);
     assert.deepEqual(
-      [0, 1].map((offset) => getLibraryArtistPage({
-        source: "lidarr",
-        availableOnly: true,
-        query: artistName,
-        searchMatch: artistSearchMatch,
-        limit: 1,
-        offset,
-      }).artists[0]?.id),
+      [0, 1].map(
+        (offset) =>
+          getLibraryArtistPage({
+            source: "lidarr",
+            availableOnly: true,
+            query: artistName,
+            searchMatch: artistSearchMatch,
+            limit: 1,
+            offset,
+          }).artists[0]?.id,
+      ),
       expectedIds,
     );
     assert.deepEqual(
-      [0, 1].map((offset) => getLibraryAlbumPage({
-        source: "lidarr",
-        availableOnly: true,
-        query: albumTitle,
-        searchMatch: albumSearchMatch,
-        limit: 1,
-        offset,
-      }).albums[0]?.id),
+      [0, 1].map(
+        (offset) =>
+          getLibraryAlbumPage({
+            source: "lidarr",
+            availableOnly: true,
+            query: albumTitle,
+            searchMatch: albumSearchMatch,
+            limit: 1,
+            offset,
+          }).albums[0]?.id,
+      ),
       albums.map((album) => album.id),
     );
     assert.deepEqual(
-      [0, 1].map((offset) => getLibraryTrackPage({
-        source: "lidarr",
-        availableOnly: true,
-        query: trackTitle,
-        searchMatch: trackSearchMatch,
-        limit: 1,
-        offset,
-      }).tracks[0]?.id),
+      [0, 1].map(
+        (offset) =>
+          getLibraryTrackPage({
+            source: "lidarr",
+            availableOnly: true,
+            query: trackTitle,
+            searchMatch: trackSearchMatch,
+            limit: 1,
+            offset,
+          }).tracks[0]?.id,
+      ),
       tracks.map((track) => track.id),
     );
   } finally {
@@ -575,9 +618,9 @@ test("library paginated reads keep tied rows stable", () => {
          WHERE album_id IN (${albums.map(() => "?").join(",")})
             OR track_id IN (${tracks.map(() => "?").join(",")})`,
       ).run(...albums.map((album) => album.id), ...tracks.map((track) => track.id));
-      db.prepare(
-        `DELETE FROM library_albums WHERE id IN (${albums.map(() => "?").join(",")})`,
-      ).run(...albums.map((album) => album.id));
+      db.prepare(`DELETE FROM library_albums WHERE id IN (${albums.map(() => "?").join(",")})`).run(
+        ...albums.map((album) => album.id),
+      );
     }
     if (artists.length) {
       db.prepare(
@@ -585,9 +628,9 @@ test("library paginated reads keep tied rows stable", () => {
       ).run(...artists.map((artist) => artist.id));
     }
     if (tracks.length) {
-      db.prepare(
-        `DELETE FROM library_tracks WHERE id IN (${tracks.map(() => "?").join(",")})`,
-      ).run(...tracks.map((track) => track.id));
+      db.prepare(`DELETE FROM library_tracks WHERE id IN (${tracks.map(() => "?").join(",")})`).run(
+        ...tracks.map((track) => track.id),
+      );
     }
     if (nullSortArtist) {
       db.prepare("DELETE FROM library_artists WHERE id = ?").run(nullSortArtist.id);
@@ -595,26 +638,28 @@ test("library paginated reads keep tied rows stable", () => {
   }
 });
 
-test("stable artist reads remain local when Lidarr is absent", async (t) => {
-  const request = t.mock.method(lidarrClient, "request", async () => {
+test("stable artist reads remain local when Lidarr is absent", async () => {
+  const request = vi.spyOn(lidarrClient, "request").mockImplementation(async () => {
     throw new Error("absent Lidarr must not be called");
   });
-  t.mock.method(lidarrClient, "isConfigured", () => false);
+  vi.spyOn(lidarrClient, "isConfigured").mockImplementation(() => false);
 
   const artists = await libraryManager.getAllArtists();
 
   assert.ok(Array.isArray(artists));
-  assert.equal(request.mock.callCount(), 0);
+  assert.equal(request.mock.calls.length, 0);
 });
 
-test("legacy artist list bounds the projection before materialization", async (t) => {
+test("legacy artist list bounds the projection before materialization", async () => {
   const prefix = `zzzzzzzzzz-artist-page-${process.pid}-${Date.now()}`;
-  const artists = Array.from({ length: 101 }, (_, index) => upsertLibraryArtist({
-    identityKey: `${prefix}:${index}`,
-    name: `${prefix}-${String(index).padStart(3, "0")}`,
-    sortName: `${prefix}-${String(index).padStart(3, "0")}`,
-  }));
-  t.mock.method(libraryManager, "getAllArtists", async () => {
+  const artists = Array.from({ length: 101 }, (_, index) =>
+    upsertLibraryArtist({
+      identityKey: `${prefix}:${index}`,
+      name: `${prefix}-${String(index).padStart(3, "0")}`,
+      sortName: `${prefix}-${String(index).padStart(3, "0")}`,
+    }),
+  );
+  vi.spyOn(libraryManager, "getAllArtists").mockImplementation(async () => {
     throw new Error("legacy artist list must not materialize all projection pages");
   });
 
@@ -652,12 +697,15 @@ test("legacy artist list bounds the projection before materialization", async (t
     );
 
     assert.equal(statusCode, 200);
-    assert.deepEqual(body.map((artist) => artist.id), [String(artists[100].id)]);
+    assert.deepEqual(
+      body.map((artist) => artist.id),
+      [String(artists[100].id)],
+    );
     assert.equal(body[0].added, body[0].addedAt);
   } finally {
-    db.prepare(
-      `DELETE FROM library_artists WHERE id IN (${artists.map(() => "?").join(",")})`,
-    ).run(...artists.map((artist) => artist.id));
+    db.prepare(`DELETE FROM library_artists WHERE id IN (${artists.map(() => "?").join(",")})`).run(
+      ...artists.map((artist) => artist.id),
+    );
   }
 });
 
@@ -701,7 +749,10 @@ test("library artist page totals match hydrated items", () => {
   try {
     const page = getLibraryPage({ kind: "artists", query: key });
     assert.equal(page.total, 1);
-    assert.deepEqual(page.items.map((artist) => artist.id), [populatedArtist.id]);
+    assert.deepEqual(
+      page.items.map((artist) => artist.id),
+      [populatedArtist.id],
+    );
   } finally {
     db.prepare("DELETE FROM library_album_tracks WHERE album_id = ? OR track_id = ?").run(
       album.id,
@@ -716,15 +767,18 @@ test("library artist page totals match hydrated items", () => {
   }
 });
 
-test("explicit artist synchronization retains its Lidarr request", async (t) => {
+test("explicit artist synchronization retains its Lidarr request", async () => {
   const originalConfigured = lidarrClient.isConfigured;
-  const request = t.mock.method(lidarrClient, "request", async () => []);
-  t.mock.method(libraryManager, "backfillLidarrArtistMappings", async () => {});
+  const request = vi.spyOn(lidarrClient, "request").mockImplementation(async () => []);
+  vi.spyOn(libraryManager, "backfillLidarrArtistMappings").mockImplementation(async () => {});
   lidarrClient.isConfigured = () => true;
 
   try {
     await libraryManager.syncLidarrArtists({ forceRefresh: true });
-    assert.deepEqual(request.mock.calls.map((call) => call.arguments[0]), ["/artist"]);
+    assert.deepEqual(
+      request.mock.calls.map((call) => call[0]),
+      ["/artist"],
+    );
   } finally {
     const jobId = getScheduledLibraryScanJobId();
     if (jobId) getLibraryScanQueue().cancel(jobId);
@@ -746,8 +800,16 @@ test("a failed provider scan keeps the library artist and marks it stale", () =>
     finishLibraryScan(scanId, { status: "failed", error: "provider unavailable" });
     assert.equal(getLibraryArtistProjection({ reference: artist.id })[0]?.stale, false);
 
-    const album = upsertLibraryAlbum({ identityKey: `${identityKey}:album`, artistId: artist.id, title: "Stale" });
-    const track = upsertLibraryTrack({ identityKey: `${identityKey}:track`, title: "Stale", artistName: artist.name });
+    const album = upsertLibraryAlbum({
+      identityKey: `${identityKey}:album`,
+      artistId: artist.id,
+      title: "Stale",
+    });
+    const track = upsertLibraryTrack({
+      identityKey: `${identityKey}:track`,
+      title: "Stale",
+      artistName: artist.name,
+    });
     linkLibraryAlbumTrack({ albumId: album.id, trackId: track.id });
     upsertLibraryMediaFile({
       trackId: track.id,
