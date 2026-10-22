@@ -11,11 +11,45 @@ import {
 } from "lucide-react";
 import { DotLoader } from "../../../components/DotLoader";
 import { getLibraryAlbumLink } from "../../../utils/searchNavigation";
-import { getReleaseMetric, isVisibleLibraryAlbum } from "../utils";
+import { getReleaseMetric, isVisibleLibraryAlbum, type ReleaseGroup } from "../utils";
 import { canSearchLibraryAlbum } from "../../../utils/libraryDestination";
 import TooltipButton from "../../../components/TooltipButton";
 import Tooltip from "../../../components/Tooltip";
 import { OptionalLink } from "../../../components/RouteLink";
+import type { ArtistDetails } from "../hooks/useArtistDetailsStream.ts";
+import type {
+  DownloadStatuses,
+  LibraryAlbum,
+  LibraryAlbumId,
+} from "../hooks/useArtistDetailsLibrary.ts";
+
+type ArtistDetailsLibraryAlbumsProps = {
+  artist: ArtistDetails;
+  libraryAlbums: LibraryAlbum[];
+  downloadStatuses: DownloadStatuses;
+  requestingAlbum: string | null;
+  reSearchingAlbum: LibraryAlbumId | null;
+  reSearchingMissingAlbums: boolean;
+  albumCovers: Record<string, string>;
+  fulfilledCoverIds: Set<string>;
+  artistCoverImage: string | null | undefined;
+  albumDropdownOpen: string | null | undefined;
+  setAlbumDropdownOpen: (rgId: string | null | undefined) => void;
+  canDeleteAlbum: boolean;
+  handleDeleteAlbumClick: (
+    albumId: string | null | undefined,
+    title: string | null | undefined,
+  ) => void;
+  canReSearchAlbum: boolean;
+  lidarrConnected?: boolean;
+  handleReSearchAlbum: (
+    libraryAlbumId: LibraryAlbumId,
+    title: string | null | undefined,
+  ) => Promise<void>;
+  handleReSearchMissingDownloads: () => Promise<void>;
+  onVisibleCoverIdsChange?: (ids: string[]) => void;
+  artistName?: string;
+};
 
 export function ArtistDetailsLibraryAlbums({
   artist,
@@ -37,22 +71,26 @@ export function ArtistDetailsLibraryAlbums({
   handleReSearchMissingDownloads,
   onVisibleCoverIdsChange,
   artistName = "",
-}) {
-  const railRef = useRef(null);
-  const visibleCoverIdsRef = useRef(new Set());
+}: ArtistDetailsLibraryAlbumsProps) {
+  const railRef = useRef<HTMLDivElement>(null);
+  const visibleCoverIdsRef = useRef(new Set<string>());
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
-  const [completionFilter, setCompletionFilter] = useState("all");
-  const [dropdownPosition, setDropdownPosition] = useState(null);
+  const [completionFilter, setCompletionFilter] = useState<"all" | "incomplete" | "complete">(
+    "all",
+  );
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(
+    null,
+  );
   const downloadedAlbums = libraryAlbums.filter((album) =>
     isVisibleLibraryAlbum(album, { requestingAlbum }),
   );
 
-  const releaseGroups = artist?.["release-groups"] || [];
-  const popularityById = new Map(
+  const releaseGroups: ReleaseGroup[] = artist?.["release-groups"] || [];
+  const popularityById = new Map<string | null | undefined, number>(
     releaseGroups.map((rg) => [rg.id, getReleaseMetric(rg).sortValue]),
   );
-  const getAlbumPopularity = (album) => {
+  const getAlbumPopularity = (album: LibraryAlbum) => {
     const rgId = album.mbid || album.foreignAlbumId;
     return popularityById.get(rgId) || 0;
   };
@@ -63,7 +101,7 @@ export function ArtistDetailsLibraryAlbums({
     const dateB = b.releaseDate || "";
     return dateB.localeCompare(dateA);
   });
-  const getAlbumState = (libraryAlbum) => {
+  const getAlbumState = (libraryAlbum: LibraryAlbum) => {
     const downloadStatus = downloadStatuses[libraryAlbum.id];
     const isComplete =
       (libraryAlbum.statistics?.percentOfTracks ?? 0) >= 100 ||
@@ -128,7 +166,7 @@ export function ArtistDetailsLibraryAlbums({
         </span>
       ),
     },
-  ];
+  ] as const;
 
   const updateScrollState = useCallback(() => {
     const node = railRef.current;
@@ -138,7 +176,7 @@ export function ArtistDetailsLibraryAlbums({
     setCanScrollRight(node.scrollLeft < maxScrollLeft - 2);
   }, []);
 
-  const scrollByAmount = useCallback((direction) => {
+  const scrollByAmount = useCallback((direction: number) => {
     const node = railRef.current;
     if (!node) return;
     const width = node.clientWidth;
@@ -148,7 +186,7 @@ export function ArtistDetailsLibraryAlbums({
     });
   }, []);
 
-  const libraryAlbumLink = (libraryAlbum, coverUrl) => {
+  const libraryAlbumLink = (libraryAlbum: LibraryAlbum, coverUrl: string) => {
     const hasFiles =
       (libraryAlbum.statistics?.sizeOnDisk ?? 0) > 0 ||
       (libraryAlbum.statistics?.trackFileCount ?? 0) > 0;
@@ -301,10 +339,9 @@ export function ArtistDetailsLibraryAlbums({
           const rgId = libraryAlbum.mbid || libraryAlbum.foreignAlbumId;
           const { downloadStatus, isComplete, canReSearch } = getAlbumState(libraryAlbum);
           const coverUrl =
-            albumCovers[rgId] ||
+            (rgId && albumCovers[rgId]) ||
             albumCovers[libraryAlbum.id] ||
-            libraryAlbum.coverUrl ||
-            (fulfilledCoverIds?.has(rgId) ? artistCoverImage : "") ||
+            (rgId && fulfilledCoverIds?.has(rgId) ? artistCoverImage : "") ||
             "";
           const hasDownloadedStatus =
             isComplete ||
@@ -333,7 +370,7 @@ export function ArtistDetailsLibraryAlbums({
                 {coverUrl ? (
                   <ArtworkImage
                     src={coverUrl}
-                    alt={libraryAlbum.albumName}
+                    alt={libraryAlbum.albumName ?? undefined}
                     loading="lazy"
                     decoding="async"
                   />
@@ -409,8 +446,8 @@ export function ArtistDetailsLibraryAlbums({
                         >
                           <a
                             href={`https://www.last.fm/music/${encodeURIComponent(
-                              artist.name,
-                            )}/${encodeURIComponent(libraryAlbum.albumName)}`}
+                              String(artist.name),
+                            )}/${encodeURIComponent(String(libraryAlbum.albumName))}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="artist-menu-item"

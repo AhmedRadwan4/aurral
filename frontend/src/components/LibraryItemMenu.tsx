@@ -7,19 +7,48 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ForwardedRef,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ComponentType,
+  type ReactNode,
 } from "react";
 import { Check, ChevronRight, MoreVertical } from "lucide-react";
+import type { To } from "react-router";
 import TooltipButton from "./TooltipButton";
 import { DotLoader } from "./DotLoader";
 import RouteLink from "./RouteLink";
+
+type MenuIcon = ComponentType<{ className?: string }>;
 
 const MENU_ITEM_SELECTOR = "button:not(:disabled), a[role=menuitem]";
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_SLOP_PX = 10;
 
-let activeMenuCloser = null;
+export type LibraryMenuItem = {
+  id: string;
+  label: string;
+  icon?: MenuIcon;
+  disabled?: boolean;
+  danger?: boolean;
+  selected?: boolean;
+  checked?: boolean;
+  radio?: boolean;
+  separatorBefore?: boolean;
+  closeBeforeSelect?: boolean;
+  onSelect?: (event?: ReactMouseEvent<HTMLElement>) => unknown;
+  submenuItems?: LibraryMenuItem[];
+  to?: To;
+  state?: unknown;
+};
 
-const menuItemRole = (item) => {
+type MenuAnchor =
+  | { kind: "trigger"; top: number; left: number; right: number; bottom: number }
+  | { kind: "context"; x: number; y: number };
+
+let activeMenuCloser: (() => void) | null = null;
+
+const menuItemRole = (item: LibraryMenuItem) => {
   if (item.radio) return "menuitemradio";
   return typeof item.selected === "boolean" || typeof item.checked === "boolean"
     ? "menuitemcheckbox"
@@ -33,12 +62,19 @@ export function LibraryItemSubmenu({
   isOpen = false,
   onToggle,
   onClose,
+}: {
+  label: string;
+  icon?: MenuIcon;
+  items?: LibraryMenuItem[];
+  isOpen?: boolean;
+  onToggle?: () => void;
+  onClose?: () => void;
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
   const [panelTop, setPanelTop] = useState(0);
-  const panelRef = useRef(null);
-  const correctionFrameRef = useRef(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const correctionFrameRef = useRef<number | null>(null);
   const open = typeof onToggle === "function" ? isOpen : internalOpen;
 
   const keepPanelInViewport = useCallback(() => {
@@ -75,7 +111,7 @@ export function LibraryItemSubmenu({
     [],
   );
 
-  const handleAction = async (event, item) => {
+  const handleAction = async (event: ReactMouseEvent<HTMLElement>, item: LibraryMenuItem) => {
     event.stopPropagation();
     if (item.disabled || pendingAction) return;
     setPendingAction(item.id);
@@ -150,6 +186,26 @@ export function LibraryItemSubmenu({
   );
 }
 
+export type LibraryItemMenuHandle = {
+  openAt: (x: number, y: number) => void;
+  close: (restoreFocus?: boolean) => void;
+};
+
+type LibraryItemMenuProps = {
+  label: string;
+  items?: LibraryMenuItem[];
+  additionalItemsAfter?: string;
+  renderAdditionalItems?: (props: { closeMenu: (restoreFocus?: boolean) => void }) => ReactNode;
+  onMenuOpen?: () => void;
+  triggerIcon?: ReactNode;
+  triggerLabel?: string;
+  triggerClassName?: string;
+  menuLabel?: string;
+  disabled?: boolean;
+  contextMenu?: boolean;
+  align?: "start" | "end";
+};
+
 export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
   {
     label,
@@ -164,18 +220,18 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
     disabled = false,
     contextMenu = true,
     align = "end",
-  },
-  ref,
+  }: LibraryItemMenuProps,
+  ref: ForwardedRef<LibraryItemMenuHandle>,
 ) {
   const [open, setOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState("");
-  const [anchor, setAnchor] = useState(null);
-  const [position, setPosition] = useState(null);
-  const [submenuSide, setSubmenuSide] = useState("right");
-  const menuRootRef = useRef(null);
-  const menuRef = useRef(null);
-  const triggerRef = useRef(null);
-  const registeredCloserRef = useRef(null);
+  const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [submenuSide, setSubmenuSide] = useState<"left" | "right">("right");
+  const menuRootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const registeredCloserRef = useRef<(() => void) | null>(null);
 
   const closeMenu = useCallback((restoreFocus = true) => {
     const registeredCloser = registeredCloserRef.current;
@@ -195,7 +251,7 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
   }, []);
 
   const openMenu = useCallback(
-    (nextAnchor) => {
+    (nextAnchor: MenuAnchor) => {
       activeMenuCloser?.();
       const closer = () => closeMenu(false);
       registeredCloserRef.current = closer;
@@ -224,23 +280,26 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
     });
   }, [openMenu]);
 
-  const openAt = useCallback((x, y) => openMenu({ kind: "context", x, y }), [openMenu]);
+  const openAt = useCallback(
+    (x: number, y: number) => openMenu({ kind: "context", x, y }),
+    [openMenu],
+  );
 
   useImperativeHandle(ref, () => ({ openAt, close: closeMenu }), [closeMenu, openAt]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
-    const target = menuRootRef.current?.closest("[data-library-menu-target]");
+    const target = menuRootRef.current?.closest<HTMLElement>("[data-library-menu-target]");
     if (!target) return undefined;
-    let pressTimer = null;
-    let press = null;
+    let pressTimer: number | null = null;
+    let press: { id: number; x: number; y: number } | null = null;
     let pressOpened = false;
     const cancelPress = () => {
-      window.clearTimeout(pressTimer);
+      if (pressTimer) window.clearTimeout(pressTimer);
       pressTimer = null;
       press = null;
     };
-    const handleContextMenu = (event) => {
+    const handleContextMenu = (event: MouseEvent) => {
       if (event.defaultPrevented) return;
       event.preventDefault();
       if (pressOpened) return;
@@ -248,26 +307,26 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
       cancelPress();
       openAt(event.clientX, event.clientY);
     };
-    const handlePointerDown = (event) => {
+    const handlePointerDown = (event: PointerEvent) => {
       pressOpened = false;
       cancelPress();
       if (event.pointerType === "mouse" || !event.isPrimary) return;
       press = { id: event.pointerId, x: event.clientX, y: event.clientY };
       pressTimer = window.setTimeout(() => {
-        const { x, y } = press;
+        const { x, y } = press!;
         cancelPress();
         pressOpened = true;
         navigator.vibrate?.(10);
         openAt(x, y);
       }, LONG_PRESS_MS);
     };
-    const handlePointerMove = (event) => {
+    const handlePointerMove = (event: PointerEvent) => {
       if (!press || event.pointerId !== press.id) return;
       if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > LONG_PRESS_SLOP_PX) {
         cancelPress();
       }
     };
-    const handleClick = (event) => {
+    const handleClick = (event: MouseEvent) => {
       if (!pressOpened) return;
       pressOpened = false;
       event.preventDefault();
@@ -294,18 +353,19 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
 
   useEffect(() => {
     if (!open) return undefined;
-    const handlePointerDown = (event) => {
-      if (menuRootRef.current?.contains(event.target) || menuRef.current?.contains(event.target)) {
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Node ? event.target : null;
+      if (menuRootRef.current?.contains(target) || menuRef.current?.contains(target)) {
         return;
       }
       closeMenu(false);
     };
-    const handleEscape = (event) => {
+    const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeMenu();
     };
     const closeOnViewportChange = () => closeMenu(false);
-    const handleScroll = (event) => {
-      if (menuRef.current?.contains(event.target)) return;
+    const handleScroll = (event: Event) => {
+      if (menuRef.current?.contains(event.target instanceof Node ? event.target : null)) return;
       if (anchor?.kind !== "trigger") {
         closeMenu(false);
         return;
@@ -345,7 +405,7 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
     if (!open) return;
     const panel = menuRef.current;
     if (!panel) return;
-    const firstItem = [...panel.querySelectorAll(MENU_ITEM_SELECTOR)].find(
+    const firstItem = [...panel.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)].find(
       (button) => !button.closest(".artist-menu-submenu"),
     );
     (firstItem || panel).focus({ preventScroll: true });
@@ -383,7 +443,7 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
     if (open) updatePosition();
   }, [open, updatePosition]);
 
-  const handleAction = async (event, item) => {
+  const handleAction = async (event: ReactMouseEvent<HTMLElement>, item: LibraryMenuItem) => {
     event.stopPropagation();
     if (item.disabled || pendingAction) return;
     setPendingAction(item.id);
@@ -402,23 +462,24 @@ export const LibraryItemMenu = forwardRef(function LibraryItemMenu(
     }
   };
 
-  const handleMenuKeyDown = (event) => {
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
     if (!keys.includes(event.key)) return;
-    const buttons = [...(menuRef.current?.querySelectorAll(MENU_ITEM_SELECTOR) || [])].filter(
-      (button) => button.checkVisibility(),
-    );
+    const buttons = [
+      ...(menuRef.current?.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR) || []),
+    ].filter((button) => button.checkVisibility());
     if (!buttons.length) return;
     event.preventDefault();
     event.stopPropagation();
-    const current = buttons.indexOf(document.activeElement);
+    const active = document.activeElement;
+    const current = active instanceof HTMLElement ? buttons.indexOf(active) : -1;
     const next = {
       ArrowDown: (current + 1) % buttons.length,
       ArrowUp: (current - 1 + buttons.length) % buttons.length,
       Home: 0,
       End: buttons.length - 1,
     }[event.key];
-    buttons[next].focus({ preventScroll: true });
+    buttons[next!]!.focus({ preventScroll: true });
   };
 
   const renderItems = () => (

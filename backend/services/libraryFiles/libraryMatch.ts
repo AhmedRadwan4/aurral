@@ -1,33 +1,64 @@
 import { db } from "../../config/db-sqlite.ts";
+import type {
+  LibraryAlbumsRow,
+  LibraryAlbumTracksRow,
+  LibraryArtistsRow,
+  LibraryMediaFilesRow,
+  LibraryTracksRow,
+} from "../../db/rows.ts";
 import {
   buildFallbackIdentityKey,
   findLibraryAlbumByArtistTitle,
   findLibraryAlbumByReleaseMbid,
   isSameLibraryName,
 } from "../libraryMediaStore.ts";
+import type { buildMetadataRecord } from "../libraryFileScanner.ts";
 
-function findArtist(record) {
+type LibraryFileRecord = Pick<
+  ReturnType<typeof buildMetadataRecord>,
+  | "artistName"
+  | "artistMbid"
+  | "albumName"
+  | "albumMbid"
+  | "releaseGroupMbid"
+  | "title"
+  | "trackKey"
+  | "trackMbid"
+  | "trackNumber"
+  | "discNumber"
+>;
+
+type LibraryTrackLink = LibraryTracksRow &
+  Pick<LibraryAlbumTracksRow, "disc_number" | "track_number">;
+
+function findArtist(record: LibraryFileRecord) {
   if (record.artistMbid) {
     const byMbid = db
-      .prepare("SELECT * FROM library_artists WHERE mbid = ? ORDER BY id LIMIT 1")
+      .prepare<[string], LibraryArtistsRow>(
+        "SELECT * FROM library_artists WHERE mbid = ? ORDER BY id LIMIT 1",
+      )
       .get(record.artistMbid);
     if (byMbid) return byMbid;
   }
   const byKey = db
-    .prepare("SELECT * FROM library_artists WHERE identity_key = ?")
+    .prepare<[string | null], LibraryArtistsRow>(
+      "SELECT * FROM library_artists WHERE identity_key = ?",
+    )
     .get(buildFallbackIdentityKey("artist", record.artistName));
   if (byKey && isSameLibraryName(byKey.name, record.artistName)) return byKey;
   const named = db
-    .prepare("SELECT * FROM library_artists WHERE name = ? COLLATE NOCASE ORDER BY id LIMIT 2")
+    .prepare<[string], LibraryArtistsRow>(
+      "SELECT * FROM library_artists WHERE name = ? COLLATE NOCASE ORDER BY id LIMIT 2",
+    )
     .all(record.artistName);
   return named.length === 1 ? named[0] : null;
 }
 
-function findAlbum(record, artist) {
+function findAlbum(record: LibraryFileRecord, artist: LibraryArtistsRow | null | undefined) {
   if (record.releaseGroupMbid) {
     const byReleaseGroup =
       db
-        .prepare(
+        .prepare<[string, string], LibraryAlbumsRow>(
           "SELECT * FROM library_albums WHERE release_group_mbid = ? OR identity_key = ? ORDER BY id LIMIT 1",
         )
         .get(record.releaseGroupMbid, `release-group:${record.releaseGroupMbid}`) ||
@@ -38,7 +69,7 @@ function findAlbum(record, artist) {
     const byRelease =
       findLibraryAlbumByReleaseMbid(record.albumMbid) ||
       db
-        .prepare(
+        .prepare<[string, string], LibraryAlbumsRow>(
           "SELECT * FROM library_albums WHERE mbid = ? OR identity_key = ? ORDER BY id LIMIT 1",
         )
         .get(record.albumMbid, `album:${record.albumMbid}`);
@@ -48,9 +79,9 @@ function findAlbum(record, artist) {
   return findLibraryAlbumByArtistTitle(artist.id, record.albumName, record.title);
 }
 
-function findTrack(record, album) {
+function findTrack(record: LibraryFileRecord, album: Pick<LibraryAlbumsRow, "id">) {
   const tracks = db
-    .prepare(
+    .prepare<[number], LibraryTrackLink>(
       `SELECT track.*, link.disc_number, link.track_number
      FROM library_album_tracks AS link
      JOIN library_tracks AS track ON track.id = link.track_id
@@ -74,16 +105,18 @@ function findTrack(record, album) {
 
 // Where a tagged file belongs in the Library: the artist and album Aurral
 // already has, matched by MusicBrainz IDs first and names second.
-export function matchLibraryRecord(record) {
+export function matchLibraryRecord(record: LibraryFileRecord) {
   const artistByRecord = findArtist(record);
   const album = findAlbum(record, artistByRecord);
   const artist = album
-    ? db.prepare("SELECT * FROM library_artists WHERE id = ?").get(album.artist_id)
+    ? db
+        .prepare<[number], LibraryArtistsRow>("SELECT * FROM library_artists WHERE id = ?")
+        .get(album.artist_id)
     : artistByRecord;
   const track = album ? findTrack(record, album) : null;
   const files = track
     ? db
-        .prepare(
+        .prepare<[number], Pick<LibraryMediaFilesRow, "path">>(
           `SELECT path FROM library_media_files
        WHERE track_id = ? AND source = 'aurral' AND available = 1
        ORDER BY id`,
@@ -104,9 +137,17 @@ export function matchLibraryRecord(record) {
 // The Library's own track for the file at this path, when its artist, album,
 // title, disc, and track number agree with the record. Different names can
 // share one folder name, so the path alone does not prove it is the same track.
-export function findLibraryTrackAtPath(filePath, record) {
+export function findLibraryTrackAtPath(filePath: string, record: LibraryFileRecord) {
   const track = db
-    .prepare(
+    .prepare<
+      [string],
+      Pick<LibraryTracksRow, "title" | "mbid"> & {
+        disc_number: number | null;
+        track_number: number | null;
+        album_title: string | null;
+        artist_name: string | null;
+      }
+    >(
       `SELECT track.title, track.mbid, link.disc_number, link.track_number,
        album.title AS album_title, artist.name AS artist_name
      FROM library_media_files AS media

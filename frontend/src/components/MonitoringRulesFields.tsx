@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import type { MonitorRules as MonitoringRules } from "../../../backend/services/aurralMonitoring.ts";
 import PillToggle from "./PillToggle";
 import {
   CATALOG_OPTIONS,
@@ -10,16 +11,7 @@ import {
 } from "../utils/monitoringRules.ts";
 import "./MonitoringRules.css";
 
-export interface MonitoringRules {
-  catalog: "none" | "all" | "since" | "latest";
-  sinceYear: number | null;
-  latestCount: number;
-  newReleases: boolean;
-  types: string[];
-  extraTypes: string[];
-  edition: "standard" | "expanded";
-  topTracks: number;
-}
+export type { MonitoringRules };
 
 interface ChoiceOption {
   value: string;
@@ -80,7 +72,7 @@ function NumberField({ id, label, value, min, max, disabled, onChange }: NumberF
 interface ChoiceGroupProps {
   legend: string;
   options: ChoiceOption[];
-  selected: string[];
+  selected: readonly string[];
   disabled: boolean;
   keepOne?: boolean;
   onToggle: (value: string) => void;

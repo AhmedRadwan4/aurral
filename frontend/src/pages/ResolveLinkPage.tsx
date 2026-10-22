@@ -10,14 +10,14 @@ import { useToast } from "../contexts/ToastContext";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { RESOLVE_KINDS, resolveLinkQueryOptions } from "../navigation/resolveLinks.ts";
 
-function OpeningSkeleton({ kind, label }) {
+function OpeningSkeleton({ kind, label }: { kind: string | undefined; label: string }) {
   if (kind === "album" || kind === "library-album") return <SkeletonAlbumDetail label={label} />;
   if (kind === "library-artist") return <SkeletonLibraryArtist label={label} />;
   return <SkeletonPageTitle label={label} />;
 }
 
 export default function ResolveLinkPage() {
-  const { kind } = useParams();
+  const kind = useParams().kind!;
   const { search } = useLocation();
   const navigate = useNavigate();
   const { showInfo } = useToast();
@@ -34,7 +34,8 @@ export default function ResolveLinkPage() {
   }, [data, navigate, showInfo]);
 
   if (error || invalid) {
-    const notFound = invalid || error?.resolveNotFound === true;
+    const notFound =
+      invalid || (error !== null && "resolveNotFound" in error && error.resolveNotFound === true);
     return (
       <div className="library-page native-library-page">
         <div className="native-library-content">
@@ -43,7 +44,7 @@ export default function ResolveLinkPage() {
               {invalid
                 ? "This link isn't valid"
                 : notFound
-                  ? error.message
+                  ? error!.message
                   : "Couldn't open this link"}
             </strong>
             <span>

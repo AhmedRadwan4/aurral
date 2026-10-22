@@ -1,3 +1,4 @@
+import { isOwnKey } from "../../../lib/ownKey.ts";
 import { navidromeSettings, NavidromePlaybackDestination } from "./navidromePlaybackDestination.ts";
 import { plexSettings, PlexPlaybackDestination } from "./plexPlaybackDestination.ts";
 import { jellyfinSettings, JellyfinPlaybackDestination } from "./jellyfinPlaybackDestination.ts";
@@ -18,9 +19,13 @@ export function getPlaybackDestinationSettings() {
   return structuredClone(definitions);
 }
 
-export async function testPlaybackDestination(key, config) {
-  const destination = factories[key]?.();
-  if (!destination) throw new Error(`Unknown playback destination: ${key}`);
+type DestinationConfig = Parameters<NavidromePlaybackDestination["updateConfig"]>[0] &
+  Parameters<PlexPlaybackDestination["updateConfig"]>[0] &
+  Parameters<JellyfinPlaybackDestination["updateConfig"]>[0];
+
+export async function testPlaybackDestination(key: string, config: DestinationConfig) {
+  if (!isOwnKey(factories, key)) throw new Error(`Unknown playback destination: ${key}`);
+  const destination = factories[key]();
   destination.updateConfig(config);
   return destination.testConnection();
 }

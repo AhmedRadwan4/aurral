@@ -5,11 +5,15 @@ import {
 } from "../../../services/apiClients/listenbrainz.ts";
 import { getArtistTagLists, getSimilarArtists } from "../../../services/musicDataSource/index.ts";
 import { isKnownGenre } from "../../../services/musicGenres.ts";
+import type { musicbrainzGetArtistReleaseGroups } from "../../../services/apiClients/index.ts";
+import type { NormalizedArtist } from "../../../services/providers/brainzmashMappers.ts";
 
-export function toLegacyRelations(metadataArtist) {
+type ReleaseGroupSummary = Awaited<ReturnType<typeof musicbrainzGetArtistReleaseGroups>>[number];
+
+export function toLegacyRelations(metadataArtist: NormalizedArtist | null) {
   return Array.isArray(metadataArtist?.links)
     ? metadataArtist.links
-        .filter((link) => link?.target)
+        .filter((link): link is NonNullable<typeof link> => Boolean(link?.target))
         .map((link) => ({
           type: link.type || "external",
           url: { resource: link.target },
@@ -17,7 +21,11 @@ export function toLegacyRelations(metadataArtist) {
     : [];
 }
 
-export async function getArtistTagPayload(mbid, artistName = "", metadataArtist = null) {
+export async function getArtistTagPayload(
+  mbid: string,
+  artistName = "",
+  metadataArtist: NormalizedArtist | null = null,
+) {
   const metadataGenres = Array.isArray(metadataArtist?.genres)
     ? metadataArtist.genres.filter(Boolean)
     : [];
@@ -27,7 +35,9 @@ export async function getArtistTagPayload(mbid, artistName = "", metadataArtist 
       genres: metadataGenres,
     };
   }
-  const [sourceTags] = await getArtistTagLists([{ mbid, name: artistName }]);
+  const [sourceTags]: { name: string; count: number }[][] = await getArtistTagLists([
+    { mbid, name: artistName },
+  ]);
   const tags = sourceTags.filter((tag) => isKnownGenre(tag.name));
   return {
     tags,
@@ -36,8 +46,18 @@ export async function getArtistTagPayload(mbid, artistName = "", metadataArtist 
 }
 
 export async function getSimilarArtistCards(
-  mbid,
-  { artistName = "", limit = 10, signal, resolveArtistName } = {},
+  mbid: string,
+  {
+    artistName = "",
+    limit = 10,
+    signal,
+    resolveArtistName,
+  }: {
+    artistName?: string;
+    limit?: number;
+    signal?: AbortSignal;
+    resolveArtistName?: () => Promise<string | null>;
+  } = {},
 ) {
   let artists = await getSimilarArtists({ mbid, name: artistName }, { limit, signal });
   if (artists.length === 0 && !artistName && resolveArtistName) {
@@ -57,17 +77,17 @@ export async function getSimilarArtistCards(
 const LISTENBRAINZ_WAIT_MS = 2000;
 const LISTENBRAINZ_DATE_LOOKUP_LIMIT = 300;
 
-const settleWithin = (waitMs, lookups) => {
-  let timer;
-  const deadline = new Promise((resolve) => {
-    timer = setTimeout(resolve, waitMs, new Map());
+const settleWithin = <A, B>(waitMs: number, [first, second]: [Promise<A>, Promise<B>]) => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<Map<string, never>>((resolve) => {
+    timer = setTimeout(resolve, waitMs, new Map<string, never>());
   });
-  return Promise.all(lookups.map((lookup) => Promise.race([lookup, deadline]))).finally(() =>
-    clearTimeout(timer),
+  return Promise.all([Promise.race([first, deadline]), Promise.race([second, deadline])]).finally(
+    () => clearTimeout(timer),
   );
 };
 
-export async function withListenBrainzStats(releaseGroups) {
+export async function withListenBrainzStats(releaseGroups: ReleaseGroupSummary[]) {
   if (!releaseGroups.length) return releaseGroups;
   const undatedIds = releaseGroups
     .filter((releaseGroup) => !releaseGroup["first-release-date"])
@@ -84,7 +104,11 @@ export async function withListenBrainzStats(releaseGroups) {
   }));
 }
 
-export function buildArtistBase(name, resolvedMbid, metadataArtist = null) {
+export function buildArtistBase(
+  name: string,
+  resolvedMbid: string,
+  metadataArtist: NormalizedArtist | null = null,
+) {
   return {
     id: resolvedMbid,
     name: metadataArtist?.name || name,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, type ComponentProps } from "react";
 import {
   lookupArtistsInLibraryBatch,
   readLibraryLookupCache,
@@ -27,7 +27,7 @@ import { NewsArticleCard } from "../components/NewsArticleCard";
 import { DiscoverLayoutModal } from "./DiscoverLayoutModal";
 import { DiscoverPlaylistSection } from "./DiscoverPlaylistSection";
 import { useEditorialShelf } from "./useEditorialShelf";
-import { AlbumCard, ArtistCard, ViewAllCard } from "./DiscoverCards";
+import { AlbumCard, ArtistCard, ViewAllCard, type DiscoverCardArtist } from "./DiscoverCards";
 import { useDiscoverLayoutState } from "./useDiscoverLayoutState";
 import {
   DEFAULT_DISCOVER_SECTIONS,
@@ -43,14 +43,18 @@ import { useLibraryNews } from "../hooks/useLibraryNews";
 import { formatDate, formatRelativeTime } from "../utils/dateTime.ts";
 import TooltipButton from "../components/TooltipButton";
 import RouteLink from "../components/RouteLink";
-const getArtistId = (artist) => getArtistRecordId(artist);
+import type { DiscoveryBasedOn } from "../../../backend/db/helpers/discovery.ts";
+const getArtistId = (artist: DiscoverCardArtist) => getArtistRecordId(artist);
 
-const SECTION_CARD_KINDS = {
-  playlists: "playlist",
-  recentReleases: "album",
-  recommendedShows: "show",
-  news: "news",
-};
+const SECTION_CARD_KINDS = new Map<
+  string,
+  NonNullable<ComponentProps<typeof SkeletonRail>["kind"]>
+>([
+  ["playlists", "playlist"],
+  ["recentReleases", "album"],
+  ["recommendedShows", "show"],
+  ["news", "news"],
+]);
 
 function DiscoverPage() {
   useDocumentTitle("Discover");
@@ -175,7 +179,8 @@ function DiscoverPage() {
   const { recommendations = [], globalTop = [], topGenres = [], basedOn = [] } = data || {};
   const { data: editorialShelf, isPending: editorialShelfPending } = useEditorialShelf();
 
-  const nearbyShows = nearbyShowsData?.shows || [];
+  const nearbyShows: NonNullable<typeof nearbyShowsData>["shows"][number][] =
+    nearbyShowsData?.shows || [];
   const nearbyLocationLabel =
     nearbyShowsData?.location?.label || nearbyShowsData?.location?.postalCode || "your area";
   const featuredPlaylists = useMemo(() => {
@@ -210,7 +215,7 @@ function DiscoverPage() {
     const seen = new Set();
     const names = [];
     for (const r of recommendations || []) {
-      const name = r.sourceArtist || r.source;
+      const name = r.sourceArtist;
       if (name && !seen.has(name)) {
         seen.add(name);
         names.push({ name });
@@ -219,9 +224,8 @@ function DiscoverPage() {
     return names;
   }, [basedOn, recommendations]);
 
-  const renderBasedOnArtist = (artist, key) => {
-    const routeId =
-      artist?.id || artist?.mbid || (artist?.name ? encodeURIComponent(artist.name) : "");
+  const renderBasedOnArtist = (artist: DiscoveryBasedOn, key: number) => {
+    const routeId = artist?.id || (artist?.name ? encodeURIComponent(artist.name) : "");
     if (!routeId) {
       return (
         <span key={key} className="artist-discover-hero__artist-tag">
@@ -241,7 +245,7 @@ function DiscoverPage() {
     );
   };
 
-  const getArtistLibraryLink = useCallback((artist) => {
+  const getArtistLibraryLink = useCallback((artist: DiscoverCardArtist) => {
     if (artist.canonicalId) {
       return { to: `/library/artist/${encodeURIComponent(artist.canonicalId)}` };
     }
@@ -315,17 +319,17 @@ function DiscoverPage() {
     setDraftSections(DEFAULT_DISCOVER_SECTIONS.map((item) => ({ ...item })));
   };
 
-  const sectionPending = {
-    recentlyAdded: recentlyAddedPending,
-    playlists: editorialShelfPending,
-    recentReleases: recentReleasesPending,
-  };
+  const sectionPending = new Map([
+    ["recentlyAdded", recentlyAddedPending],
+    ["playlists", editorialShelfPending],
+    ["recentReleases", recentReleasesPending],
+  ]);
 
-  const renderSection = (id) => {
-    if (sectionPending[id]) {
+  const renderSection = (id: string) => {
+    if (sectionPending.get(id)) {
       return (
         <SkeletonStatus key={id} label="Loading section">
-          <SkeletonRail kind={SECTION_CARD_KINDS[id]} />
+          <SkeletonRail kind={SECTION_CARD_KINDS.get(id)} />
         </SkeletonStatus>
       );
     }
@@ -337,6 +341,7 @@ function DiscoverPage() {
           <>
             {recentlyAdded.slice(0, DISCOVER_PREVIEW_ITEM_LIMIT).map((artist) => {
               const artistId = artist.mbid || null;
+              const addedAt = new Date(artist.added || artist.addedAt || "");
               return (
                 <div key={`artist-${artist.id}`} className="artist-discover-shelf-card">
                   <ArtistCard
@@ -353,8 +358,8 @@ function DiscoverPage() {
                       image: getLibraryArtistImage(artist),
                       type: "Artist",
                       metaText: "",
-                      subtitle: `Added ${formatRelativeTime(new Date(artist.added || artist.addedAt), { unit: "day" })}`,
-                      subtitleDetail: formatDate(new Date(artist.added || artist.addedAt)),
+                      subtitle: `Added ${formatRelativeTime(addedAt, { unit: "day" })}`,
+                      subtitleDetail: formatDate(addedAt),
                     }}
                   />
                 </div>
@@ -441,7 +446,7 @@ function DiscoverPage() {
                 <div key={artist.id} className="artist-discover-shelf-card">
                   <ArtistCard
                     artist={artist}
-                    isInLibrary={!!libraryLookup[getArtistId(artist)]}
+                    isInLibrary={!!libraryLookup[String(getArtistId(artist))]}
                     getLibraryLink={getArtistLibraryLink}
                     onFeedback={handleDiscoveryFeedback}
                     feedbackUsed={getArtistFeedbackFlags(artistFeedbackLookup, artist)}
@@ -607,7 +612,7 @@ function DiscoverPage() {
                     ...artist,
                     metaText: "",
                   }}
-                  isInLibrary={!!libraryLookup[getArtistId(artist)]}
+                  isInLibrary={!!libraryLookup[String(getArtistId(artist))]}
                   getLibraryLink={getArtistLibraryLink}
                   onFeedback={handleDiscoveryFeedback}
                   feedbackUsed={getArtistFeedbackFlags(artistFeedbackLookup, artist)}
@@ -643,7 +648,7 @@ function DiscoverPage() {
                     >
                       <ArtistCard
                         artist={artist}
-                        isInLibrary={!!libraryLookup[getArtistId(artist)]}
+                        isInLibrary={!!libraryLookup[String(getArtistId(artist))]}
                         getLibraryLink={getArtistLibraryLink}
                         onFeedback={handleDiscoveryFeedback}
                         feedbackUsed={getArtistFeedbackFlags(artistFeedbackLookup, artist)}
@@ -666,7 +671,7 @@ function DiscoverPage() {
 
   const [showFullBasedOnList, setShowFullBasedOnList] = useState(false);
 
-  const sectionMayRender = (id) =>
+  const sectionMayRender = (id: string) =>
     (id !== "news" || newsConfigured) && (id !== "recommendedShows" || ticketmasterConfigured);
 
   if ((data === null && !error) || isActuallyUpdating) {
@@ -693,7 +698,7 @@ function DiscoverPage() {
           {discoverSections
             .filter((section) => section.enabled && sectionMayRender(section.id))
             .map((section) => (
-              <SkeletonRail key={section.id} kind={SECTION_CARD_KINDS[section.id]} />
+              <SkeletonRail key={section.id} kind={SECTION_CARD_KINDS.get(section.id)} />
             ))}
         </div>
       </div>

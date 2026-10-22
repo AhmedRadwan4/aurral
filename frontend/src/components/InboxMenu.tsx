@@ -9,8 +9,14 @@ import {
   SlidersHorizontal,
   Sparkles,
   Check,
+  type LucideIcon,
 } from "lucide-react";
-import { getInbox, markAllInboxItemsRead, updateInboxItem } from "../utils/api/endpoints/inbox.ts";
+import {
+  getInbox,
+  markAllInboxItemsRead,
+  updateInboxItem,
+  type InboxListResponse,
+} from "../utils/api/endpoints/inbox.ts";
 import { readStoredNearbyLocation } from "../pages/discoverUtils.ts";
 import { useAuth } from "../contexts/AuthContext.tsx";
 import { useToast } from "../contexts/ToastContext";
@@ -19,8 +25,11 @@ import { DotLoader } from "./DotLoader";
 import { queryClient, queryKeys } from "../queryClient.ts";
 import Tooltip from "./Tooltip";
 import RelativeTime from "./RelativeTime";
+import { getApiErrorMessage } from "../pages/onboardingUtils.tsx";
 
-const ITEM_ICONS = {
+type InboxListItem = InboxListResponse["items"][number];
+
+const ITEM_ICONS: Partial<Record<string, LucideIcon>> = {
   release: Music2,
   show: CalendarDays,
   news: Newspaper,
@@ -28,9 +37,10 @@ const ITEM_ICONS = {
   discovery: Sparkles,
 };
 
-const isExternalHref = (href) => /^https?:\/\//i.test(String(href || ""));
+const isExternalHref = (href: string | null | undefined) =>
+  /^https?:\/\//i.test(String(href || ""));
 
-const getInboxSubtitle = (item) => {
+const getInboxSubtitle = (item: InboxListItem) => {
   const metadata = item.metadata || {};
   if (item.kind === "release") {
     return ["New release", metadata.artistName].filter(Boolean).join(" · ");
@@ -54,7 +64,17 @@ const FILTER_OPTIONS = [
   { value: "discovery", label: "Discoveries" },
 ];
 
-function InboxItem({ item, onRemove, onOpen, pendingAction }) {
+function InboxItem({
+  item,
+  onRemove,
+  onOpen,
+  pendingAction,
+}: {
+  item: InboxListItem;
+  onRemove: (item: InboxListItem) => void;
+  onOpen: (item: InboxListItem) => void;
+  pendingAction?: string;
+}) {
   const Icon = ITEM_ICONS[item.kind] || Inbox;
   const subtitle =
     item.kind === "show" && Number(item.expiresAt) <= Date.now()
@@ -64,7 +84,11 @@ function InboxItem({ item, onRemove, onOpen, pendingAction }) {
     item.metadata?.artistName || (item.kind === "discovery" ? item.title : ""),
   ).trim();
   const isPending = Boolean(pendingAction);
-  const releaseDate = item.kind === "release" ? item.metadata?.releaseDate : null;
+  const releaseDateValue = item.kind === "release" ? item.metadata?.releaseDate : null;
+  const releaseDate =
+    typeof releaseDateValue === "string" || typeof releaseDateValue === "number"
+      ? releaseDateValue
+      : null;
   const content = (
     <>
       <span className="app-inbox-menu__item-icon" aria-hidden="true">
@@ -138,9 +162,9 @@ function InboxMenu() {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const [filterOpen, setFilterOpen] = useState(false);
-  const [pendingActions, setPendingActions] = useState({});
-  const menuRef = useRef(null);
-  const triggerRef = useRef(null);
+  const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const { user, bootstrap } = useAuth();
   const [inboxEnabled, setInboxEnabled] = useState(true);
   const { showError } = useToast();
@@ -150,8 +174,8 @@ function InboxMenu() {
   }, [bootstrap?.inboxEnabled]);
 
   useEffect(() => {
-    const handleSettingsUpdated = (event) => {
-      if (typeof event.detail?.inboxEnabled === "boolean")
+    const handleSettingsUpdated = (event: Event) => {
+      if (event instanceof CustomEvent && typeof event.detail?.inboxEnabled === "boolean")
         setInboxEnabled(event.detail.inboxEnabled);
     };
     window.addEventListener("aurral:settings-updated", handleSettingsUpdated);
@@ -160,7 +184,7 @@ function InboxMenu() {
 
   const { mode, zip } = readStoredNearbyLocation();
   const locationZip = mode === "zip" ? zip : "";
-  const userId = Number.isInteger(Number(user?.id)) && Number(user.id) > 0 ? user.id : null;
+  const userId = Number.isInteger(Number(user?.id)) && Number(user!.id) > 0 ? user!.id : null;
   const queryKey = queryKeys.inbox(userId, locationZip, 50);
   const inboxQuery = useQuery({
     queryKey,
@@ -174,11 +198,11 @@ function InboxMenu() {
   const serverRefreshing = inboxQuery.data?.refreshing === true;
   const loadInbox = () => inboxQuery.refetch();
   const itemMutation = useMutation({
-    mutationFn: ({ id, action }) => updateInboxItem(id, action),
-    onMutate: async ({ id, action }) => {
+    mutationFn: ({ id, action }: { id: string; action: string }) => updateInboxItem(id, action),
+    onMutate: async ({ id, action }: { id: string; action: string }) => {
       await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData(queryKey);
-      queryClient.setQueryData(queryKey, (current) => {
+      const previous = queryClient.getQueryData<InboxListResponse>(queryKey);
+      queryClient.setQueryData<InboxListResponse>(queryKey, (current) => {
         if (!current) return current;
         const item = current.items?.find((entry) => entry.id === id);
         if (!item) return current;
@@ -213,13 +237,16 @@ function InboxMenu() {
 
   useEffect(() => {
     if (!open) return undefined;
-    const handleOutsideClick = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(event.target instanceof Node ? event.target : null)
+      ) {
         setOpen(false);
         setFilterOpen(false);
       }
     };
-    const handleEscape = (event) => {
+    const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setFilterOpen(false);
         setOpen(false);
@@ -234,7 +261,7 @@ function InboxMenu() {
     };
   }, [open]);
 
-  const handleOpen = (item) => {
+  const handleOpen = (item: InboxListItem) => {
     if (!item.isRead) {
       void itemMutation.mutateAsync({ id: item.id, action: "read" }).catch((error) => {
         showError(error?.response?.data?.error || error?.message || `Failed to read ${item.title}`);
@@ -243,18 +270,13 @@ function InboxMenu() {
     if (item.href) setOpen(false);
   };
 
-  const handleRemove = async (item) => {
+  const handleRemove = async (item: InboxListItem) => {
     const actionKey = `${item.id}:dismiss`;
     setPendingActions((current) => ({ ...current, [actionKey]: "dismiss" }));
     try {
       await itemMutation.mutateAsync({ id: item.id, action: "dismiss" });
     } catch (error) {
-      showError(
-        error?.response?.data?.message ||
-          error?.response?.data?.error ||
-          error?.message ||
-          `Failed to update ${item.title}`,
-      );
+      showError(getApiErrorMessage(error, `Failed to update ${item.title}`));
     } finally {
       setPendingActions((current) => {
         const next = { ...current };
@@ -268,12 +290,7 @@ function InboxMenu() {
     try {
       await readAllMutation.mutateAsync();
     } catch (error) {
-      showError(
-        error?.response?.data?.message ||
-          error?.response?.data?.error ||
-          error?.message ||
-          "Failed to mark Inbox items as read",
-      );
+      showError(getApiErrorMessage(error, "Failed to mark Inbox items as read"));
       return;
     }
   };
@@ -282,7 +299,7 @@ function InboxMenu() {
   const selectedFilter =
     FILTER_OPTIONS.find((option) => option.value === filter) || FILTER_OPTIONS[0];
 
-  if (!inboxEnabled || !Number.isInteger(Number(user?.id)) || Number(user.id) <= 0) return null;
+  if (!inboxEnabled || !Number.isInteger(Number(user?.id)) || Number(user!.id) <= 0) return null;
 
   return (
     <div ref={menuRef} className="app-inbox-menu">

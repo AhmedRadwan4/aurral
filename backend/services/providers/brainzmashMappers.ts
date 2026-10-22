@@ -1,3 +1,4 @@
+import { isOwnKey } from "../../../lib/ownKey.ts";
 interface RawImage {
   Url?: unknown;
   url?: unknown;
@@ -151,7 +152,10 @@ export function getLinkedArtistProviderIds(links: (RawLink | null | undefined)[]
   for (const link of normalizeArray(links)) {
     try {
       const url = new URL(normalizeString(link?.target || link?.url?.resource));
-      const provider = LINKED_ARTIST_PROVIDERS[url.hostname.toLowerCase().replace(/^www\./, "")];
+      const host = url.hostname.toLowerCase().replace(/^www\./, "");
+      const provider = isOwnKey(LINKED_ARTIST_PROVIDERS, host)
+        ? LINKED_ARTIST_PROVIDERS[host]
+        : undefined;
       const segments = url.pathname.split("/").filter(Boolean);
       const artistIndex = segments.findIndex((segment) => segment.toLowerCase() === "artist");
       const id = String(segments[artistIndex + 1] || "").match(/^\d+/)?.[0];
@@ -167,8 +171,12 @@ export function getLinkedDeezerArtistId(links: (RawLink | null | undefined)[] = 
 }
 
 export function toNormalizedArtist(raw: RawArtist | null | undefined) {
-  const images = normalizeArray(raw?.images).map(toNormalizedArtistImage).filter(Boolean);
-  const links = normalizeArray(raw?.links).map(toNormalizedArtistLink).filter(Boolean);
+  const images = normalizeArray(raw?.images)
+    .map(toNormalizedArtistImage)
+    .filter((entry) => entry !== null);
+  const links = normalizeArray(raw?.links)
+    .map(toNormalizedArtistLink)
+    .filter((entry) => entry !== null);
   return {
     id: normalizeString(raw?.id),
     name: normalizeString(raw?.artistname || raw?.name),
@@ -262,8 +270,12 @@ export function toNormalizedAlbum(raw: RawAlbum | null | undefined) {
   const artists = normalizeArray(raw?.artists)
     .map(toNormalizedArtist)
     .filter((artist) => artist?.id);
-  const images = normalizeArray(raw?.images).map(toNormalizedArtistImage).filter(Boolean);
-  const links = normalizeArray(raw?.links).map(toNormalizedArtistLink).filter(Boolean);
+  const images = normalizeArray(raw?.images)
+    .map(toNormalizedArtistImage)
+    .filter((entry) => entry !== null);
+  const links = normalizeArray(raw?.links)
+    .map(toNormalizedArtistLink)
+    .filter((entry) => entry !== null);
   const releases = normalizeArray(raw?.releases)
     .map(toNormalizedRelease)
     .filter((release) => release?.id);
@@ -319,7 +331,9 @@ export function toNormalizedArtistAlbum(raw: RawArtistAlbum | null | undefined) 
           raw?.releaseDate ||
           raw?.releasedate,
       ) || null,
-    coverImages: normalizeArray(raw?.images).map(toNormalizedArtistImage).filter(Boolean),
+    coverImages: normalizeArray(raw?.images)
+      .map(toNormalizedArtistImage)
+      .filter((entry) => entry !== null),
     rating: null,
   };
 }
@@ -343,7 +357,11 @@ export function toLegacyArtist(normalizedArtist: NormalizedArtist) {
 }
 
 export function toLegacyReleaseGroupSummary(
-  album: NormalizedAlbum & { artistName?: unknown; firstReleaseDate?: string | null },
+  album: Pick<NormalizedAlbum, "id" | "title" | "type" | "secondaryTypes" | "rating"> &
+    Partial<Pick<NormalizedAlbum, "releaseDate" | "releases" | "artistId">> & {
+      artistName?: unknown;
+      firstReleaseDate?: string | null;
+    },
   artist: { id?: unknown; name?: unknown } | null = null,
   { score = 0 }: { score?: number } = {},
 ) {

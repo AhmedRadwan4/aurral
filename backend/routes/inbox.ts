@@ -1,6 +1,9 @@
-import express from "express";
+import express, { type Request } from "express";
 import { dbOps } from "../db/helpers/index.ts";
+import { asAppError, type AppError } from "../../lib/errors.ts";
 import { hasPermission } from "../middleware/auth.ts";
+import type { InboxItem } from "../db/helpers/inbox.ts";
+import type { RequestUser } from "../middleware/requestUser.ts";
 import { requireAuth } from "../middleware/requirePermission.ts";
 import { libraryManager } from "../services/libraryManager.ts";
 import {
@@ -16,52 +19,62 @@ const router = express.Router();
 const lastManualRefresh = new Map();
 const DISCOVERY_DISMISSAL_MS = 90 * 24 * 60 * 60 * 1000;
 
-const getUserId = (req) => Number(req.user?.id);
+const getUserId = (req: Request) => Number(req.user?.id);
 
-async function addInboxItem(item, user) {
+const metadataText = (metadata: InboxItem["metadata"], key: string) => {
+  const value = metadata[key];
+  return typeof value === "string" ? value : undefined;
+};
+
+async function addInboxItem(item: InboxItem, user: RequestUser) {
   const metadata = item.metadata || {};
   if (item.kind === "release") {
     if (!hasPermission(user, "addAlbum")) {
-      const error = new Error("Permission required: addAlbum");
+      const error: AppError = new Error("Permission required: addAlbum");
       error.statusCode = 403;
       throw error;
     }
     return libraryManager.requestAlbumFromSearch({
-      albumMbid: metadata.albumMbid,
-      albumName: metadata.albumName,
-      artistMbid: metadata.artistMbid,
-      artistName: metadata.artistName,
+      albumMbid: metadataText(metadata, "albumMbid"),
+      albumName: metadataText(metadata, "albumName"),
+      artistMbid: metadataText(metadata, "artistMbid"),
+      artistName: metadataText(metadata, "artistName"),
       triggerSearch: true,
       user,
     });
   }
   if (item.kind === "discovery") {
     if (!hasPermission(user, "addArtist")) {
-      const error = new Error("Permission required: addArtist");
+      const error: AppError = new Error("Permission required: addArtist");
       error.statusCode = 403;
       throw error;
     }
     const options = await libraryManager.resolveArtistAddOptions({ user });
-    return libraryManager.addArtistWithResolvedOptions(metadata.artistMbid, metadata.artistName, {
-      ...options,
-      user,
-    });
+    return libraryManager.addArtistWithResolvedOptions(
+      metadataText(metadata, "artistMbid") ?? "",
+      metadataText(metadata, "artistName") ?? "",
+      {
+        ...options,
+        user,
+      },
+    );
   }
-  const error = new Error("This inbox item cannot be added");
+  const error: AppError = new Error("This inbox item cannot be added");
   error.statusCode = 400;
   throw error;
 }
 
 router.get("/", requireAuth, async (req, res) => {
   try {
-    const limit = Math.max(1, Math.min(50, Number.parseInt(req.query.limit, 10) || 50));
+    const limit = Math.max(1, Math.min(50, Number.parseInt(String(req.query.limit), 10) || 50));
     const result = await getInboxForUser(getUserId(req), {
       limit,
     });
     res.set("Cache-Control", "private, no-cache, no-store, must-revalidate");
     return res.json(result);
   } catch (error) {
-    return res.status(500).json({ error: "Failed to load inbox", message: error.message });
+    const failure = asAppError(error);
+    return res.status(500).json({ error: "Failed to load inbox", message: failure?.message });
   }
 });
 
@@ -102,7 +115,8 @@ router.post("/refresh", requireAuth, async (req, res) => {
       status: refresh.status,
     });
   } catch (error) {
-    return res.status(500).json({ error: "Failed to refresh inbox", message: error.message });
+    const failure = asAppError(error);
+    return res.status(500).json({ error: "Failed to refresh inbox", message: failure?.message });
   }
 });
 
@@ -122,7 +136,7 @@ router.patch("/:id", requireAuth, async (req, res) => {
   try {
     if (action === "add") {
       if (item.isAdded) return res.json({ item });
-      const result = await addInboxItem(item, req.user);
+      const result = await addInboxItem(item, req.user!);
       if (result?.error) {
         return res.status(503).json({ error: result.error });
       }
@@ -154,8 +168,9 @@ router.patch("/:id", requireAuth, async (req, res) => {
     }
     return res.status(400).json({ error: "Unsupported inbox action" });
   } catch (error) {
-    return res.status(error.statusCode || 500).json({
-      error: error.message || "Failed to update inbox item",
+    const failure = asAppError(error);
+    return res.status(failure?.statusCode || 500).json({
+      error: failure?.message || "Failed to update inbox item",
     });
   }
 });

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { asAppError } from "../../../lib/errors.ts";
 
 const REQUIRED_METHODS = [
   "testConnection",
@@ -14,7 +15,7 @@ type PlaybackOperation = (typeof REQUIRED_METHODS)[number] | "getReferencedPaths
 
 export type PlaybackResultOperation = Exclude<PlaybackOperation, "getPointerEntityIds">;
 
-type PlaybackOperationResult = {
+export type PlaybackOperationResult = {
   ok: boolean;
   pending?: boolean;
   deferred?: boolean;
@@ -22,16 +23,17 @@ type PlaybackOperationResult = {
   error?: { code: string; message: string; retryable: boolean };
 };
 
+type PlaybackOperationMethod = {
+  bivarianceHack(...args: unknown[]): PlaybackOperationResult | Promise<PlaybackOperationResult>;
+}["bivarianceHack"];
+
 export type PlaybackDestination = {
   key: string;
   name: string;
   isConfigured(): boolean;
   updateConfig(config: unknown): void;
-  getPointerEntityIds(): unknown;
-} & Record<
-  PlaybackResultOperation,
-  (...args: unknown[]) => PlaybackOperationResult | Promise<PlaybackOperationResult>
->;
+  getPointerEntityIds(): string[];
+} & Record<PlaybackResultOperation, PlaybackOperationMethod>;
 
 const REJECTED_HTTP_STATUSES = new Set([400, 401, 403]);
 const REJECTED_SUBSONIC_CODES = new Set([10, 40, 41, 50]);
@@ -149,10 +151,11 @@ export function playbackOperationSuccess({ pending = false }: { pending?: boolea
   return Object.freeze(pending ? { ok: true, pending: true } : { ok: true });
 }
 
-export function isRetryablePlaybackError(error) {
+export function isRetryablePlaybackError(error: unknown) {
+  const failure = asAppError(error);
   return (
-    !REJECTED_HTTP_STATUSES.has(Number(error?.response?.status)) &&
-    !REJECTED_SUBSONIC_CODES.has(Number(error?.code))
+    !REJECTED_HTTP_STATUSES.has(Number(failure?.response?.status)) &&
+    !REJECTED_SUBSONIC_CODES.has(Number(failure?.code))
   );
 }
 

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import type { ComponentProps } from "react";
 import { testLidarrConnection } from "../../../utils/api/endpoints/settings.ts";
 import type { AppSettings } from "../../../../../backend/db/helpers/settings.ts";
 import type { BootstrapPayload } from "../../../../../backend/routes/health.ts";
@@ -17,11 +16,9 @@ import { SettingsInput, SettingsSelect } from "./SettingsField";
 import { SettingsArrFieldSet, SettingsArrFormGroup } from "./arr/SettingsArrLayout";
 import { describeLidarrConnectionState } from "../utils/librarySettings";
 import { RootOverlapWarning } from "./RootOverlapWarning";
+import type { SettingsState } from "../utils";
+import { readApiError } from "../utils/apiError.ts";
 
-type LidarrSettings = {
-  integrations?: Partial<AppSettings["integrations"]>;
-  rootWarnings?: ComponentProps<typeof RootOverlapWarning>["rootWarnings"];
-};
 type LidarrIntegrationDraft = NonNullable<AppSettings["integrations"]["lidarr"]>;
 type LidarrTestStatus = { tone: "success" | "error"; message: string };
 type LidarrRootFolderOption = Awaited<ReturnType<typeof fetchRootFolders>>[number];
@@ -30,8 +27,8 @@ type LidarrTagOption = Awaited<ReturnType<typeof fetchTags>>[number];
 type LidarrHealth = Pick<BootstrapPayload, "lidarr" | "lidarrConfigured"> | null;
 
 type LidarrSettingsSectionProps = {
-  settings: LidarrSettings;
-  updateSettings: (next: LidarrSettings) => void;
+  settings: SettingsState;
+  updateSettings: (next: SettingsState) => void;
   health?: LidarrHealth;
   lidarrRootFolders?: LidarrRootFolderOption[];
   loadingLidarrRootFolders: boolean;
@@ -140,21 +137,11 @@ export function LidarrSettingsSection({
             showInfo(`Loaded ${nextTags.length} tag(s)`);
           }
         } catch (err) {
+          const failure = readApiError(err);
           const errorMsg =
-            err.response?.data?.message ||
-            err.response?.data?.error ||
-            err.message ||
-            "Failed to load Lidarr resources";
+            failure.message || failure.error || failure.text || "Failed to load Lidarr resources";
           showError(`Connected, but failed to load Lidarr resources: ${errorMsg}`);
         }
-      } else {
-        setLidarrTestStatus({
-          tone: "error",
-          message: "Connection failed. Check the URL and API key, then retry.",
-        });
-        showError(
-          `Connection failed: ${result.message || result.error}${result.details ? `\n${result.details}` : ""}`,
-        );
       }
     } catch (err) {
       setLidarrTestLatencyMs(Math.round(performance.now() - startTime));
@@ -162,7 +149,8 @@ export function LidarrSettingsSection({
         tone: "error",
         message: "Connection failed. Check the URL and API key, then retry.",
       });
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Connection failed: ${errorMsg}`);
     } finally {
       setTestingLidarr(false);
@@ -215,7 +203,8 @@ export function LidarrSettingsSection({
         showSuccess(`Loaded ${parts.join(", ")}`);
       }
     } catch (err) {
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Failed to load profiles and tags: ${errorMsg}`);
     }
   };

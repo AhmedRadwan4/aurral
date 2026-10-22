@@ -4,7 +4,7 @@ import type { buildOnboardingPayload } from "../../onboardingPayload.ts";
 import type { listBrowseDirectory } from "../../../../../backend/services/downloadFolderConfig.ts";
 import type { resolveListenHistorySettings } from "../../../../../backend/services/listeningHistory.ts";
 import type { recordPlayEvent as recordPlayEventService } from "../../../../../backend/services/playEventService.ts";
-import type { LidarrNamedProfile } from "../../../../../backend/services/lidarrSettingsService.ts";
+import type { LidarrNamedProfile } from "../../../../../backend/services/lidarrClient.ts";
 import type {
   BootstrapPayload,
   HealthLiveResponse,
@@ -59,18 +59,7 @@ type ListeningHistoryUpdate = {
   listenHistoryUrl: string | null;
 };
 
-type PlayEventPayload = {
-  trackId: string;
-  title: string;
-  artist: string;
-  album?: string;
-  artistMbid?: string | null;
-  albumMbid?: string | null;
-  trackMbid?: string | null;
-  durationMs?: number;
-  playedAt?: number;
-  source?: string;
-};
+type PlayEventPayload = NonNullable<Parameters<typeof recordPlayEventService>[1]>;
 
 type LidarrPreferencesUpdate = {
   rootFolderPath: string | null;
@@ -115,8 +104,11 @@ export const ensureFilesystemPath = (
     path: pathValue,
   });
 
-export const loginApi = async (username: string, password: string): Promise<LoginResponse> => {
-  const result = await postData("/auth/login", { username, password });
+export const loginApi = async (
+  username: string | undefined,
+  password: string,
+): Promise<LoginResponse> => {
+  const result = await postData<LoginResponse>("/auth/login", { username, password });
   invalidateBootstrapCache();
   return result;
 };
@@ -141,7 +133,7 @@ export const completePlexLogin = (): Promise<PlexLoginCompleteResponse> =>
   postData("/auth/plex/login/complete");
 
 export const logoutApi = async (): Promise<SuccessResponse> => {
-  const result = await postData("/auth/logout");
+  const result = await postData<SuccessResponse>("/auth/logout");
   invalidateBootstrapCache();
   return result;
 };
@@ -156,7 +148,7 @@ export const rotateApiKey = (): Promise<ApiKeyResponse> => postData("/auth/api-k
 export const completeOnboarding = async (
   payload: ReturnType<typeof buildOnboardingPayload>,
 ): Promise<OnboardingCompleteResponse> => {
-  const result = await postData("/onboarding/complete", payload);
+  const result = await postData<OnboardingCompleteResponse>("/onboarding/complete", payload);
   invalidateBootstrapCache();
   return result;
 };

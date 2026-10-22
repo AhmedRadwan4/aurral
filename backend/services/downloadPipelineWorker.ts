@@ -1,3 +1,4 @@
+import { asAppError } from "../../lib/errors.ts";
 import createHonkerWorker from "./honkerWorkerFactory.ts";
 import { getPipelineQueue } from "./honkerDb.ts";
 import {
@@ -5,6 +6,7 @@ import {
   processPipelinePayload,
   enqueuePendingJobsWithoutBatch,
   failPipelineJob,
+  type PipelinePayload,
 } from "./downloadPipeline.ts";
 import { isPipelinePayloadActive } from "./downloadJobs/downloadCancellation.ts";
 import { isAnyDownloadSourceConfigured } from "./downloadSourceService.ts";
@@ -13,7 +15,16 @@ import { recordAlbumGrabQueued, recordAlbumGrabPhase } from "./albumGrabActivity
 import { downloadTracker } from "./downloadJobs/downloadTracker.ts";
 import { withDownloadPayloadMutation } from "./downloadJobs/mutationGuards.ts";
 
-async function processLockedPipelineJob(payload, dependencies = {}) {
+interface PipelineDependencies {
+  processPipelinePayload?: typeof processPipelinePayload;
+  continuePipeline?: typeof continuePipeline;
+  failPipelineJob?: typeof failPipelineJob;
+}
+
+async function processLockedPipelineJob(
+  payload: PipelinePayload,
+  dependencies: PipelineDependencies = {},
+) {
   const processPayload = dependencies.processPipelinePayload || processPipelinePayload;
   const continuePayload = dependencies.continuePipeline || continuePipeline;
   const failPayload = dependencies.failPipelineJob || failPipelineJob;
@@ -37,7 +48,10 @@ async function processLockedPipelineJob(payload, dependencies = {}) {
   }
 }
 
-export function processPipelineJob(payload, dependencies = {}) {
+export function processPipelineJob(
+  payload: PipelinePayload,
+  dependencies: PipelineDependencies = {},
+) {
   return withDownloadPayloadMutation(payload, (current) =>
     processLockedPipelineJob(current, dependencies),
   );
@@ -47,7 +61,7 @@ const {
   start: startDownloadPipelineWorker,
   stop: stopDownloadPipelineWorker,
   isRunning: isDownloadPipelineWorkerRunning,
-} = createHonkerWorker({
+} = createHonkerWorker<PipelinePayload>({
   name: "slskd-pipeline",
   getQueue: getPipelineQueue,
   idlePollS: 2,
@@ -59,18 +73,20 @@ const {
     enqueuePendingJobsWithoutBatch();
     return true;
   },
-  processJob: processPipelineJob,
+  processJob: (payload) => processPipelineJob(payload),
   onFinalFailure(job, error) {
-    const message = error?.message || String(error);
+    const failure = asAppError(error);
+    const message = failure?.message || String(error);
     console.error("[downloadPipelineWorker] pipeline job failed:", {
       jobId: job.payload?.jobId || null,
       phase: job.payload?.phase || null,
       candidateIndex: job.payload?.candidateIndex ?? null,
       message,
-      stack: error?.stack || null,
+      stack: failure?.stack || null,
     });
-    return withDownloadPayloadMutation(job.payload, async (payload) =>
-      continuePipeline(await failPipelineJob(payload, message)),
+    const failed: PipelinePayload = job.payload;
+    return withDownloadPayloadMutation(failed, async (current) =>
+      continuePipeline(await failPipelineJob(current, message)),
     );
   },
 });

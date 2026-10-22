@@ -15,6 +15,13 @@ type StoredConnection = {
 type StoredConnections = Partial<Record<ScrobbleProvider, StoredConnection>>;
 type StoredStore = Record<string, StoredConnections>;
 
+type PublicConnectionStatus = {
+  connected: boolean;
+  displayName: string | null;
+  connectedAt: number | null;
+  configured?: boolean;
+};
+
 const PROVIDERS = new Set<ScrobbleProvider>(["lastfm", "listenbrainz", "koito"]);
 const getSettingStmt = db.prepare<[string], Pick<SettingsRow, "value">>(
   "SELECT value FROM settings WHERE key = ?",
@@ -47,7 +54,7 @@ const readStore = (): StoredStore => {
 
 const writeStore = (store: StoredStore) =>
   upsertSettingStmt.run(SETTINGS_KEY, dbHelpers.stringifyJSON(store));
-const userKey = (userId: number) => String(Math.trunc(Number(userId)));
+const userKey = (userId: number | undefined) => String(Math.trunc(Number(userId)));
 const encryptToken = (token: string) => encryptWithKey(String(token || ""), getEncryptionKey());
 const decryptToken = (token: string) => decryptWithKey(token, getEncryptionKey());
 
@@ -68,7 +75,7 @@ const normalize = (provider: ScrobbleProvider, raw: StoredConnection | undefined
 };
 
 export const scrobbleConnectionStore = {
-  getConnection(userId: number, provider: ScrobbleProvider) {
+  getConnection(userId: number | undefined, provider: ScrobbleProvider) {
     const connection = normalize(provider, readStore()[userKey(userId)]?.[provider]);
     return connection;
   },
@@ -88,7 +95,7 @@ export const scrobbleConnectionStore = {
   getPublicStatus(userId: number) {
     const connections = this.getConnections(userId);
     return Object.fromEntries(
-      [...PROVIDERS].map((provider) => {
+      [...PROVIDERS].map((provider): [ScrobbleProvider, PublicConnectionStatus] => {
         const connection = connections[provider];
         return [
           provider,
@@ -120,7 +127,7 @@ export const scrobbleConnectionStore = {
     const key = userKey(userId);
     store[key] = store[key] || {};
     store[key][provider] = {
-      token: encryptToken(safeToken),
+      token: encryptToken(safeToken)!,
       connectionRevision: crypto.randomUUID(),
       displayName: String(displayName || "").trim() || null,
       baseUrl: String(baseUrl || "").trim() || null,

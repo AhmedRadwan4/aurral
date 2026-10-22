@@ -1,4 +1,5 @@
 import { Download } from "lucide-react";
+import type { useLibraryDestination } from "../hooks/useLibraryDestination";
 
 const ACTIVE_ALBUM_STATUSES = new Set([
   "adding",
@@ -18,7 +19,7 @@ export const shouldTriggerAlbumSearch = ({
   sizeOnDisk = 0,
   trackFileCount = 0,
 }: {
-  inLibrary?: boolean;
+  inLibrary?: boolean | null;
   monitored?: boolean;
   status?: string | null;
   hasFiles?: boolean;
@@ -64,14 +65,30 @@ type AlbumRequestResult = {
   albumStatus?: { status?: string } | null;
 };
 
-export const buildAlbumAddAction = (_search: boolean, destination = {}) => ({
+type AlbumDestination = Partial<ReturnType<typeof useLibraryDestination>>;
+
+export const buildAlbumAddAction = (_search: boolean, destination: AlbumDestination = {}) => ({
   label: "Download album",
   icon: Download,
   destination,
 });
 
-export const getAlbumAddAction = (input = {}, destination = {}) =>
-  buildAlbumAddAction(shouldTriggerAlbumSearch(input), destination);
+type AlbumSearchInput = Parameters<typeof shouldTriggerAlbumSearch>[0];
+
+export function getAlbumAddAction<T extends object>(
+  input: T & AlbumSearchInput,
+  destination?: AlbumDestination,
+): ReturnType<typeof buildAlbumAddAction>;
+export function getAlbumAddAction(
+  input?: AlbumSearchInput,
+  destination?: AlbumDestination,
+): ReturnType<typeof buildAlbumAddAction>;
+export function getAlbumAddAction(
+  input: AlbumSearchInput = {},
+  destination: AlbumDestination = {},
+) {
+  return buildAlbumAddAction(shouldTriggerAlbumSearch(input), destination);
+}
 
 export const isAlbumCompleteInLibrary = ({
   status = "",
@@ -79,7 +96,10 @@ export const isAlbumCompleteInLibrary = ({
   percentOfTracks = 0,
   sizeOnDisk = 0,
   trackFileCount = 0,
-} = {}) =>
+}: Pick<
+  NonNullable<Parameters<typeof shouldTriggerAlbumSearch>[0]>,
+  "status" | "hasFiles" | "percentOfTracks" | "sizeOnDisk" | "trackFileCount"
+> = {}) =>
   hasFiles ||
   status === "available" ||
   status === "added" ||
@@ -108,7 +128,7 @@ export const countReleaseTracks = <T extends ReleaseLibraryInfo>(
 
 export const describeAlbumRequestResult = (
   result: AlbumRequestResult | null | undefined,
-  title: string,
+  title: string | null | undefined,
 ) => {
   if (result?.status === "blocked" || result?.albumStatus?.status === "blocked") {
     return {

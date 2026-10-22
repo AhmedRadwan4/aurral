@@ -1,7 +1,17 @@
-import { ISOLATED_QUEUE_GROUPS } from "./backgroundWorkerQueues.ts";
-import { getHonkerDb, getHonkerQueueByName } from "./honkerDb.ts";
+import { getIsolatedQueueGroup } from "./backgroundWorkerQueues.ts";
+import { getHonkerDb, getHonkerQueueByName, requireHonkerQueueByName } from "./honkerDb.ts";
+import type { HonkerLiveRow } from "../db/rows.ts";
+import type { RuntimeLogger } from "./logger.ts";
+import { asAppError } from "../../lib/errors.ts";
 
-async function releaseClaimedJob(database, row, logger, reason) {
+type ClaimedJobRow = Pick<HonkerLiveRow, "id" | "queue" | "payload" | "worker_id">;
+
+async function releaseClaimedJob(
+  database: ReturnType<typeof getHonkerDb>,
+  row: ClaimedJobRow,
+  logger: RuntimeLogger,
+  reason: string,
+) {
   try {
     if (row.queue === "library-scan") {
       const { restoreLibraryScanAfterWorkerExit } = await import("./libraryScanWorker.ts");
@@ -15,7 +25,10 @@ async function releaseClaimedJob(database, row, logger, reason) {
           markInterruptedUserDiscoveryRefresh(userId, reason);
         }
       } catch (error) {
-        logger.warn?.("[AppRuntime] Could not update discovery status:", error?.message || error);
+        logger.warn?.(
+          "[AppRuntime] Could not update discovery status:",
+          asAppError(error)?.message || error,
+        );
       }
     }
     try {
@@ -30,28 +43,33 @@ async function releaseClaimedJob(database, row, logger, reason) {
     } catch (error) {
       logger.warn?.(
         `[AppRuntime] Could not update ${row.queue} task history:`,
-        error?.message || error,
+        asAppError(error)?.message || error,
       );
     }
     // Honker registers retry on its queue connection, not on the raw query connection.
-    getHonkerQueueByName(row.queue)._retry(row.id, row.worker_id, 1, reason);
+    requireHonkerQueueByName(row.queue)._retry(row.id, row.worker_id, 1, reason);
   } catch (error) {
     logger.warn?.(
       `[AppRuntime] Could not requeue ${row.queue} job ${row.id}:`,
-      error?.message || error,
+      asAppError(error)?.message || error,
     );
   }
 }
 
-export async function recoverExitedWorkerJobs(group, pid, logger = console, reason = null) {
-  if (!Number.isInteger(pid) || pid <= 0) return;
+export async function recoverExitedWorkerJobs(
+  group: string,
+  pid: number | undefined,
+  logger: RuntimeLogger = console,
+  reason: string | null = null,
+) {
+  if (!Number.isInteger(pid) || pid! <= 0) return;
   const database = getHonkerDb();
   const rows = database.query(
     "SELECT id, queue, payload, worker_id FROM _honker_live WHERE worker_id = ? AND state = 'processing'",
     [`aurral-${pid}`],
-  );
+  ) as ClaimedJobRow[];
   for (const row of rows) {
-    if (ISOLATED_QUEUE_GROUPS[row.queue] !== group) continue;
+    if (getIsolatedQueueGroup(row.queue) !== group) continue;
     await releaseClaimedJob(database, row, logger, reason || "Background worker process exited");
   }
   if (group === "downloads") {
@@ -63,12 +81,12 @@ export async function recoverExitedWorkerJobs(group, pid, logger = console, reas
 // A job claimed before this process started belongs to a process that no
 // longer exists, so it runs again now instead of after its claim expires.
 // A claim stamps its expiry one visibility timeout ahead.
-export async function recoverJobsClaimedBeforeStart(logger = console) {
+export async function recoverJobsClaimedBeforeStart(logger: RuntimeLogger = console) {
   const startedAt = Math.floor(Date.now() / 1000 - process.uptime());
   const database = getHonkerDb();
   const rows = database.query(
     "SELECT id, queue, payload, worker_id, claim_expires_at FROM _honker_live WHERE state = 'processing'",
-  );
+  ) as (ClaimedJobRow & Pick<HonkerLiveRow, "claim_expires_at">)[];
   for (const row of rows) {
     const visibilityTimeoutS = Number(getHonkerQueueByName(row.queue)?.visibilityTimeoutS);
     if (!Number.isFinite(visibilityTimeoutS)) continue;

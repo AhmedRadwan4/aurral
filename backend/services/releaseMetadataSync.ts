@@ -1,9 +1,10 @@
 import { FACTORY_MONITOR_RULES, releaseMatchesRules } from "./aurralMonitoring.ts";
 import { UUID_REGEX } from "../../lib/uuid.ts";
+import { asAppError } from "../../lib/errors.ts";
 import {
   enqueueSystemTaskJob,
   findActiveHonkerJob,
-  getHonkerQueueByName,
+  requireHonkerQueueByName,
   getSystemTaskQueueName,
   listHonkerJobs,
 } from "./honkerDb.ts";
@@ -28,15 +29,18 @@ const DAY_MS = 24 * HOUR_MS;
 const ARTIST_REFRESH_INTERVAL_MS = 20 * HOUR_MS;
 const ARTIST_FAILURE_RETRY_MS = HOUR_MS;
 
-const text = (value) => String(value || "").trim();
+const text = (value: unknown) => String(value || "").trim();
 
-function getReleaseTime(releaseDate) {
+function getReleaseTime(releaseDate: unknown) {
   if (!text(releaseDate)) return null;
   const releaseTime = new Date(text(releaseDate)).getTime();
   return Number.isFinite(releaseTime) ? releaseTime : null;
 }
 
-function shouldFetchReleaseDate(stored, nowMs) {
+function shouldFetchReleaseDate(
+  stored: { releaseDate: string | null; refreshedAt: number } | undefined,
+  nowMs: number,
+) {
   if (!stored) return true;
   const age = nowMs - stored.refreshedAt;
   if (age > 60 * DAY_MS) return true;
@@ -45,7 +49,9 @@ function shouldFetchReleaseDate(stored, nowMs) {
   return releaseTime != null && releaseTime > nowMs - 30 * DAY_MS;
 }
 
-function listArtistsDue(artists, nowMs) {
+type CalendarArtist = ReturnType<typeof listReleaseCalendarArtists>[number];
+
+function listArtistsDue(artists: CalendarArtist[], nowMs: number) {
   const refreshes = getReleaseCalendarArtistRefreshes();
   return artists.filter((artist) => {
     if (!UUID_REGEX.test(text(artist?.mbid))) return false;
@@ -58,7 +64,9 @@ function listArtistsDue(artists, nowMs) {
   });
 }
 
-function isValidCatalogueRelease(release) {
+function isValidCatalogueRelease(
+  release: { id?: unknown; title?: unknown; type?: unknown } | null | undefined,
+) {
   const releaseGroupMbid = text(release?.id);
   return Boolean(
     release &&
@@ -89,22 +97,29 @@ export function scheduleReleaseMetadataRefresh({ delaySeconds = 0 } = {}) {
   const [pending, ...duplicates] = active
     .filter((job) => job.state === "pending")
     .sort((a, b) => Number(a.run_at || 0) - Number(b.run_at || 0));
-  for (const job of duplicates) getHonkerQueueByName(job.queue).cancel(job.id);
+  for (const job of duplicates) requireHonkerQueueByName(job.queue).cancel(job.id);
   if (pending?.id) {
     const existingRunAt = Number(pending.run_at || 0);
     if (existingRunAt === 0 || existingRunAt <= requestedRunAt) {
       return pending.id;
     }
-    if (!getHonkerQueueByName(pending.queue).cancel(pending.id)) return pending.id;
+    if (!requireHonkerQueueByName(pending.queue).cancel(pending.id)) return pending.id;
   }
   return enqueueSystemTaskJob({ kind: TASK_KIND }, { delaySeconds: normalizedDelay, priority: -5 });
 }
+
+type ReleaseMetadataLease = Awaited<ReturnType<typeof acquireReleaseMetadataLease>>;
 
 export async function refreshReleaseMetadata({
   artists = null,
   now = Date.now(),
   signal,
   lease = null,
+}: {
+  artists?: CalendarArtist[] | null;
+  now?: number;
+  signal?: AbortSignal;
+  lease?: ReleaseMetadataLease | null;
 } = {}) {
   if (!lease) {
     const acquired = await acquireReleaseMetadataLease({ signal });
@@ -149,13 +164,13 @@ export async function refreshReleaseMetadata({
       lease.write(() => markReleaseCalendarArtistFailed(artist.id, nowMs));
       logger.warn("library", "BrainzMash release metadata refresh failed for artist", {
         artistMbid: artist.mbid,
-        message: error?.message || String(error),
+        message: asAppError(error)?.message || String(error),
       });
       continue;
     }
 
     const calendar = getArtistReleaseCalendar(artist.id);
-    const entries = [];
+    const entries: Parameters<typeof upsertReleaseCalendarEntry>[0][] = [];
     for (const release of releases) {
       if (!releaseMatchesRules(release, FACTORY_MONITOR_RULES)) continue;
       const releaseGroupMbid = text(release.id);
@@ -179,7 +194,7 @@ export async function refreshReleaseMetadata({
           releasesFailed += 1;
           logger.warn("library", "BrainzMash release date refresh failed", {
             releaseGroupMbid,
-            message: error?.message || String(error),
+            message: asAppError(error)?.message || String(error),
           });
           continue;
         }

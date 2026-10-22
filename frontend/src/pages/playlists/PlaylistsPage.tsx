@@ -11,7 +11,7 @@ import { useToast } from "../../contexts/ToastContext";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import { createStaticPlaylist } from "../../utils/api/endpoints/playlists.ts";
 import { PlaylistArtworkThumb } from "./components/PlaylistArtworkThumb.tsx";
-import { getStaticPlaylistTrackCount } from "./playlistStats";
+import { getStaticPlaylistTrackCount, type StaticPlaylist } from "./playlistStats";
 import { normalizeNameKey, reserveUniqueName } from "./flowPageUtils";
 import {
   formatTrackTotal,
@@ -22,16 +22,17 @@ import {
 import { usePlaylistStatus } from "./usePlaylistStatus";
 import { useHiddenPlaylistTracks } from "./usePlaylistBulkActions.ts";
 import { playlistPath } from "../../navigation/playlistPaths";
+import { getApiErrorMessage } from "../onboardingUtils.tsx";
 
 const PlaylistImportModal = lazy(() =>
   import("./import/PlaylistImportModal.tsx").then((m) => ({ default: m.PlaylistImportModal })),
 );
 
-function SyncedBadge({ importSource }) {
+function SyncedBadge({ importSource }: { importSource: StaticPlaylist["importSource"] }) {
   const logo =
     importSource?.syncEnabled === true ? getImportedProviderLogo(importSource.provider) : null;
   if (!logo) return null;
-  const label = `Synced from ${getImportedProviderLabel(importSource.provider)}`;
+  const label = `Synced from ${getImportedProviderLabel(importSource!.provider)}`;
   return (
     <Tooltip content={label}>
       <span className="playlists-page__synced" role="img" aria-label={label} tabIndex={0}>
@@ -67,7 +68,7 @@ export default function PlaylistsPage() {
     setCreateOpen(true);
   };
 
-  const handleCreate = async (name) => {
+  const handleCreate = async (name: string) => {
     setCreating(true);
     setCreateError("");
     try {
@@ -79,11 +80,7 @@ export default function PlaylistsPage() {
         navigate(playlistPath(response.playlistId), { state: { created: true } });
       }
     } catch (err) {
-      const message =
-        err.response?.data?.message ||
-        err.response?.data?.error ||
-        err.message ||
-        "Failed to create playlist";
+      const message = getApiErrorMessage(err, "Failed to create playlist");
       setCreateError(message);
       showError(message);
     } finally {
@@ -91,7 +88,7 @@ export default function PlaylistsPage() {
     }
   };
 
-  const describePlaylist = (playlist) => {
+  const describePlaylist = (playlist: StaticPlaylist) => {
     const hiddenCount = hiddenTracks.get(playlist.id)?.size || 0;
     const parts = [
       formatTrackTotal(

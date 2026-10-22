@@ -1,8 +1,10 @@
+import { asAppError } from "../../../lib/errors.ts";
 import {
   assertPlaybackDestination,
   isRetryablePlaybackError,
   playbackOperationFailure,
   type PlaybackDestination,
+  type PlaybackOperationResult,
   type PlaybackResultOperation,
 } from "./playbackDestination.ts";
 
@@ -47,13 +49,13 @@ export class PlaybackDestinationRegistry {
             (DELETE_OPERATIONS.has(operation) || destination.isConfigured()),
         )
         .map(async (destination) => {
-          let result;
+          let result: PlaybackOperationResult;
           try {
             result = await destination[operation](...args);
           } catch (error) {
             result = playbackOperationFailure({
               code: "DESTINATION_OPERATION_FAILED",
-              message: error?.message || `${destination.name} ${operation} failed`,
+              message: asAppError(error)?.message || `${destination.name} ${operation} failed`,
               retryable: isRetryablePlaybackError(error),
             });
           }

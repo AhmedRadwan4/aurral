@@ -7,10 +7,18 @@ import {
   disconnectMyPlex,
 } from "../../../utils/api/endpoints/auth.ts";
 import { isReauthRequiredError, promptReauth } from "../../../utils/reauth.ts";
+import { readApiError } from "../utils/apiError.ts";
 import { useAuth } from "../../../contexts/AuthContext";
 import { queryKeys } from "../../../queryClient.ts";
+import type { PlexLinkStatusResponse } from "../../../../../backend/routes/users/plexLinkHandlers.ts";
+import type { useToast } from "../../../contexts/ToastContext";
 
-const EMPTY_STATUS = {
+type Toast = ReturnType<typeof useToast>["showSuccess"];
+type PlexLinkStatus = Omit<PlexLinkStatusResponse, "globalAccount"> & {
+  globalAccount: PlexLinkStatusResponse["globalAccount"] | null;
+};
+
+const EMPTY_STATUS: PlexLinkStatus = {
   connected: false,
   linkType: null,
   plexUsername: null,
@@ -20,7 +28,15 @@ const EMPTY_STATUS = {
   isGlobalAccountOwner: false,
 };
 
-export function PlexSelfLinkSection({ showSuccess, showError, className = "" }) {
+export function PlexSelfLinkSection({
+  showSuccess,
+  showError,
+  className = "",
+}: {
+  showSuccess: Toast;
+  showError: Toast;
+  className?: string;
+}) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const statusQueryKey = queryKeys.myPlexLinkStatus(user?.id);
@@ -29,8 +45,10 @@ export function PlexSelfLinkSection({ showSuccess, showError, className = "" }) 
     queryFn: ({ signal }) => getMyPlexLinkStatus({ signal }),
   });
   const status = statusQuery.data ?? EMPTY_STATUS;
-  const updateStatus = (update) =>
-    queryClient.setQueryData(statusQueryKey, (prev) => update(prev ?? EMPTY_STATUS));
+  const updateStatus = (update: (prev: PlexLinkStatus) => PlexLinkStatus) =>
+    queryClient.setQueryData<PlexLinkStatus>(statusQueryKey, (prev) =>
+      update(prev ?? EMPTY_STATUS),
+    );
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
@@ -62,8 +80,8 @@ export function PlexSelfLinkSection({ showSuccess, showError, className = "" }) 
             if (shouldRetry) continue;
           }
           if (popup && !popup.closed) popup.close();
-          const message =
-            pollErr.response?.data?.message || pollErr.response?.data?.error || pollErr.message;
+          const failure = readApiError(pollErr);
+          const message = failure.message || failure.error || failure.text;
           showError?.(`Plex sign-in failed: ${message}`);
           return;
         }
@@ -83,7 +101,8 @@ export function PlexSelfLinkSection({ showSuccess, showError, className = "" }) 
       }));
       showSuccess?.(`Connected to Plex as "${linked.plexUsername || "your account"}".`);
     } catch (err) {
-      const message = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const message = failure.message || failure.error || failure.text;
       showError?.(`Plex sign-in failed: ${message}`);
     } finally {
       setConnecting(false);
@@ -113,11 +132,11 @@ export function PlexSelfLinkSection({ showSuccess, showError, className = "" }) 
             }));
             showSuccess?.("Disconnected your Plex account.");
           } catch (retryErr) {
-            showError?.(retryErr.response?.data?.message || "Failed to disconnect Plex");
+            showError?.(readApiError(retryErr).message || "Failed to disconnect Plex");
           }
         }
       } else {
-        showError?.(err.response?.data?.message || "Failed to disconnect Plex");
+        showError?.(readApiError(err).message || "Failed to disconnect Plex");
       }
     } finally {
       setDisconnecting(false);
@@ -139,7 +158,7 @@ export function PlexSelfLinkSection({ showSuccess, showError, className = "" }) 
         <>
           <p className="settings-page__muted-copy">
             {status.linkType === "managed" ? "Managed by an admin as" : "Connected as"}{" "}
-            <strong>{status.plexUsername || "your Plex account"}</strong>.
+            <strong>{String(status.plexUsername || "your Plex account")}</strong>.
           </p>
           {status.lastError && (
             <p className="settings-page__hint settings-page__hint--warning">

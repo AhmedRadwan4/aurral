@@ -1,7 +1,19 @@
 import fs from "fs";
 import path from "path";
 import honker from "@russellthehippo/honker-node";
+import type {
+  Database,
+  JsonValue,
+  Job,
+  Outbox,
+  Queue,
+  SchedulerUpdateOptions,
+} from "@russellthehippo/honker-node";
+import type { PipelinePayload } from "./downloadPipeline.ts";
+import type { HonkerLiveRow } from "../db/rows.ts";
 import { resolveAurralDataDir } from "../config/data-dir.ts";
+import { asAppError } from "../../lib/errors.ts";
+import { isOwnKey } from "../../lib/ownKey.ts";
 import { dbOps } from "../db/helpers/index.ts";
 import { resolveDownloadRoot } from "./downloadPaths.ts";
 import { ISOLATED_QUEUE_GROUPS, shouldStartQueueHere } from "./backgroundWorkerQueues.ts";
@@ -28,7 +40,7 @@ export const HONKER_QUEUE_NAMES = [
   "discovery-user-refresh",
   "_outbox:notifications",
   "_outbox:play-events",
-];
+] as const;
 
 function resolveHonkerDbPath() {
   return process.env.AURRAL_DB_PATH
@@ -36,31 +48,32 @@ function resolveHonkerDbPath() {
     : path.join(resolveAurralDataDir(), "aurral.db");
 }
 
-let honkerDb = null;
-let openedHonkerDbPath = null;
-let notificationOutbox = null;
-let playEventOutbox = null;
+let honkerDb: Database | null = null;
+let openedHonkerDbPath: string | null = null;
+let notificationOutbox: Outbox | null = null;
+let playEventOutbox: Outbox | null = null;
 let honkerSchedulerStarted = false;
-let honkerSchedulerAbort = null;
-let honkerSchedulerPromise = null;
-let queueWakeHandler = null;
+let honkerSchedulerAbort: AbortController | null = null;
+let honkerSchedulerPromise: Promise<void> | null = null;
+let queueWakeHandler: ((name: string) => void) | null = null;
 const WORKER_ID = `aurral-${process.pid}`;
 const DEFAULT_HONKER_WATCHER_POLL_MS = 25;
 const MISSED_FIRE_GRACE_S = 300;
 
-export function configureHonkerQueueWake(handler) {
+export function configureHonkerQueueWake(handler: ((name: string) => void) | null) {
   queueWakeHandler = typeof handler === "function" ? handler : null;
 }
 
-function wakeQueueOwner(name) {
+function wakeQueueOwner(name: string) {
   try {
     if (process.env.AURRAL_BACKGROUND_WORKER_GROUP && process.connected) {
-      process.send({ type: "queue-wake", queue: name });
+      process.send!({ type: "queue-wake", queue: name });
     } else {
       queueWakeHandler?.(name);
     }
   } catch (error) {
-    console.warn("[Honker] Could not wake queued work:", error?.message || error);
+    const failure = asAppError(error);
+    console.warn("[Honker] Could not wake queued work:", failure?.message || error);
   }
 }
 
@@ -73,7 +86,17 @@ export function getHonkerOpenOptions() {
   return { watcherPollIntervalMs };
 }
 
-export const SCHEDULED_SYSTEM_TASKS = [
+interface ScheduledSystemTask {
+  name: string;
+  queue: string;
+  schedule: string;
+  payload: HonkerPayload;
+  priority?: number;
+  expiresS?: number | null;
+  maxAttempts?: number;
+}
+
+export const SCHEDULED_SYSTEM_TASKS: ScheduledSystemTask[] = [
   {
     name: "weekly-flow-refresh",
     queue: "system-task-maintenance",
@@ -164,8 +187,9 @@ const PIPELINE_PHASE_PRIORITY = {
   finalize: 30,
 };
 
-function getPipelinePriorityForPhase(phase) {
-  return PIPELINE_PHASE_PRIORITY[String(phase || "").toLowerCase()] ?? 0;
+function getPipelinePriorityForPhase(phase: JsonValue | undefined) {
+  const key = String(phase || "").toLowerCase();
+  return isOwnKey(PIPELINE_PHASE_PRIORITY, key) ? PIPELINE_PHASE_PRIORITY[key] : 0;
 }
 
 export function getHonkerDb() {
@@ -184,14 +208,36 @@ export function getHonkerDb() {
   return honkerDb;
 }
 
-function resolveEnqueueRunAt(options) {
+declare module "@russellthehippo/honker-node" {
+  interface Queue {
+    _nextClaimAt?(): number | null;
+    _retry(jobId: number, workerId: string | null, delayS: number, error: string): boolean;
+    cancel(jobId: number): boolean;
+    getJob(jobId: number): HonkerLiveRow | null;
+  }
+}
+
+export type HonkerPayload = { [key: string]: JsonValue };
+type HonkerJobRow = Pick<
+  HonkerLiveRow,
+  "id" | "payload" | "state" | "run_at" | "claim_expires_at" | "attempts"
+>;
+export type SystemTaskPayload = HonkerPayload & { kind: string };
+
+export interface HonkerEnqueueOptions {
+  runAt?: number | null;
+  delaySeconds?: number | null;
+  priority?: number | null;
+}
+
+function resolveEnqueueRunAt(options: HonkerEnqueueOptions) {
   if (options.runAt != null) return Math.floor(Number(options.runAt) / 1000);
   if (options.delaySeconds != null)
     return Math.floor(Date.now() / 1000) + Number(options.delaySeconds);
   return null;
 }
 
-export function parseHonkerPayload(value) {
+export function parseHonkerPayload(value: unknown): HonkerPayload | null {
   try {
     const payload = typeof value === "string" ? JSON.parse(value) : value;
     return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : null;
@@ -200,21 +246,31 @@ export function parseHonkerPayload(value) {
   }
 }
 
-export function listHonkerJobs(queueName) {
+export function listHonkerJobs(queueName: string) {
   const safeQueue = String(queueName || "").trim();
   if (!safeQueue) return [];
-  return getHonkerDb()
-    .query(
+  return (
+    getHonkerDb().query(
       `SELECT id, payload, state, run_at, claim_expires_at, attempts
        FROM _honker_live
        WHERE queue = ?
        ORDER BY id ASC`,
       [safeQueue],
-    )
-    .map((row) => ({ ...row, payload: parseHonkerPayload(row.payload) }));
+    ) as HonkerJobRow[]
+  ).map((row) => ({ ...row, payload: parseHonkerPayload(row.payload) }));
 }
 
-function createHonkerQueue({
+interface HonkerQueueConfig<Payload extends object = HonkerPayload> {
+  name: string;
+  visibilityTimeoutS: number;
+  maxAttempts: number;
+  workerModule: string;
+  workerStartFn: string;
+  defaultPriorityFn?: (payload: Payload, options: HonkerEnqueueOptions) => number;
+  skipInTest?: boolean;
+}
+
+function createHonkerQueue<Payload extends object = HonkerPayload>({
   name,
   visibilityTimeoutS,
   maxAttempts,
@@ -222,8 +278,8 @@ function createHonkerQueue({
   workerStartFn,
   defaultPriorityFn = (payload, options) => Number(options.priority || 0),
   skipInTest = false,
-}) {
-  let queue = null;
+}: HonkerQueueConfig<Payload>) {
+  let queue: Queue | null = null;
 
   function getQueue() {
     if (!queue) {
@@ -232,11 +288,11 @@ function createHonkerQueue({
     return queue;
   }
 
-  function enqueueJob(payload, options = {}) {
+  function enqueueJob(payload: Payload, options: HonkerEnqueueOptions = {}) {
     const q = getQueue();
     const runAt = resolveEnqueueRunAt(options);
     const priority = defaultPriorityFn(payload, options);
-    const jobId = q.enqueue(payload, { priority, runAt });
+    const jobId = q.enqueue(payload as JsonValue, { priority, runAt });
     if (shouldStartQueueHere(name) && !(skipInTest && process.env.NODE_ENV === "test")) {
       import(workerModule)
         .then((mod) => mod[workerStartFn]())
@@ -256,17 +312,17 @@ function createHonkerQueue({
   return { getQueue, enqueueJob, reset };
 }
 
-const queueByName = new Map();
-const allQueues = [];
+const queueByName = new Map<string, Pick<ReturnType<typeof createHonkerQueue>, "getQueue">>();
+const allQueues: Array<() => void> = [];
 
-function registerQueue(config) {
+function registerQueue<Payload extends object = HonkerPayload>(config: HonkerQueueConfig<Payload>) {
   const { getQueue, enqueueJob, reset } = createHonkerQueue(config);
-  queueByName.set(config.name, { getQueue, enqueueJob });
+  queueByName.set(config.name, { getQueue });
   allQueues.push(reset);
   return { getQueue, enqueueJob };
 }
 
-const pipeline = registerQueue({
+const pipeline = registerQueue<PipelinePayload>({
   name: "slskd-pipeline",
   visibilityTimeoutS: 1200,
   maxAttempts: 5,
@@ -372,7 +428,7 @@ export const getPlaybackTaskQueue = playbackTask.getQueue;
 
 const PLAYBACK_TASK_KINDS = ["playback-library-scan", "playback-playlist-sync"];
 
-export function getSystemTaskQueueName(kind) {
+export function getSystemTaskQueueName(kind: string) {
   if (kind === "release-metadata-refresh") return "release-metadata-refresh";
   if (PLAYBACK_TASK_KINDS.includes(kind)) return "playback";
   if (kind === "inbox-refresh") return "system-task-inbox";
@@ -381,7 +437,7 @@ export function getSystemTaskQueueName(kind) {
   return "system-task";
 }
 
-export function enqueueSystemTaskJob(payload, options) {
+export function enqueueSystemTaskJob(payload: SystemTaskPayload, options?: HonkerEnqueueOptions) {
   switch (getSystemTaskQueueName(payload?.kind)) {
     case "release-metadata-refresh":
       return releaseMetadata.enqueueJob(payload, options);
@@ -428,7 +484,9 @@ export function getNotificationOutbox() {
         const { deliverQueuedNotification } = await import("./notificationService.ts");
         const { withJobHeartbeat } = await import("./honkerWorkerRuntime.ts");
         const outbox = getNotificationOutbox();
-        await withJobHeartbeat(job, outbox.queue, () => deliverQueuedNotification(payload));
+        await withJobHeartbeat(job, outbox.queue, () =>
+          deliverQueuedNotification(payload as Parameters<typeof deliverQueuedNotification>[0]),
+        );
       },
       {
         visibilityTimeoutS: 120,
@@ -440,7 +498,7 @@ export function getNotificationOutbox() {
   return notificationOutbox;
 }
 
-export function enqueueNotification(payload) {
+export function enqueueNotification(payload: HonkerPayload) {
   const jobId = getNotificationOutbox().enqueue(payload);
   if (shouldStartQueueHere("_outbox:notifications")) {
     import("./notificationOutboxWorker.ts")
@@ -462,7 +520,9 @@ export function getPlayEventOutbox() {
         const { deliverPlayEvent } = await import("./playEventService.ts");
         const { withJobHeartbeat } = await import("./honkerWorkerRuntime.ts");
         const outbox = getPlayEventOutbox();
-        await withJobHeartbeat(job, outbox.queue, () => deliverPlayEvent(payload));
+        await withJobHeartbeat(job, outbox.queue, () =>
+          deliverPlayEvent(payload as Parameters<typeof deliverPlayEvent>[0]),
+        );
       },
       { visibilityTimeoutS: 120, maxAttempts: 5, baseBackoffS: 30 },
     );
@@ -470,7 +530,7 @@ export function getPlayEventOutbox() {
   return playEventOutbox;
 }
 
-export function enqueuePlayEventDelivery(payload) {
+export function enqueuePlayEventDelivery(payload: HonkerPayload) {
   const jobId = getPlayEventOutbox().enqueue(payload);
   if (shouldStartQueueHere("_outbox:play-events")) {
     import("./playEventOutboxWorker.ts")
@@ -551,7 +611,7 @@ export function bootstrapHonkerSchedules() {
       }
     }
 
-    const updates = {};
+    const updates: SchedulerUpdateOptions = {};
     if (
       existing.cron_expr !== task.schedule ||
       (task.name !== "release-metadata-refresh" &&
@@ -575,7 +635,7 @@ export function bootstrapHonkerSchedules() {
 }
 
 export function enqueueHonkerStartupTasks() {
-  const enqueueIfAbsent = (payload, options) => {
+  const enqueueIfAbsent = (payload: SystemTaskPayload, options: HonkerEnqueueOptions) => {
     const legacy =
       payload.kind === "release-metadata-refresh"
         ? findActiveHonkerJob("system-task", (candidate) => candidate?.kind === payload.kind, {
@@ -625,9 +685,12 @@ export function enqueueHonkerStartupTasks() {
 }
 
 export function findActiveHonkerJob(
-  queueName,
-  predicate = () => true,
-  { recoverExpired = false, payloadKind = "" } = {},
+  queueName: string,
+  predicate: (payload: HonkerPayload | null, row: HonkerJobRow) => boolean = () => true,
+  {
+    recoverExpired = false,
+    payloadKind = "",
+  }: { recoverExpired?: boolean; payloadKind?: string } = {},
 ) {
   const safeQueue = String(queueName || "").trim();
   if (!safeQueue) return null;
@@ -655,7 +718,7 @@ export function findActiveHonkerJob(
       LIMIT 100
     `,
     parameters,
-  );
+  ) as HonkerJobRow[];
   for (const row of rows) {
     const payload = parseHonkerPayload(row.payload);
     if (predicate(payload, row)) return { ...row, payload };
@@ -694,7 +757,7 @@ export function stopHonkerScheduler() {
 }
 
 export function closeHonkerDb() {
-  stopHonkerScheduler();
+  void stopHonkerScheduler();
   if (honkerDb) {
     try {
       honkerDb.close();
@@ -709,7 +772,7 @@ export function closeHonkerDb() {
   playEventOutbox = null;
 }
 
-export function isHonkerLockHeld(name) {
+export function isHonkerLockHeld(name: string) {
   const probeOwner = `probe-${WORKER_ID}-${Date.now()}`;
   const lock = getHonkerDb().tryLock(String(name || "").trim(), probeOwner, 1);
   if (lock) {
@@ -721,11 +784,11 @@ export function isHonkerLockHeld(name) {
   return true;
 }
 
-const inProcessLockTails = new Map();
+const inProcessLockTails = new Map<string, Promise<void>>();
 
-export async function withHonkerLock(
-  name,
-  fn,
+export async function withHonkerLock<T>(
+  name: string,
+  fn: () => T,
   { ttlSeconds = 120, waitTimeoutMs = 300000, retryDelayMs = 250 } = {},
 ) {
   const safeName = String(name || "").trim();
@@ -735,15 +798,15 @@ export async function withHonkerLock(
   const deadline = Date.now() + Math.max(0, Number(waitTimeoutMs) || 0);
 
   const previousTail = inProcessLockTails.get(safeName) || Promise.resolve();
-  let releaseGate;
-  const gate = new Promise((resolve) => {
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
     releaseGate = resolve;
   });
   const tail = previousTail.then(() => gate);
   inProcessLockTails.set(safeName, tail);
 
   try {
-    let timer;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const gateAcquired = await Promise.race([
       previousTail.then(() => true),
       new Promise((resolve) => {
@@ -795,7 +858,7 @@ export function getWorkerId() {
   return WORKER_ID;
 }
 
-export function getHonkerQueueDepth(queueName) {
+export function getHonkerQueueDepth(queueName: string) {
   const safeQueue = String(queueName || "").trim();
   if (!safeQueue) return 0;
   const now = Math.floor(Date.now() / 1000);
@@ -810,7 +873,7 @@ export function getHonkerQueueDepth(queueName) {
   return Number(row?.count) || 0;
 }
 
-export function hasClaimableHonkerJobs(queueName) {
+export function hasClaimableHonkerJobs(queueName: string) {
   return Boolean(
     getHonkerDb().query(
       `SELECT 1 FROM _honker_live WHERE queue = ? AND run_at <= ?
@@ -820,7 +883,7 @@ export function hasClaimableHonkerJobs(queueName) {
   );
 }
 
-export function hasActiveHonkerJobs(queueName) {
+export function hasActiveHonkerJobs(queueName: string) {
   return Boolean(
     getHonkerDb().query(
       `SELECT 1 FROM _honker_live WHERE queue = ?
@@ -841,15 +904,16 @@ export function isHonkerScheduleDue(nowMs = Date.now()) {
 
 export function listBackgroundGroupsWithWork(nowMs = Date.now()) {
   const now = Math.floor(nowMs / 1000);
-  const groups = new Set(
-    getHonkerDb()
-      .query(
+  const groups = new Set<string>(
+    (
+      getHonkerDb().query(
         `SELECT DISTINCT queue FROM _honker_live WHERE run_at <= ?
      AND (state = 'pending' OR (state = 'processing' AND claim_expires_at <= ?))`,
         [now, now],
-      )
-      .map((row) => ISOLATED_QUEUE_GROUPS[row.queue])
-      .filter(Boolean),
+      ) as Pick<HonkerLiveRow, "queue">[]
+    ).flatMap((row) =>
+      isOwnKey(ISOLATED_QUEUE_GROUPS, row.queue) ? [ISOLATED_QUEUE_GROUPS[row.queue]] : [],
+    ),
   );
   if (isHonkerScheduleDue(nowMs)) groups.add("scheduler");
   return [...groups];
@@ -871,7 +935,7 @@ export function getNextBackgroundWorkAt(nowMs = Date.now()) {
   return row?.next_at == null ? null : Number(row.next_at) * 1000;
 }
 
-export function hasExpiredHonkerClaims(queueName) {
+export function hasExpiredHonkerClaims(queueName: string) {
   return Boolean(
     getHonkerDb().query(
       "SELECT 1 FROM _honker_live WHERE queue = ? AND state = 'processing' AND claim_expires_at <= ? LIMIT 1",
@@ -892,7 +956,7 @@ export function sweepAllHonkerQueues() {
   return swept;
 }
 
-export function getHonkerQueueByName(queueName) {
+export function getHonkerQueueByName(queueName: string) {
   if (queueName === "_outbox:notifications") {
     return getNotificationOutbox().queue;
   }
@@ -902,7 +966,13 @@ export function getHonkerQueueByName(queueName) {
   return queueByName.get(queueName)?.getQueue() ?? null;
 }
 
-export function getHonkerQueueNextClaimAt(queueName) {
+export function requireHonkerQueueByName(queueName: string) {
+  const queue = getHonkerQueueByName(queueName);
+  if (!queue) throw new Error(`Honker queue is not registered: ${queueName}`);
+  return queue;
+}
+
+export function getHonkerQueueNextClaimAt(queueName: string) {
   const safeQueue = String(queueName || "").trim();
   if (!safeQueue) return null;
   const queue = getHonkerQueueByName(safeQueue);
@@ -911,7 +981,11 @@ export function getHonkerQueueNextClaimAt(queueName) {
   return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
 }
 
-export function requeueInterruptedHonkerJob(job, queue, { refundAttempt = true } = {}) {
+export function requeueInterruptedHonkerJob(
+  job: Job,
+  queue: Queue,
+  { refundAttempt = true }: { refundAttempt?: boolean } = {},
+) {
   const tx = getHonkerDb().transaction();
   try {
     tx.execute(
@@ -928,7 +1002,18 @@ export function requeueInterruptedHonkerJob(job, queue, { refundAttempt = true }
   }
 }
 
-export function mergeIntoPendingHonkerJob(queueName, { payloadKind, matches = () => true, merge }) {
+export function mergeIntoPendingHonkerJob(
+  queueName: string,
+  {
+    payloadKind,
+    matches = () => true,
+    merge,
+  }: {
+    payloadKind: string;
+    matches?: (payload: HonkerPayload) => boolean;
+    merge: (payload: HonkerPayload) => HonkerPayload;
+  },
+) {
   const tx = getHonkerDb().transaction();
   try {
     const rows = tx.query(
@@ -942,7 +1027,7 @@ export function mergeIntoPendingHonkerJob(queueName, { payloadKind, matches = ()
       .find(({ payload }) => payload && matches(payload));
     if (target) {
       tx.execute("UPDATE _honker_live SET payload = ? WHERE id = ?", [
-        JSON.stringify(merge(target.payload)),
+        JSON.stringify(merge(target.payload!)),
         target.id,
       ]);
     }
@@ -954,7 +1039,7 @@ export function mergeIntoPendingHonkerJob(queueName, { payloadKind, matches = ()
   }
 }
 
-export function adjustHonkerClaimAttempts(job, queue, delta) {
+export function adjustHonkerClaimAttempts(job: Job, queue: Queue, delta: number) {
   const tx = getHonkerDb().transaction();
   try {
     const changed = tx.execute(

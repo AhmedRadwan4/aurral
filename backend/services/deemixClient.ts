@@ -1,6 +1,105 @@
 import { dbOps } from "../db/helpers/index.ts";
+import type { StoredIntegrations } from "../db/helpers/settings.ts";
 import { normalizeBaseUrl, normalizeInteger } from "./usenetClientCommon.ts";
 import axios from "../../lib/axiosFetch.ts";
+import { asAppError } from "../../lib/errors.ts";
+
+type DeemixConfig = NonNullable<StoredIntegrations["deemix"]>;
+
+interface DeemixUser {
+  name?: string;
+  can_stream_lossless?: boolean;
+  can_stream_hq?: boolean;
+}
+
+interface DeemixConnectResponse {
+  autologin?: boolean;
+  deezerAvailable?: boolean;
+  singleUser?: { arl?: string | null };
+  update?: { deemixVersion?: string };
+  currentUser?: DeemixUser;
+}
+
+interface DeemixArtist {
+  name?: string;
+}
+
+interface DeemixAlbumRef {
+  id?: number | string;
+  title?: string;
+  link?: string;
+}
+
+interface DeemixTrack {
+  id?: number | string;
+  title?: string;
+  link?: string;
+  duration?: number;
+  readable?: boolean;
+  artist?: DeemixArtist;
+  album?: DeemixAlbumRef;
+}
+
+interface DeemixAlbumTrack extends DeemixTrack {
+  type?: string;
+  track_position?: number;
+  disk_number?: number;
+}
+
+interface DeemixAlbum {
+  id?: number | string;
+  title?: string;
+  link?: string;
+  artist?: DeemixArtist;
+}
+
+interface DeemixSearchResponse<T> {
+  error?: string;
+  data?: T[];
+}
+
+interface DeemixQueueFile {
+  path?: string;
+}
+
+interface DeemixQueueItem {
+  uuid?: string;
+  status?: string;
+  type?: string;
+  files?: DeemixQueueFile[];
+  errors?: (string | { error?: unknown; message?: unknown } | null)[];
+  failed?: number;
+  downloaded?: number;
+}
+
+interface DeemixQueueResponse {
+  queue?: Record<string, DeemixQueueItem>;
+}
+
+interface DeemixAddToQueueResponse {
+  result?: boolean;
+  errid?: string;
+  data?: { obj?: DeemixQueueItem | DeemixQueueItem[] };
+}
+
+interface DeemixTracklistResponse {
+  tracks?: DeemixAlbumTrack[];
+}
+
+interface DeemixConnectionResult {
+  ok: boolean;
+  configured: boolean;
+  connected: boolean;
+  version?: string;
+  warning?: boolean;
+  message: string;
+}
+
+interface DeemixRequestOptions {
+  params?: Record<string, string | number>;
+  data?: unknown;
+  timeout?: number;
+}
 
 const FLAC_BITRATE = 9;
 const BITRATE_OPTIONS = Object.freeze([
@@ -48,7 +147,7 @@ export const deemixSettings = Object.freeze({
   testConnection: true,
 });
 
-function getSettings(config = null) {
+function getSettings(config: DeemixConfig | null = null) {
   const deemix = config || dbOps.getSettings()?.integrations?.deemix || {};
   const bitrate = normalizeInteger(deemix.bitrate, FLAC_BITRATE);
   return {
@@ -61,13 +160,17 @@ function getSettings(config = null) {
   };
 }
 
-export function buildQueueUuid(trackId, bitrate) {
+type DeemixSettings = ReturnType<typeof getSettings>;
+
+export function buildQueueUuid(trackId: string | null | undefined, bitrate: number) {
   return `track_${String(trackId || "").trim()}_${normalizeInteger(bitrate, FLAC_BITRATE)}`;
 }
 
 // The deemix queue items a download step holds: one track or album, or each
 // wanted track of a release queued by its own URL.
-export function deemixQueueIds(payload) {
+export function deemixQueueIds(
+  payload: { queueUuid?: string | null; queueUuids?: (string | null)[] | null } | null | undefined,
+) {
   return [
     ...new Set(
       [payload?.queueUuid, ...(payload?.queueUuids || [])]
@@ -77,7 +180,7 @@ export function deemixQueueIds(payload) {
   ];
 }
 
-export function readDeemixAlbumQueue(item) {
+export function readDeemixAlbumQueue(item: DeemixQueueItem | null) {
   const status = String(item?.status || "");
   const finished = ["completed", "withErrors", "failed"].includes(status);
   const seen = new Set();
@@ -102,16 +205,20 @@ export function readDeemixAlbumQueue(item) {
 // deemix downloads exactly the configured bitrate, so unlike a Soulseek or
 // Usenet release its quality tier is known before anything is downloaded.
 // Deezer serves 16-bit FLAC, which classifies as flac-standard.
-const BITRATE_TIERS = Object.freeze({ 9: "flac-standard", 3: "mp3-320", 1: "mp3-128" });
+const BITRATE_TIERS: Partial<Record<number, string>> = Object.freeze({
+  9: "flac-standard",
+  3: "mp3-320",
+  1: "mp3-128",
+});
 
-function bitrateLabel(bitrate) {
+function bitrateLabel(bitrate: number) {
   const rate = normalizeInteger(bitrate, FLAC_BITRATE);
   return BITRATE_OPTIONS.find((option) => Number(option.value) === rate)?.label || String(rate);
 }
 
 // Deezer plans gate the higher bitrates, and deemix refuses the queue instead of
 // downgrading. Name the setting to change rather than echoing its error id.
-export function describeBitrateSupport(currentUser, bitrate) {
+export function describeBitrateSupport(currentUser: DeemixUser | undefined, bitrate: number) {
   const rate = normalizeInteger(bitrate, FLAC_BITRATE);
   if (rate === FLAC_BITRATE && currentUser?.can_stream_lossless === false) {
     return "This Deezer account cannot stream FLAC. Set Bitrate to MP3 320 or MP3 128.";
@@ -122,7 +229,11 @@ export function describeBitrateSupport(currentUser, bitrate) {
   return null;
 }
 
-function describeAddToQueueError(errid, currentUser, bitrate) {
+function describeAddToQueueError(
+  errid: string | undefined,
+  currentUser: DeemixUser | undefined,
+  bitrate: number,
+) {
   const id = String(errid || "").trim();
   if (id === "CantStream") {
     return (
@@ -139,10 +250,23 @@ function describeAddToQueueError(errid, currentUser, bitrate) {
 // deemix authenticates per express-session, so every call has to reuse the
 // cookie that /api/connect issues.
 // ponytail: one shared session, deemix runs single-user by default.
-let session = { url: "", cookie: "" };
-let connectionCache = { checkedAt: 0, result: null, url: null };
+let session: { url: string; cookie: string } = { url: "", cookie: "" };
+let connectionCache: {
+  checkedAt: number;
+  result: DeemixConnectionResult | null;
+  url: string | null;
+} = {
+  checkedAt: 0,
+  result: null,
+  url: null,
+};
 
-async function request(settings, method, path, { params, data, timeout = 30000 } = {}) {
+async function request<T = unknown>(
+  settings: DeemixSettings,
+  method: string,
+  path: string,
+  { params, data, timeout = 30000 }: DeemixRequestOptions = {},
+): Promise<T> {
   if (!settings.url) throw new Error("deemix URL is required");
   const response = await axios({
     method,
@@ -154,23 +278,23 @@ async function request(settings, method, path, { params, data, timeout = 30000 }
   });
   const setCookie = response.headers?.["set-cookie"];
   if (setCookie) session.cookie = String(setCookie).split(";")[0];
-  return response.data;
+  return response.data as T;
 }
 
-function isLoggedIn(connected) {
+function isLoggedIn(connected: DeemixConnectResponse) {
   return connected?.autologin === false;
 }
 
-async function connect(settings) {
+async function connect(settings: DeemixSettings) {
   if (session.url !== settings.url) session = { url: settings.url, cookie: "" };
-  const first = await request(settings, "GET", "/api/connect");
+  const first = await request<DeemixConnectResponse>(settings, "GET", "/api/connect");
   const arl = String(first?.singleUser?.arl || "").trim();
   if (isLoggedIn(first) || !arl) return first;
   await request(settings, "POST", "/api/loginArl", { data: { arl }, timeout: 45000 });
-  return request(settings, "GET", "/api/connect");
+  return request<DeemixConnectResponse>(settings, "GET", "/api/connect");
 }
 
-async function requireSession(settings) {
+async function requireSession(settings: DeemixSettings) {
   const connected = await connect(settings);
   if (!isLoggedIn(connected)) {
     throw new Error("deemix is not logged in. Sign in with your ARL in the deemix web UI.");
@@ -178,7 +302,7 @@ async function requireSession(settings) {
   return connected;
 }
 
-function normalizeTrack(entry) {
+function normalizeTrack(entry: DeemixTrack | undefined) {
   const id = String(entry?.id || "").trim();
   if (!id) return null;
   const albumId = String(entry?.album?.id || "").trim();
@@ -197,7 +321,7 @@ function normalizeTrack(entry) {
   };
 }
 
-function normalizeAlbum(entry) {
+function normalizeAlbum(entry: DeemixAlbum | undefined) {
   const id = String(entry?.id || "").trim();
   if (!id) return null;
   return {
@@ -208,7 +332,7 @@ function normalizeAlbum(entry) {
   };
 }
 
-function normalizeAlbumTrack(entry) {
+function normalizeAlbumTrack(entry: DeemixAlbumTrack | undefined) {
   const track = normalizeTrack(entry);
   if (!track) return null;
   return {
@@ -219,13 +343,17 @@ function normalizeAlbumTrack(entry) {
 }
 
 export class DeemixClient {
-  constructor(config = null) {
+  declare key: "deemix";
+  declare name: "deemix";
+  declare _config: DeemixConfig | null;
+
+  constructor(config: DeemixConfig | null = null) {
     this.key = "deemix";
     this.name = "deemix";
     this._config = config;
   }
 
-  updateConfig(config = null) {
+  updateConfig(config: DeemixConfig | null = null) {
     this._config = config;
   }
 
@@ -276,7 +404,7 @@ export class DeemixClient {
     ) {
       return connectionCache.result;
     }
-    let result;
+    let result: DeemixConnectionResult;
     try {
       const connected = await connect(settings);
       const version = String(connected?.update?.deemixVersion || "").trim();
@@ -317,72 +445,76 @@ export class DeemixClient {
         ok: false,
         configured: true,
         connected: false,
-        message: error?.message || "Failed to reach deemix",
+        message: asAppError(error)?.message || "Failed to reach deemix",
       };
     }
     connectionCache = { checkedAt: Date.now(), result, url: settings.url };
     return result;
   }
 
-  async search(query, { limit = 10 } = {}) {
+  async search(query: string, { limit = 10 }: { limit?: number } = {}) {
     const term = String(query || "").trim();
     if (!term) return [];
     const settings = this._getSettings();
     await requireSession(settings);
-    const data = await request(settings, "GET", "/api/search", {
+    const data = await request<DeemixSearchResponse<DeemixTrack>>(settings, "GET", "/api/search", {
       params: { term, type: "track", start: 0, nb: Math.min(Math.max(limit, 1), 50) },
       timeout: 45000,
     });
     if (data?.error) throw new Error(`deemix search failed: ${data.error}`);
-    return (Array.isArray(data?.data) ? data.data : []).map(normalizeTrack).filter(Boolean);
+    return (Array.isArray(data?.data) ? data.data : [])
+      .map(normalizeTrack)
+      .filter((entry) => entry !== null);
   }
 
-  async searchAlbums(query, { limit = 10 } = {}) {
+  async searchAlbums(query: string, { limit = 10 }: { limit?: number } = {}) {
     const term = String(query || "").trim();
     if (!term) return [];
     const settings = this._getSettings();
     await requireSession(settings);
-    const data = await request(settings, "GET", "/api/search", {
+    const data = await request<DeemixSearchResponse<DeemixAlbum>>(settings, "GET", "/api/search", {
       params: { term, type: "album", start: 0, nb: Math.min(Math.max(limit, 1), 50) },
       timeout: 45000,
     });
     if (data?.error) throw new Error(`deemix album search failed: ${data.error}`);
-    return (Array.isArray(data?.data) ? data.data : []).map(normalizeAlbum).filter(Boolean);
+    return (Array.isArray(data?.data) ? data.data : [])
+      .map(normalizeAlbum)
+      .filter((entry) => entry !== null);
   }
 
-  async getAlbumTracks(albumId) {
+  async getAlbumTracks(albumId: string) {
     const id = String(albumId || "").trim();
     if (!id) return [];
     const settings = this._getSettings();
     await requireSession(settings);
-    const data = await request(settings, "GET", "/api/getTracklist", {
+    const data = await request<DeemixTracklistResponse>(settings, "GET", "/api/getTracklist", {
       params: { type: "album", id },
       timeout: 45000,
     });
     return (Array.isArray(data?.tracks) ? data.tracks : [])
       .filter((entry) => entry?.type !== "disc_separator")
       .map(normalizeAlbumTrack)
-      .filter(Boolean);
+      .filter((entry) => entry !== null);
   }
 
-  async addToQueue(trackUrl, trackId) {
+  async addToQueue(trackUrl: string, trackId: string | null | undefined) {
     const url = String(trackUrl || "").trim();
     if (!url) throw new Error("deemix download requires a Deezer track URL");
     const settings = this._getSettings();
     return this._addQueueItem(url, buildQueueUuid(trackId, settings.bitrate));
   }
 
-  async addAlbumToQueue(albumUrl, albumId) {
+  async addAlbumToQueue(albumUrl: string, albumId: string | null | undefined) {
     const url = String(albumUrl || "").trim();
     if (!url) throw new Error("deemix album download requires a Deezer album URL");
     const settings = this._getSettings();
     return this._addQueueItem(url, `album_${String(albumId || "").trim()}_${settings.bitrate}`);
   }
 
-  async _addQueueItem(url, fallbackUuid) {
+  async _addQueueItem(url: string, fallbackUuid: string) {
     const settings = this._getSettings();
     const connected = await requireSession(settings);
-    const data = await request(settings, "POST", "/api/addToQueue", {
+    const data = await request<DeemixAddToQueueResponse>(settings, "POST", "/api/addToQueue", {
       data: { url, bitrate: settings.bitrate },
       timeout: 60000,
     });
@@ -397,15 +529,15 @@ export class DeemixClient {
     return String(queued?.uuid || "").trim() || fallbackUuid;
   }
 
-  async getQueueItem(uuid) {
+  async getQueueItem(uuid: string | null | undefined) {
     const id = String(uuid || "").trim();
     if (!id) return null;
     const settings = this._getSettings();
-    const data = await request(settings, "GET", "/api/getQueue");
+    const data = await request<DeemixQueueResponse>(settings, "GET", "/api/getQueue");
     return data?.queue?.[id] || null;
   }
 
-  async removeFromQueue(uuid) {
+  async removeFromQueue(uuid: string | null | undefined) {
     const id = String(uuid || "").trim();
     if (!id) return false;
     const settings = this._getSettings();

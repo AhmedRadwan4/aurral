@@ -1,24 +1,22 @@
-type LidarrQualityDefinition = {
+import { asAppError } from "../../lib/errors.ts";
+import type {
+  LidarrAlbumTypeOption,
+  LidarrCustomFormat,
+  LidarrMetadataProfile,
+  LidarrNamingConfig,
+} from "./lidarrClient.ts";
+
+export type LidarrQualityDefinition = {
   id: number;
   title?: string;
   quality?: { id?: number; name?: string };
 };
-type LidarrCustomFormat = { id: number; name: string };
 type LidarrCustomFormatInput = {
   name: string;
   includeCustomFormatWhenRenaming: boolean;
   specifications: unknown[];
 };
-type LidarrReleaseProfile = { id: number; name: string; ignored?: string[] };
-type LidarrAlbumTypeOption =
-  | string
-  | { name?: string; value?: string; albumType?: { name?: string } };
-type LidarrMetadataProfile = {
-  id: number;
-  name: string;
-  primaryAlbumTypes?: LidarrAlbumTypeOption[];
-  secondaryAlbumTypes?: LidarrAlbumTypeOption[];
-};
+export type LidarrReleaseProfile = { id: number; name: string; ignored?: string[] };
 type LidarrQualityItem = {
   id?: number;
   name?: string;
@@ -26,7 +24,7 @@ type LidarrQualityItem = {
   allowed?: boolean;
   items?: LidarrQualityItem[];
 };
-type LidarrQualityProfile = {
+export type LidarrQualityProfile = {
   id: number;
   name: string;
   cutoff?: number;
@@ -43,7 +41,7 @@ type LidarrCommunityGuideClient = {
   getMetadataProfiles(): Promise<LidarrMetadataProfile[]>;
   updateMetadataProfile(id: number, data: unknown): Promise<LidarrMetadataProfile>;
   createMetadataProfile(data: unknown): Promise<LidarrMetadataProfile>;
-  getNamingConfig(): Promise<Record<string, unknown>>;
+  getNamingConfig(): Promise<LidarrNamingConfig>;
   updateNamingConfig(data: unknown): Promise<unknown>;
   getQualityProfiles(): Promise<LidarrQualityProfile[]>;
   createQualityProfile(data: unknown): Promise<LidarrQualityProfile>;
@@ -59,6 +57,14 @@ type LidarrCommunityGuideResult = {
   qualityProfile: LidarrSavedRecord | null;
   errors: string[];
 };
+
+const FORMAT_SCORES = new Map([
+  ["Preferred Groups", 10],
+  ["CD", 2],
+  ["WEB", 1],
+  ["Lossless", 1],
+  ["Vinyl", -5],
+]);
 
 const normalizeTypeName = (value: unknown) =>
   String(value || "")
@@ -208,7 +214,9 @@ export async function applyLidarrCommunityGuide(lidarrClient: LidarrCommunityGui
         const created = await lidarrClient.createCustomFormat(format);
         results.customFormats.push(created);
       } catch (err) {
-        results.errors.push(`Failed to create custom format "${format.name}": ${err.message}`);
+        results.errors.push(
+          `Failed to create custom format "${format.name}": ${asAppError(err)?.message}`,
+        );
       }
     } else {
       results.customFormats.push(existing);
@@ -409,17 +417,10 @@ export async function applyLidarrCommunityGuide(lidarrClient: LidarrCommunityGui
 
   const allCustomFormats = await lidarrClient.getCustomFormats();
   const formatItems = allCustomFormats.map((cf) => {
-    const scores = {
-      "Preferred Groups": 10,
-      CD: 2,
-      WEB: 1,
-      Lossless: 1,
-      Vinyl: -5,
-    };
     return {
       format: cf.id,
       name: cf.name,
-      score: scores[cf.name] || 0,
+      score: FORMAT_SCORES.get(cf.name) || 0,
     };
   });
 

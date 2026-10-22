@@ -1,3 +1,4 @@
+import { asAppError } from "../../../lib/errors.ts";
 import { userOps } from "../../db/helpers/index.ts";
 import { parseLastfmStation } from "./lastfmTracks.ts";
 
@@ -10,13 +11,15 @@ const LASTFM_STATION_IDS = new Set(LASTFM_STATIONS.map((station) => station.id))
 const LASTFM_STATION_URL = "https://www.last.fm/player/station/user";
 const LASTFM_TIMEOUT_MS = 15000;
 
+type CodedError = Error & { statusCode?: number };
+
 const invalidUsernameError = () => {
-  const error = new Error("A valid Last.fm username is required");
+  const error: CodedError = new Error("A valid Last.fm username is required");
   error.statusCode = 400;
   return error;
 };
 
-export function normalizeLastfmUsername(value) {
+export function normalizeLastfmUsername(value: unknown) {
   const username = String(value || "").trim();
   if (!username || username.length > 100 || /[/?#\u0000-\u001f\u007f]/.test(username)) {
     throw invalidUsernameError();
@@ -24,17 +27,17 @@ export function normalizeLastfmUsername(value) {
   return username;
 }
 
-export function normalizeLastfmStation(value) {
+export function normalizeLastfmStation(value: unknown) {
   const station = String(value || "").trim();
   if (!LASTFM_STATION_IDS.has(station)) {
-    const error = new Error("Unsupported Last.fm station");
+    const error: CodedError = new Error("Unsupported Last.fm station");
     error.statusCode = 400;
     throw error;
   }
   return station;
 }
 
-function resolveUsername(userId, requestedUsername) {
+function resolveUsername(userId: number | undefined, requestedUsername: unknown) {
   const requested = String(requestedUsername || "").trim();
   if (requested) return normalizeLastfmUsername(requested);
   const user = userOps.getUserById(userId);
@@ -44,7 +47,7 @@ function resolveUsername(userId, requestedUsername) {
   throw invalidUsernameError();
 }
 
-async function requestStation(username, stationId) {
+async function requestStation(username: string, stationId: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LASTFM_TIMEOUT_MS);
   try {
@@ -56,14 +59,14 @@ async function requestStation(username, stationId) {
       },
     );
     if (!response.ok) {
-      const error = new Error(`Last.fm station request failed (${response.status})`);
+      const error: CodedError = new Error(`Last.fm station request failed (${response.status})`);
       error.statusCode = response.status >= 400 && response.status < 500 ? 404 : 502;
       throw error;
     }
     return parseLastfmStation(await response.json());
   } catch (error) {
-    if (error?.name === "AbortError") {
-      const timeoutError = new Error("Last.fm station request timed out");
+    if (asAppError(error)?.name === "AbortError") {
+      const timeoutError: CodedError = new Error("Last.fm station request timed out");
       timeoutError.statusCode = 504;
       throw timeoutError;
     }
@@ -74,7 +77,7 @@ async function requestStation(username, stationId) {
 }
 
 export const lastfmStationClient = {
-  async listPlaylists(userId, requestedUsername) {
+  async listPlaylists(userId: number | undefined, requestedUsername: unknown) {
     const username = resolveUsername(userId, requestedUsername);
     const playlists = await Promise.all(
       LASTFM_STATIONS.map(async (station) => {
@@ -90,7 +93,11 @@ export const lastfmStationClient = {
     return { user: username, playlists };
   },
 
-  async getStationTracks(userId, stationId, requestedUsername) {
+  async getStationTracks(
+    userId: number | undefined,
+    stationId: unknown,
+    requestedUsername: unknown,
+  ) {
     const username = resolveUsername(userId, requestedUsername);
     return {
       ...(await requestStation(username, normalizeLastfmStation(stationId))),

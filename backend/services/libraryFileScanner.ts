@@ -1,7 +1,9 @@
 import fs from "fs/promises";
 import path from "path";
-import { parseFile } from "music-metadata";
+import { parseFile, type ICommonTagsResult, type IFormat, type IOptions } from "music-metadata";
 import { db } from "../config/db-sqlite.ts";
+import { asAppError } from "../../lib/errors.ts";
+import type { LibraryAlbumsRow } from "../db/rows.ts";
 import {
   buildFallbackIdentityKey,
   buildIdentityKey,
@@ -27,8 +29,37 @@ import {
   withLibraryScan,
 } from "./libraryMediaStore.ts";
 import { getLibraryManagementEntry, setLibraryManagement } from "./libraryManagementStore.ts";
-import { readAurralIdentity } from "./downloadUtils.ts";
+import {
+  readAurralIdentity,
+  type AurralIdentity,
+  type DownloadTrackFields,
+} from "./downloadUtils.ts";
 import { logger, safeLogDiagnostic } from "./logger.ts";
+
+type ScannedMetadata = {
+  common?: Partial<ICommonTagsResult>;
+  format?: Partial<IFormat>;
+};
+
+type MetadataEnrichment = DownloadTrackFields | null | undefined;
+
+type MetadataEnricher = (
+  metadata: ScannedMetadata,
+  filePath: string,
+) => MetadataEnrichment | Promise<MetadataEnrichment>;
+
+type ScanOptions = {
+  rootPath: string;
+  source?: string;
+  filePaths?: string[] | null;
+  changedPaths?: string[] | null;
+  force?: boolean;
+  metadataReader?: (filePath: string, options: IOptions) => Promise<ScannedMetadata>;
+  metadataEnricher?: MetadataEnricher | null;
+  syncSearch?: boolean;
+  isExcluded?: (filePath: string) => boolean;
+  changedFiles?: Set<string>;
+};
 
 const AUDIO_EXTENSIONS = new Set([
   ".aac",
@@ -53,16 +84,16 @@ const EXCLUDED_DIRECTORIES = new Set([
   "aurral-weekly-flow",
 ]);
 
-export function isLibraryScanExcludedDirectory(name) {
+export function isLibraryScanExcludedDirectory(name: unknown) {
   const value = String(name || "");
   return EXCLUDED_DIRECTORIES.has(value) || value.startsWith(".");
 }
 
-const text = (value) => String(value || "").trim();
+const text = (value: unknown) => String(value || "").trim();
 
-const first = (value) => (Array.isArray(value) ? value[0] : value);
+const first = (value: unknown) => (Array.isArray(value) ? value[0] : value);
 
-const numberPart = (value, fallback = 0) => {
+const numberPart = (value: { no?: number | null } | null | undefined, fallback = 0) => {
   const number = Number(value?.no ?? value);
   return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : fallback;
 };
@@ -71,22 +102,30 @@ const MBID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 // MusicBrainz IDs are lower case. A tag in capitals names the same ID, and
 // one in another shape holds another service's ID.
-const normalizeMbid = (value) => {
+const normalizeMbid = (value: unknown) => {
   const id = text(first(value)).toLowerCase();
   return MBID_PATTERN.test(id) ? id : null;
 };
 
-const normalizeMetadata = (metadata) => metadata?.common || {};
+const normalizeMetadata = (
+  metadata: ScannedMetadata | null | undefined,
+): Partial<ICommonTagsResult> => metadata?.common || {};
 
-const readEmbeddedAurralIdentity = (metadata) => readAurralIdentity(metadata) || {};
+const readEmbeddedAurralIdentity = (metadata: ScannedMetadata): AurralIdentity =>
+  readAurralIdentity(metadata) || {};
 
-const applyMetadataEnrichment = (metadata, enrichment = null) => {
-  const common = { ...normalizeMetadata(metadata) };
+const applyMetadataEnrichment = (
+  metadata: ScannedMetadata,
+  enrichment: MetadataEnrichment = null,
+) => {
+  const common: Partial<ICommonTagsResult> & Record<string, unknown> = {
+    ...normalizeMetadata(metadata),
+  };
   const embedded = readEmbeddedAurralIdentity(metadata);
   if ((!enrichment || typeof enrichment !== "object") && Object.keys(embedded).length === 0) {
     return metadata;
   }
-  const trusted = { ...embedded, ...(enrichment || {}) };
+  const trusted: DownloadTrackFields = { ...embedded, ...(enrichment || {}) };
   const fallbackFields = {
     albumartist: trusted.artistName,
     artist: trusted.artistName,
@@ -109,7 +148,7 @@ const applyMetadataEnrichment = (metadata, enrichment = null) => {
   return { ...(metadata || {}), common };
 };
 
-function readPathFallback(filePath, rootPath) {
+function readPathFallback(filePath: string, rootPath: string) {
   const relative = path.relative(rootPath, filePath);
   const segments = relative.split(path.sep).filter(Boolean);
   const fileName = path.basename(filePath, path.extname(filePath));
@@ -123,7 +162,7 @@ function readPathFallback(filePath, rootPath) {
   };
 }
 
-function buildMetadataRecord(metadata, filePath, rootPath) {
+function buildMetadataRecord(metadata: ScannedMetadata, filePath: string, rootPath: string) {
   const common = normalizeMetadata(metadata);
   const fallback = readPathFallback(filePath, rootPath);
   const artistName = text(common.albumartist || common.artist) || fallback.artistName;
@@ -166,24 +205,27 @@ function buildMetadataRecord(metadata, filePath, rootPath) {
     albumMetadata: { tags: common },
     trackMetadata: { tags: common },
     durationMs: Number.isFinite(Number(metadata?.format?.duration))
-      ? Math.round(Number(metadata.format.duration) * 1000)
+      ? Math.round(Number(metadata.format!.duration) * 1000)
       : null,
     quality: {
       format: text(metadata?.format?.codec) || null,
       bitrate: Number.isFinite(Number(metadata?.format?.bitrate))
-        ? Math.round(Number(metadata.format.bitrate))
+        ? Math.round(Number(metadata.format!.bitrate))
         : null,
       sampleRate: Number.isFinite(Number(metadata?.format?.sampleRate))
-        ? Number(metadata.format.sampleRate)
+        ? Number(metadata.format!.sampleRate)
         : null,
       bitsPerSample: Number.isFinite(Number(metadata?.format?.bitsPerSample))
-        ? Number(metadata.format.bitsPerSample)
+        ? Number(metadata.format!.bitsPerSample)
         : null,
     },
   };
 }
 
-async function* walkAudioFiles(rootPath, isExcluded = () => false) {
+async function* walkAudioFiles(
+  rootPath: string,
+  isExcluded: (filePath: string) => boolean = () => false,
+): AsyncGenerator<string> {
   const entries = await fs.readdir(rootPath, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.isDirectory()) {
@@ -198,17 +240,17 @@ async function* walkAudioFiles(rootPath, isExcluded = () => false) {
   }
 }
 
-function isPathWithin(rootPath, candidatePath) {
+function isPathWithin(rootPath: string, candidatePath: string) {
   const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-const normalizePathKey = (value) => {
+const normalizePathKey = (value: unknown) => {
   const resolved = path.resolve(String(value || ""));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 };
 
-export function createPathScopeMatcher(scopes = []) {
+export function createPathScopeMatcher(scopes: unknown[] | null = []) {
   const scopeKeys = new Set(
     (Array.isArray(scopes) ? scopes : [])
       .map((value) => String(value || "").trim())
@@ -216,7 +258,7 @@ export function createPathScopeMatcher(scopes = []) {
       .map(normalizePathKey),
   );
 
-  return (candidatePath) => {
+  return (candidatePath: unknown) => {
     if (!String(candidatePath || "").trim() || scopeKeys.size === 0) return false;
     let currentPath = path.resolve(String(candidatePath));
     while (true) {
@@ -228,10 +270,14 @@ export function createPathScopeMatcher(scopes = []) {
   };
 }
 
-async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
-  const filePaths = new Set();
-  const namedFilePaths = new Set();
-  const reconcilePaths = new Set();
+async function resolveChangedFiles(
+  rootPath: string,
+  changedPaths: string[] | null,
+  isExcluded: (filePath: string) => boolean,
+) {
+  const filePaths = new Set<string>();
+  const namedFilePaths = new Set<string>();
+  const reconcilePaths = new Set<string>();
 
   for (const value of Array.isArray(changedPaths) ? changedPaths : []) {
     const rawPath = String(value || "").trim();
@@ -247,7 +293,7 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
       stat = await fs.lstat(changedPath);
       if (stat.isSymbolicLink()) continue;
     } catch (error) {
-      missing = error?.code === "ENOENT";
+      missing = asAppError(error)?.code === "ENOENT";
       if (!missing && !AUDIO_EXTENSIONS.has(path.extname(changedPath).toLowerCase())) {
         continue;
       }
@@ -260,7 +306,7 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
         for await (const filePath of walkAudioFiles(changedPath, isExcluded))
           filePaths.add(filePath);
       } catch (error) {
-        if (error?.code !== "ENOENT") reconcilePaths.delete(changedPath);
+        if (asAppError(error)?.code !== "ENOENT") reconcilePaths.delete(changedPath);
       }
       continue;
     }
@@ -286,7 +332,7 @@ async function resolveChangedFiles(rootPath, changedPaths, isExcluded) {
   };
 }
 
-function normalizeScanPaths(rootPath, filePaths) {
+function normalizeScanPaths(rootPath: string, filePaths: string[] | null) {
   return [
     ...new Set(
       (Array.isArray(filePaths) ? filePaths : [])
@@ -300,7 +346,10 @@ const albumHasLidarrFileStmt = db.prepare(
   "SELECT 1 FROM library_media_files WHERE album_id = ? AND source = 'lidarr' AND available = 1 LIMIT 1",
 );
 
-const trackPerformerStmt = db.prepare(
+const trackPerformerStmt = db.prepare<
+  [string | null, string, string, string | null],
+  { artist_tag: string }
+>(
   `SELECT artist_tag FROM (
      SELECT media.path, media.artist_tag FROM library_tracks AS track
      JOIN library_media_files AS media ON media.track_id = track.id
@@ -318,14 +367,16 @@ const trackCreditedStmt = db.prepare(
 // A root with nothing in it is a drive that is not connected, so its files
 // are only marked missing and come back with it. Anywhere else, a file the
 // scan cannot find is gone.
-async function forgetMissingFiles(source, rootPath, paths) {
+async function forgetMissingFiles(source: string, rootPath: string, paths: string[]) {
   const entries = await fs.readdir(rootPath).catch(() => []);
   return entries.some((name) => !isLibraryScanExcludedDirectory(name))
     ? removeMissingLibraryMediaFiles(source, paths)
     : markLibraryMediaFilesUnavailable(source, paths);
 }
 
-function claimUnownedAlbum(album) {
+function claimUnownedAlbum(
+  album: Pick<LibraryAlbumsRow, "id" | "identity_key" | "artist_id" | "title">,
+) {
   if (getLibraryManagementEntry("album", album.id) || albumHasLidarrFileStmt.get(album.id)) return;
   setLibraryManagement({ entityKind: "album", entityId: album.id, managedBy: "aurral" });
   upsertLibraryAlbum({
@@ -348,7 +399,7 @@ export async function scanMusicRoot({
   syncSearch = true,
   isExcluded = () => false,
   changedFiles = new Set(),
-} = {}) {
+}: Partial<ScanOptions> = {}) {
   const resolvedRoot = path.resolve(String(rootPath || ""));
   if (source !== "readonly") await fs.mkdir(resolvedRoot, { recursive: true });
   mergeReleaseKeyedLibraryAlbums();
@@ -369,11 +420,12 @@ export async function scanMusicRoot({
   const result = { filesSeen: 0, filesIndexed: 0, filesFailed: 0 };
   const unseenPaths = requestedFiles ? null : getLibraryMediaPaths(source);
   const legacyKeyed = findLegacyKeyedLibraryFiles(source);
-  const legacyMoves = [];
-  const seenPaths = new Set();
-  const failedPaths = new Set();
-  const missingFilePaths = new Set();
-  let firstFailure = null;
+  const legacyMoves: Parameters<typeof splitLegacyKeyedLibraryRows>[0] = [];
+  const seenPaths = new Set<string>();
+  const failedPaths = new Set<string>();
+  const missingFilePaths = new Set<string>();
+  let firstFailure: { filePath: string; reason: ReturnType<typeof safeLogDiagnostic> } | null =
+    null;
   const scanResult = await withLibraryScan(source, resolvedRoot, (scanId) => {
     const run = async () => {
       const files = requestedFiles || walkAudioFiles(resolvedRoot, isExcluded);
@@ -407,7 +459,9 @@ export async function scanMusicRoot({
           const legacyArtistId =
             existing?.album_id && legacyKeyed.paths.has(filePath)
               ? db
-                  .prepare("SELECT artist_id FROM library_albums WHERE id = ?")
+                  .prepare<[number], Pick<LibraryAlbumsRow, "artist_id">>(
+                    "SELECT artist_id FROM library_albums WHERE id = ?",
+                  )
                   .get(existing.album_id)?.artist_id
               : null;
           const artist = upsertLibraryArtist({
@@ -421,7 +475,8 @@ export async function scanMusicRoot({
             !record.releaseGroupMbid && !record.albumMbid
               ? findLibraryAlbumByArtistTitle(artist.id, record.albumName, record.title)
               : null;
-          const namedAlbum = legacyKeyed.albumIds.has(titledAlbum?.id) ? null : titledAlbum;
+          const namedAlbum =
+            titledAlbum && legacyKeyed.albumIds.has(titledAlbum.id) ? null : titledAlbum;
           const releaseAlbum = findLibraryAlbumByReleaseMbid(record.releaseGroupMbid) || namedAlbum;
           const albumKey = releaseAlbum?.identity_key || record.albumKey;
           const listedTrack =
@@ -458,7 +513,7 @@ export async function scanMusicRoot({
           const track = upsertLibraryTrack({
             identityKey: trackKey,
             mbid: listedTrack?.mbid || record.trackMbid,
-            title: trackKey !== record.trackKey ? listedTrack.title : record.title,
+            title: trackKey !== record.trackKey ? listedTrack!.title : record.title,
             artistName:
               trackPerformerStmt.get(trackKey, filePath, filePath, record.trackArtistName || null)
                 ?.artist_tag ?? (trackCreditedStmt.get(trackKey) ? null : record.artistName),
@@ -504,7 +559,7 @@ export async function scanMusicRoot({
           result.filesIndexed += 1;
         } catch (error) {
           result.filesFailed += 1;
-          if (error?.code === "ENOENT") missingFilePaths.add(filePath);
+          if (asAppError(error)?.code === "ENOENT") missingFilePaths.add(filePath);
           else {
             failedPaths.add(filePath);
             firstFailure ||= { filePath, reason: safeLogDiagnostic(error) };
@@ -520,7 +575,7 @@ export async function scanMusicRoot({
         });
       }
       if (unseenPaths && result.filesFailed === 0) {
-        const walked = (filePath) =>
+        const walked = (filePath: string) =>
           isPathWithin(resolvedRoot, filePath) &&
           !isExcluded(filePath) &&
           !path
@@ -570,7 +625,7 @@ export async function scanMusicRoots({
   changedPaths = null,
   changedFiles = new Set(),
   ...options
-} = {}) {
+}: Omit<ScanOptions, "rootPath"> & { rootPaths?: string[] } = {}) {
   const roots = [
     ...new Set(
       (Array.isArray(rootPaths) ? rootPaths : [])
@@ -611,7 +666,7 @@ export async function scanMusicRoots({
     try {
       rootStat = await fs.stat(rootPath);
     } catch (error) {
-      if (error?.code === "ENOENT") continue;
+      if (asAppError(error)?.code === "ENOENT") continue;
       result.filesFailed += 1;
       continue;
     }
@@ -621,7 +676,7 @@ export async function scanMusicRoots({
     }
 
     try {
-      const filePaths = [];
+      const filePaths: string[] = [];
       for await (const filePath of walkAudioFiles(rootPath, options.isExcluded)) {
         filePaths.push(filePath);
       }

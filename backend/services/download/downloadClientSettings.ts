@@ -1,4 +1,6 @@
+import { isOwnKey } from "../../../lib/ownKey.ts";
 import { dbOps } from "../../db/helpers/index.ts";
+import type { DownloadClient } from "./downloadClient.ts";
 import { DownloadClientRegistry } from "./downloadClientRegistry.ts";
 import { SlskdClient, slskdClient, slskdSettings } from "../slskdClient.ts";
 import { NzbgetClient, nzbgetClient, nzbgetSettings } from "../nzbgetClient.ts";
@@ -34,14 +36,29 @@ export function getDownloadClientSettings() {
   return structuredClone(definitions);
 }
 
-export function getDownloadClient(key) {
+type BuiltInDownloadClients = {
+  slskd: SlskdClient;
+  ytdlp: YtdlpClient;
+  nzbget: NzbgetClient;
+  sabnzbd: SabnzbdClient;
+  deemix: DeemixClient;
+};
+
+export function getDownloadClient<Key extends keyof BuiltInDownloadClients>(
+  key: Key,
+): BuiltInDownloadClients[Key];
+export function getDownloadClient(
+  key: string | null,
+): BuiltInDownloadClients[keyof BuiltInDownloadClients] | null;
+export function getDownloadClient(key: string | null) {
   downloadClientRegistry.updateConfig(dbOps.getSettings()?.integrations || {});
   return downloadClientRegistry.get(key);
 }
 
-export async function testDownloadClient(key, config = {}) {
-  const client = factories[key]?.();
-  if (!client) throw new Error(`Unknown download client: ${key}`);
-  client.updateConfig(config);
+export async function testDownloadClient(key: string, config: Record<string, unknown> = {}) {
+  if (!isOwnKey(factories, key)) throw new Error(`Unknown download client: ${key}`);
+  const client = factories[key]();
+  const configurable: DownloadClient = client;
+  configurable.updateConfig(config);
   return client.testConnection({ force: true });
 }

@@ -1,4 +1,6 @@
 import axios from "../../lib/axiosFetch.ts";
+import { asAppError } from "../../lib/errors.ts";
+import { isOwnKey } from "../../lib/ownKey.ts";
 import createRateLimiter from "./apiClients/rateLimiter.ts";
 import createCache from "./apiClients/simpleCache.ts";
 import { validateExternalUrl } from "../middleware/urlValidator.ts";
@@ -46,7 +48,9 @@ export function getKoitoListenBrainzBaseUrl(baseUrl: unknown) {
 
 export function getKoitoPeriod(discoveryPeriod: string | null | undefined) {
   if (!discoveryPeriod || discoveryPeriod === "none") return null;
-  return KOITO_PERIOD_BY_DISCOVERY_PERIOD[discoveryPeriod] || "month";
+  return isOwnKey(KOITO_PERIOD_BY_DISCOVERY_PERIOD, discoveryPeriod)
+    ? KOITO_PERIOD_BY_DISCOVERY_PERIOD[discoveryPeriod]
+    : "month";
 }
 
 const koitoRequest = koitoLimiter.wrap(
@@ -71,15 +75,16 @@ const koitoRequest = koitoLimiter.wrap(
           return response.data;
         } catch (error) {
           lastError = error;
-          const status = error.response?.status;
-          const code = error.code;
+          const failure = asAppError(error);
+          const status = failure?.response?.status;
+          const code = failure?.code;
           const retryable =
             code === "ECONNABORTED" ||
             code === "ETIMEDOUT" ||
             code === "ECONNRESET" ||
             code === "ENOTFOUND" ||
             code === "EAI_AGAIN" ||
-            [408, 425, 429, 500, 502, 503, 504].includes(status);
+            (status !== undefined && [408, 425, 429, 500, 502, 503, 504].includes(status));
           if (retryCount < KOITO_MAX_RETRIES && retryable) {
             const backoffMs = 300 * Math.pow(2, retryCount) + retryCount * 200;
             await new Promise((resolve) => setTimeout(resolve, backoffMs));
@@ -143,5 +148,5 @@ export async function fetchKoitoTopArtists(
         playcount: parseInt(artist.listen_count || 0, 10) || 0,
       };
     })
-    .filter(Boolean);
+    .filter((artist) => artist !== null);
 }

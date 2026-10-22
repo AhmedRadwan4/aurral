@@ -1,8 +1,11 @@
+import type { PipelinePayload } from "./downloadPipeline.ts";
 import path from "path";
 import fs from "fs/promises";
-import { downloadTracker } from "./downloadJobs/downloadTracker.ts";
+import { downloadTracker, type DownloadJob } from "./downloadJobs/downloadTracker.ts";
+import { asAppError } from "../../lib/errors.ts";
 import { getDownloadClient } from "./download/downloadClientSettings.ts";
 import { logger } from "./logger.ts";
+import type { YtdlpClient } from "./ytdlpClient.ts";
 import {
   buildSourceCandidates,
   prefilterCandidates,
@@ -38,7 +41,36 @@ const ytdlpClient = getDownloadClient("ytdlp");
 const SONG_READS = 6;
 const LIVE_STATUSES = new Set(["is_live", "was_live", "post_live", "is_upcoming"]);
 
-export function isYtdlpLiveResult(result) {
+type YtdlpResult = Awaited<ReturnType<YtdlpClient["search"]>>[number];
+type YtdlpCandidate = Omit<ReturnType<typeof toPipelineCandidate>, "raw"> & { raw: YtdlpResult };
+
+type YtdlpPayload = {
+  jobId: string;
+  phase: string;
+  source?: string | null;
+  playlistId?: string | null;
+  track?: Parameters<typeof buildResolvedTrack>[1];
+  destination?: string | null;
+  upgradeForJobId?: string | null;
+  manualSelection?: boolean;
+  candidates?: YtdlpCandidate[];
+  candidate?: YtdlpCandidate | null;
+  candidateIndex?: number;
+  downloadedPath?: string | null;
+  heldForReview?: ReturnType<typeof holdForReview> | null;
+};
+
+type YtdlpHelpers = {
+  failOrTryNextSource: (
+    payload: YtdlpPayload,
+    job: DownloadJob,
+    message: string,
+    logDetails?: Record<string, number>,
+  ) => Promise<PipelinePayload | null>;
+};
+type YtdlpSearchOptions = NonNullable<Parameters<YtdlpClient["search"]>[1]>;
+
+export function isYtdlpLiveResult(result: YtdlpResult) {
   return LIVE_STATUSES.has(
     String(result?.liveStatus || "")
       .trim()
@@ -48,7 +80,10 @@ export function isYtdlpLiveResult(result) {
 
 // The release audio on the artist's channel is the copy to download, so the
 // next query runs until a usable one turns up.
-export function hasEnoughCandidates(aggregated, resolvedTrack) {
+export function hasEnoughCandidates(
+  aggregated: YtdlpResult[],
+  resolvedTrack: ReturnType<typeof buildResolvedTrack>,
+) {
   const artistNames = [resolvedTrack.artistName, ...(resolvedTrack.artistAliases || [])].filter(
     Boolean,
   );
@@ -64,7 +99,7 @@ export function hasEnoughCandidates(aggregated, resolvedTrack) {
   );
 }
 
-async function handleYtdlpSearch(payload, helpers) {
+async function handleYtdlpSearch(payload: YtdlpPayload, helpers: YtdlpHelpers) {
   const job = downloadTracker.getJob(payload.jobId);
   if (!job) return null;
   if (job.status === "failed" || job.status === "done") return null;
@@ -89,16 +124,23 @@ async function handleYtdlpSearch(payload, helpers) {
       .filter((entry) => Array.isArray(entry) && entry[0] === "ytdlp")
       .map((entry) => String(entry[1] || "").trim()),
   );
-  const found = { songs: [], videos: [] };
-  const seen = { songs: new Set(), videos: new Set() };
-  const resultKey = (entry) =>
+  const found: Record<"songs" | "videos", YtdlpResult[]> = { songs: [], videos: [] };
+  const seen: Record<"songs" | "videos", Set<string>> = {
+    songs: new Set(),
+    videos: new Set(),
+  };
+  const resultKey = (entry: YtdlpResult) =>
     String(entry.id || entry.url || "")
       .trim()
       .toLowerCase();
   let lastError = "";
-  const searchOnce = async (kind, query, options) => {
+  const searchOnce = async (
+    kind: "songs" | "videos",
+    query: string,
+    options: YtdlpSearchOptions,
+  ) => {
     try {
-      const results = await ytdlpClient.search(query, options);
+      const results: YtdlpResult[] = await ytdlpClient.search(query, options);
       mergeSearchResults(
         found[kind],
         seen[kind],
@@ -106,7 +148,7 @@ async function handleYtdlpSearch(payload, helpers) {
         resultKey,
       );
     } catch (error) {
-      lastError = error?.message || String(error);
+      lastError = asAppError(error)?.message || String(error);
       logger.warn("ytdlp", "yt-dlp search failed", {
         jobId: job.id,
         query,
@@ -121,14 +163,14 @@ async function handleYtdlpSearch(payload, helpers) {
     const videoKeys = new Set(found.videos.map(resultKey));
     return [...found.songs.filter((song) => !videoKeys.has(resultKey(song))), ...found.videos];
   };
-  const evaluateResults = (results) =>
+  const evaluateResults = (results: YtdlpResult[]) =>
     buildSourceCandidates({
       source: "ytdlp",
       // Live streams are not recordings of the requested track.
       results: results.filter((result) => !isYtdlpLiveResult(result)),
       request: resolvedTrack,
     });
-  const holdsTrack = (evaluation) =>
+  const holdsTrack = (evaluation: Awaited<ReturnType<typeof buildSourceCandidates>>) =>
     evaluation.evaluations.some(
       (entry) => entry.decision === "accept" || entry.decision === "verify",
     );
@@ -152,7 +194,9 @@ async function handleYtdlpSearch(payload, helpers) {
   }
   let evaluation = await evaluateResults(searchedResults());
   if (!holdsTrack(evaluation)) {
-    for (const query of [...queries, fallbackQuery].filter(Boolean)) {
+    for (const query of [...queries, fallbackQuery].filter((value): value is string =>
+      Boolean(value),
+    )) {
       if (hasEnoughCandidates(found.videos, resolvedTrack)) break;
       if (query === fallbackQuery && found.videos.length > 0) break;
       await searchOnce("videos", query, { limit: 5 });
@@ -183,7 +227,7 @@ async function handleYtdlpSearch(payload, helpers) {
   };
 }
 
-async function handleYtdlpDownload(payload, helpers) {
+async function handleYtdlpDownload(payload: YtdlpPayload, helpers: YtdlpHelpers) {
   const job = downloadTracker.getJob(payload.jobId);
   if (!job) return null;
   if (job.status === "failed" || job.status === "done") return null;
@@ -211,7 +255,7 @@ async function handleYtdlpDownload(payload, helpers) {
       await ytdlpClient.cleanupStaging(job.id);
       return null;
     }
-    const message = error?.message || String(error);
+    const message = asAppError(error)?.message || String(error);
     logger.warn("ytdlp", "yt-dlp download failed", {
       jobId: job.id,
       url,
@@ -247,7 +291,7 @@ async function handleYtdlpDownload(payload, helpers) {
   };
 }
 
-async function handleYtdlpFinalize(payload, helpers) {
+async function handleYtdlpFinalize(payload: YtdlpPayload, helpers: YtdlpHelpers) {
   const job = downloadTracker.getJob(payload.jobId);
   if (!job) return null;
   if (job.status === "failed" || job.status === "done") return null;
@@ -342,7 +386,7 @@ async function handleYtdlpFinalize(payload, helpers) {
   return committed.result;
 }
 
-export async function processYtdlpPipelinePayload(payload, helpers = {}) {
+export async function processYtdlpPipelinePayload(payload: YtdlpPayload, helpers: YtdlpHelpers) {
   logger.debug("ytdlp", "ytdlp pipeline phase", {
     phase: payload.phase,
     jobId: payload.jobId,

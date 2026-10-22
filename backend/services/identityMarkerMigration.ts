@@ -14,8 +14,8 @@ import {
   IDENTITY_MARKER_MIGRATION_VERSION,
 } from "./honkerDb.ts";
 
-function listAurralDownloadedFiles(root) {
-  const files = new Set();
+function listAurralDownloadedFiles(root: string) {
+  const files = new Set<string>();
   for (const job of downloadTracker.getAll()) {
     if (job?.status !== "done" || job.managedBy !== "aurral" || !job.downloadClient) continue;
     const finalPath = String(job.finalPath || "").trim();
@@ -26,7 +26,7 @@ function listAurralDownloadedFiles(root) {
   return [...files].sort();
 }
 
-const fileExists = (filePath) =>
+const fileExists = (filePath: string) =>
   fs.stat(filePath).then(
     (stat) => stat.isFile(),
     () => false,

@@ -1,6 +1,8 @@
 import { db } from "../../config/db-sqlite.ts";
 import { finalizeRetainedPlaylistRelocations } from "./mediaRelocation.ts";
 import { randomUUID } from "crypto";
+import type { JsonValue } from "@russellthehippo/honker-node";
+import { asAppError } from "../../../lib/errors.ts";
 import { dbOps, userOps } from "../../db/helpers/index.ts";
 import {
   recordFlowGenerationStarted,
@@ -45,6 +47,11 @@ import {
   withPlaylistMutationLock,
 } from "../downloadJobs/mutationGuards.ts";
 import { withHonkerLock } from "../honkerDb.ts";
+import type { HonkerPayload } from "../honkerDb.ts";
+import type { DownloadJob } from "../downloadJobs/downloadTracker.ts";
+import type { ArtistMatchFields } from "../discovery/artistKeys.ts";
+import type { PlaylistTrack, StaticPlaylist } from "./flowPlaylistConfig.ts";
+import type { SettingsRow } from "../../db/rows.ts";
 import { schedulePlaylistMbidEnrichment } from "../playlistMbidEnrichmentService.ts";
 import { filterBlockedArtistsForUser } from "../discovery/feedback.ts";
 import {
@@ -64,20 +71,20 @@ import {
 } from "./trackRemoval.ts";
 
 const OPERATION_TOKENS_KEY = "weeklyFlowOperationTokens";
-const operationTokenKey = (scope) => `${OPERATION_TOKENS_KEY}:${encodeURIComponent(scope)}`;
+const operationTokenKey = (scope: string) => `${OPERATION_TOKENS_KEY}:${encodeURIComponent(scope)}`;
 
 export function createPlaylistOperationToken() {
   return `${Date.now()}-${randomUUID()}`;
 }
 
-export function markLatestPlaylistOperationToken(scope, token) {
+export function markLatestPlaylistOperationToken(scope: string, token: string) {
   const safeScope = String(scope || "").trim();
   const safeToken = String(token || "").trim();
   if (!safeScope || !safeToken) return;
   dbOps.setJSONSetting(operationTokenKey(safeScope), safeToken);
 }
 
-export function getLatestPlaylistOperationToken(scope) {
+export function getLatestPlaylistOperationToken(scope: string) {
   const safeScope = String(scope || "").trim();
   if (!safeScope) return null;
   const current = dbOps.getJSONSetting<string>(operationTokenKey(safeScope));
@@ -86,7 +93,11 @@ export function getLatestPlaylistOperationToken(scope) {
   return legacy[safeScope] ?? null;
 }
 
-export function restorePlaylistOperationToken({ scope, token, previousToken } = {}) {
+export function restorePlaylistOperationToken({
+  scope,
+  token,
+  previousToken,
+}: { scope?: string; token?: string; previousToken?: string | null } = {}) {
   const safeScope = String(scope || "").trim();
   const safeToken = String(token || "").trim();
   if (!safeScope || !safeToken || getLatestPlaylistOperationToken(safeScope) !== safeToken) {
@@ -96,31 +107,60 @@ export function restorePlaylistOperationToken({ scope, token, previousToken } = 
   return true;
 }
 
-function isLatestPlaylistOperationToken(scope, token) {
+function isLatestPlaylistOperationToken(scope: unknown, token: unknown) {
   const safeScope = String(scope || "").trim();
   const safeToken = String(token || "").trim();
   if (!safeScope || !safeToken) return true;
   return getLatestPlaylistOperationToken(safeScope) === safeToken;
 }
 
-function normalizeTrackList(value) {
+function normalizeTrackList(value: unknown): PlaylistTrack[] {
   return (Array.isArray(value) ? value : [])
     .map((track) => normalizePlaylistTrack(track))
-    .filter(Boolean);
+    .filter((track): track is NonNullable<typeof track> => Boolean(track));
 }
 
-const filterBlockedPlaylistTracks = (ownerUserId, tracks) => {
+const filterBlockedPlaylistTracks = <T extends ArtistMatchFields>(
+  ownerUserId: unknown,
+  tracks: T[],
+) => {
   if (ownerUserId == null) return tracks;
   return filterBlockedArtistsForUser(String(ownerUserId), tracks);
 };
 
-const isOwnerActive = (ownerUserId) => {
+const isOwnerActive = (ownerUserId: unknown) => {
   if (ownerUserId == null) return true;
   const owner = userOps.getUserById(Number(ownerUserId));
   return owner?.status === "active";
 };
 
-const removePlaylistLocalTrackFile = async (job, playlistId, { protectPlayback = true } = {}) => {
+const isJsonRecord = (value: JsonValue | undefined): value is { [key: string]: JsonValue } =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+interface FlowOutcome {
+  cancelled?: boolean;
+  missing?: boolean;
+  skipped?: boolean;
+  inactiveOwner?: boolean;
+  jobIds?: string[];
+  tracksQueued?: number;
+  reserveTracks?: number;
+  empty?: boolean;
+  flowName?: string;
+}
+
+const flowSeedingWorker = () => {
+  if (!("seedFlowRun" in downloadWorker)) {
+    throw new TypeError("Flows are seeded by the download worker process");
+  }
+  return downloadWorker;
+};
+
+const removePlaylistLocalTrackFile = async (
+  job: Partial<Pick<DownloadJob, "id" | "finalPath">> | null | undefined,
+  playlistId: string,
+  { protectPlayback = true }: { protectPlayback?: boolean } = {},
+) => {
   if (!job || typeof job.finalPath !== "string") return;
   await removePlaylistFileIfUnshared(job.finalPath, playlistId, {
     downloadRoot: downloadWorker.downloadRoot,
@@ -129,7 +169,7 @@ const removePlaylistLocalTrackFile = async (job, playlistId, { protectPlayback =
   });
 };
 
-const staticPlaylistTracksMatchJobs = (playlist, jobs) => {
+const staticPlaylistTracksMatchJobs = (playlist: StaticPlaylist, jobs: DownloadJob[]) => {
   const configTracks = dedupePlaylistTracks(playlist?.tracks);
   if (configTracks.length !== jobs.length) return false;
   const unmatchedJobs = new Set(jobs.map((job) => job.id));
@@ -143,17 +183,17 @@ const staticPlaylistTracksMatchJobs = (playlist, jobs) => {
   return unmatchedJobs.size === 0;
 };
 
-const getStaticPlaylistJobs = (playlist) => {
-  const referencedJobs = (playlist?.tracks || [])
+const getStaticPlaylistJobs = (playlist: StaticPlaylist) => {
+  const referencedJobs: DownloadJob[] = (playlist?.tracks || [])
     .map((track) => (track?.canonicalJobId ? downloadTracker.getJob(track.canonicalJobId) : null))
-    .filter(Boolean);
+    .filter((job): job is NonNullable<typeof job> => Boolean(job));
   const jobs = [...referencedJobs, ...downloadTracker.getByPlaylistType(playlist?.id)];
   return jobs.filter(
     (job, index, values) => values.findIndex((candidate) => candidate.id === job.id) === index,
   );
 };
 
-const syncStaticPlaylistConfigFromJobs = async (playlistId) => {
+const syncStaticPlaylistConfigFromJobs = async (playlistId: string) => {
   const safePlaylistId = String(playlistId || "").trim();
   const playlist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
   if (!playlist) return null;
@@ -168,7 +208,7 @@ const syncStaticPlaylistConfigFromJobs = async (playlistId) => {
   return updatedPlaylist;
 };
 
-const queueTracksForPlaylist = async (tracks, playlistId) => {
+const queueTracksForPlaylist = async (tracks: PlaylistTrack[], playlistId: string) => {
   const settings = downloadWorker.getWorkerSettings();
   const existingFileMode = normalizeExistingFileMode(settings.existingFileMode);
   const reusedJobIds = [];
@@ -197,7 +237,7 @@ const queueTracksForPlaylist = async (tracks, playlistId) => {
       }
     } catch (error) {
       console.warn(
-        `[Playlists] Reuse failed for ${track.artistName} - ${track.trackName}: ${error?.message || error}`,
+        `[Playlists] Reuse failed for ${track.artistName} - ${track.trackName}: ${asAppError(error)?.message || error}`,
       );
     }
     jobIds.push(jobId);
@@ -206,10 +246,10 @@ const queueTracksForPlaylist = async (tracks, playlistId) => {
   return { reusedJobIds, jobIds, createdJobIds };
 };
 
-const filterTracksMissingDownloadJobs = (tracks, playlistId) => {
+const filterTracksMissingDownloadJobs = (tracks: PlaylistTrack[], playlistId: string) => {
   const existingJobs = downloadTracker.getByPlaylistType(playlistId);
-  const missing = [];
-  const queued = [];
+  const missing: PlaylistTrack[] = [];
+  const queued: PlaylistTrack[] = [];
   for (const track of normalizeTrackList(tracks)) {
     const libraryJob = track.canonicalJobId ? downloadTracker.getJob(track.canonicalJobId) : null;
     const duplicate =
@@ -223,7 +263,7 @@ const filterTracksMissingDownloadJobs = (tracks, playlistId) => {
   return missing;
 };
 
-const recordPlaylistHistory = (playlistId, { tracksQueued = 0, tracksReused = 0 } = {}) => {
+const recordPlaylistHistory = (playlistId: string, { tracksQueued = 0, tracksReused = 0 } = {}) => {
   if (tracksQueued + tracksReused <= 0) return;
   recordPlaylistTracksAdded({
     playlistId,
@@ -232,7 +272,7 @@ const recordPlaylistHistory = (playlistId, { tracksQueued = 0, tracksReused = 0 
   });
 };
 
-async function seedStaticPlaylistTracks(playlistId, tracks) {
+async function seedStaticPlaylistTracks(playlistId: string, tracks: PlaylistTrack[]) {
   const playlist = flowPlaylistConfig.getStaticPlaylist(playlistId);
   const allowedTracks = filterBlockedPlaylistTracks(playlist?.ownerUserId, tracks);
   const missingTracks = filterTracksMissingDownloadJobs(allowedTracks, playlistId);
@@ -267,7 +307,7 @@ async function runFlowSeed({
   token = null,
   requireEnabled = false,
   scheduleNext = false,
-} = {}) {
+}: HonkerPayload = {}) {
   const safeFlowId = String(flowId || "").trim();
   if (!safeFlowId) return { missing: true };
   if (!isLatestPlaylistOperationToken(tokenScope, token)) {
@@ -277,7 +317,7 @@ async function runFlowSeed({
   if (!flow) return { missing: true };
   if (isRetiredFlow(flow)) return { skipped: true, retired: true };
   if (!isAnyDownloadSourceConfigured()) {
-    const error = new Error(getDownloadSourceNotConfiguredMessage());
+    const error: Error & { code?: string } = new Error(getDownloadSourceNotConfiguredMessage());
     error.code = "NO_DOWNLOAD_SOURCE";
     throw error;
   }
@@ -286,13 +326,13 @@ async function runFlowSeed({
   const effectiveSize =
     Number.isFinite(Number(size)) && Number(size) > 0 ? Number(size) : flow.size || DEFAULT_SIZE;
   const flowSnapshot = JSON.stringify(flow);
-  const preparedPlan = await downloadWorker.prepareFlowRunPlan(flow, {
+  const preparedPlan = await flowSeedingWorker().prepareFlowRunPlan(flow, {
     size: effectiveSize,
   });
 
   const result = await withPlaylistMutation(
     safeFlowId,
-    async () => {
+    async (): Promise<FlowOutcome> => {
       if (!isLatestPlaylistOperationToken(tokenScope, token)) {
         return { cancelled: true };
       }
@@ -315,7 +355,7 @@ async function runFlowSeed({
       if (!isLatestPlaylistOperationToken(tokenScope, token)) {
         return { cancelled: true };
       }
-      const seeded = await downloadWorker.seedFlowRun(safeFlowId, latestFlow, {
+      const seeded = await flowSeedingWorker().seedFlowRun(safeFlowId, latestFlow, {
         size: effectiveSize,
         plan: preparedPlan,
       });
@@ -333,7 +373,7 @@ async function runFlowSeed({
     },
     {
       clearPending: false,
-      async beforeMutation() {
+      async beforeMutation(): Promise<FlowOutcome | undefined> {
         if (!isLatestPlaylistOperationToken(tokenScope, token)) {
           return { cancelled: true };
         }
@@ -357,7 +397,7 @@ async function runFlowSeed({
   );
 
   if (Array.isArray(result?.jobIds)) rescanLibraryForFlows([safeFlowId]);
-  if (result?.tracksQueued > 0) {
+  if (result?.tracksQueued && result.tracksQueued > 0) {
     await wakeDownloadWorker();
     recordFlowTracksGenerated({
       flowId: safeFlowId,
@@ -370,14 +410,14 @@ async function runFlowSeed({
   return result;
 }
 
-function rescanLibraryForFlows(flowIds) {
+function rescanLibraryForFlows(flowIds: string[]) {
   const shownInLibrary = flowIds.some(
     (flowId) => flowPlaylistConfig.getFlow(flowId)?.showInLibrary === true,
   );
   if (shownInLibrary) playlistManager.scheduleScanLibrary();
 }
 
-async function runFlowCleanup({ flowId, tokenScope = null, token = null } = {}) {
+async function runFlowCleanup({ flowId, tokenScope = null, token = null }: HonkerPayload = {}) {
   const safeFlowId = String(flowId || "").trim();
   if (!safeFlowId) return { missing: true };
   if (!isLatestPlaylistOperationToken(tokenScope, token)) {
@@ -397,7 +437,7 @@ async function runFlowCleanup({ flowId, tokenScope = null, token = null } = {}) 
   return { success: true, flowId: safeFlowId };
 }
 
-async function deleteFlow({ flowId, tokenScope = null, token = null } = {}) {
+async function deleteFlow({ flowId, tokenScope = null, token = null }: HonkerPayload = {}) {
   const safeFlowId = String(flowId || "").trim();
   if (!safeFlowId) return false;
   const flow = flowPlaylistConfig.getFlow(safeFlowId);
@@ -425,7 +465,7 @@ async function deleteFlow({ flowId, tokenScope = null, token = null } = {}) {
   return didDelete;
 }
 
-async function resetPlaylists({ playlistTypes = [] } = {}) {
+async function resetPlaylists({ playlistTypes = [] }: HonkerPayload = {}) {
   const types = (Array.isArray(playlistTypes) ? playlistTypes : [playlistTypes])
     .map((entry) => String(entry || "").trim())
     .filter(Boolean);
@@ -443,21 +483,21 @@ async function resetPlaylists({ playlistTypes = [] } = {}) {
   return { success: true, playlistTypes: types };
 }
 
-async function adoptFlowSeed({ flowId, tracks = [] } = {}) {
+async function adoptFlowSeed({ flowId, tracks = [] }: HonkerPayload = {}) {
   const safeFlowId = String(flowId || "").trim();
   const flow = flowPlaylistConfig.getFlow(safeFlowId);
   if (!flow) return { missing: true };
   if (!isOwnerActive(flow.ownerUserId)) return { skipped: true, inactiveOwner: true };
   const normalizedTracks = normalizeTrackList(tracks);
   await cancelPlaylistDownloadWork(safeFlowId, downloadTracker.getByPlaylistId(safeFlowId));
-  const result = await withPlaylistMutation(safeFlowId, async () => {
+  const result = await withPlaylistMutation(safeFlowId, async (): Promise<FlowOutcome> => {
     const latestFlow = flowPlaylistConfig.getFlow(safeFlowId);
     if (!latestFlow) return { missing: true };
     if (!isOwnerActive(latestFlow.ownerUserId)) {
       return { skipped: true, inactiveOwner: true };
     }
     activatePlaylistDownloadGeneration(safeFlowId);
-    return downloadWorker.seedFlowRunWithTracks(safeFlowId, latestFlow, normalizedTracks);
+    return flowSeedingWorker().seedFlowRunWithTracks(safeFlowId, latestFlow, normalizedTracks);
   });
   if (result?.skipped || result?.missing) return result;
   await wakeDownloadWorker();
@@ -469,27 +509,32 @@ async function adoptFlowSeed({ flowId, tracks = [] } = {}) {
   return result;
 }
 
-async function withLibraryPlaylistMutation(payload, operation) {
+async function withLibraryPlaylistMutation<T>(
+  payload: HonkerPayload,
+  operation: (payload: HonkerPayload) => Promise<T>,
+) {
   const playlistId = String(payload.playlistId || "").trim();
-  const libraryIds = (Array.isArray(payload.tracks) ? payload.tracks : [])
-    .map((track) => track?.canonicalJobId)
-    .filter(Boolean);
+  const payloadTracks = Array.isArray(payload.tracks) ? payload.tracks : [];
+  const libraryIds = payloadTracks
+    .map((track) => (isJsonRecord(track) ? track.canonicalJobId : undefined))
+    .filter((id): id is string => typeof id === "string" && id !== "");
+  const libraryJobs = () =>
+    libraryIds
+      .map((id) => downloadTracker.getJob(id))
+      .filter((job): job is NonNullable<typeof job> => Boolean(job));
   while (true) {
-    const jobs = [
-      ...downloadTracker.getByPlaylistId(playlistId),
-      ...libraryIds.map((id) => downloadTracker.getJob(id)).filter(Boolean),
-    ];
+    const jobs = [...downloadTracker.getByPlaylistId(playlistId), ...libraryJobs()];
     const lockIds = getPlaylistRemovalLockIds(playlistId, jobs);
     const result = await withPlaylistMutationLock(lockIds, async () => {
-      const currentJobs = [
-        ...downloadTracker.getByPlaylistId(playlistId),
-        ...libraryIds.map((id) => downloadTracker.getJob(id)).filter(Boolean),
-      ];
+      const currentJobs = [...downloadTracker.getByPlaylistId(playlistId), ...libraryJobs()];
       if (!getPlaylistRemovalLockIds(playlistId, currentJobs).every((id) => lockIds.includes(id)))
         return { retryLocks: true };
-      for (const track of payload.tracks || []) {
-        if (!track?.canonicalJobId) continue;
-        const job = downloadTracker.getJob(track.canonicalJobId);
+      for (const track of payloadTracks) {
+        if (!isJsonRecord(track) || !track.canonicalJobId) continue;
+        const job =
+          typeof track.canonicalJobId === "string"
+            ? downloadTracker.getJob(track.canonicalJobId)
+            : null;
         if (!job || isDownloadJobCancelled(job.id) || !tracksShareMembership(job, track)) {
           throw new Error(
             "A referenced download is no longer available. Refresh the playlist and try again.",
@@ -502,18 +547,18 @@ async function withLibraryPlaylistMutation(payload, operation) {
   }
 }
 
-async function createStaticPlaylist(payload = {}) {
+async function createStaticPlaylist(payload: HonkerPayload = {}) {
   return withLibraryPlaylistMutation(
     { ...payload, playlistId: String(payload.playlistId || "").trim() || randomUUID() },
     createStaticPlaylistLocked,
   );
 }
 
-export async function appendStaticPlaylistTracks(payload = {}) {
+export async function appendStaticPlaylistTracks(payload: HonkerPayload = {}) {
   return withLibraryPlaylistMutation(payload, appendStaticPlaylistTracksLocked);
 }
 
-export async function updateStaticPlaylist(payload = {}) {
+export async function updateStaticPlaylist(payload: HonkerPayload = {}) {
   return withLibraryPlaylistMutation(payload, updateStaticPlaylistLocked);
 }
 
@@ -528,7 +573,7 @@ async function createStaticPlaylistLocked({
   ownerUserId = null,
   importSource = null,
   description = null,
-} = {}) {
+}: HonkerPayload = {}) {
   const safePlaylistId = String(playlistId || "").trim() || randomUUID();
   const normalizedTracks = filterBlockedPlaylistTracks(ownerUserId, normalizeTrackList(tracks));
   let playlist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
@@ -539,10 +584,10 @@ async function createStaticPlaylistLocked({
       sourceName,
       sourceFlowId,
       discoverPresetId,
-      type,
+      type: typeof type === "string" ? type : null,
       tracks: normalizedTracks,
       ownerUserId,
-      importSource,
+      importSource: isJsonRecord(importSource) ? importSource : null,
       description,
     });
   }
@@ -567,7 +612,7 @@ async function createStaticPlaylistLocked({
   };
 }
 
-async function appendStaticPlaylistTracksLocked({ playlistId, tracks = [] } = {}) {
+async function appendStaticPlaylistTracksLocked({ playlistId, tracks = [] }: HonkerPayload = {}) {
   const safePlaylistId = String(playlistId || "").trim();
   const playlist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
   if (!playlist) return { missing: true };
@@ -609,25 +654,26 @@ async function updateStaticPlaylistLocked({
   importSource = null,
   deleteUnsharedFiles = false,
   mergeImportSource = false,
-} = {}) {
+}: HonkerPayload = {}) {
   const safePlaylistId = String(playlistId || "").trim();
   const currentPlaylist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
   if (!currentPlaylist) return { missing: true };
+  const importSourcePatch = isJsonRecord(importSource) ? importSource : null;
   const safeName = hasNameUpdate
     ? String(name || "").trim()
     : String(currentPlaylist.name || "").trim();
-  let playlist = null;
+  let playlist = null as ReturnType<typeof flowPlaylistConfig.updateStaticPlaylist> | null;
   let tracksQueued = 0;
   let tracksReused = 0;
-  let affectedPlaylistIds = [];
+  let affectedPlaylistIds: string[] = [];
   if (!hasTracksUpdate) {
     await withPlaylistMutationLock(safePlaylistId, async () => {
       const lockedPlaylist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
       const lockedImportSource = lockedPlaylist?.importSource || currentPlaylist.importSource;
       const importSourceToStore =
         mergeImportSource && hasImportSourceUpdate
-          ? { ...lockedImportSource, ...(importSource || {}) }
-          : importSource;
+          ? { ...lockedImportSource, ...(importSourcePatch || {}) }
+          : importSourcePatch;
       playlist = flowPlaylistConfig.updateStaticPlaylist(safePlaylistId, {
         ...(hasNameUpdate ? { name: safeName } : {}),
         ...(hasImportSourceUpdate ? { importSource: importSourceToStore } : {}),
@@ -638,11 +684,16 @@ async function updateStaticPlaylistLocked({
       currentPlaylist.ownerUserId,
       normalizeTrackList(tracks),
     );
+    let deletedWhileWaiting = false;
     await withPlaylistMutation(
       getPlaylistRemovalLockIds(safePlaylistId, downloadTracker.getByPlaylistId(safePlaylistId)),
       async () => {
         const lockedPlaylist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
-        const lockedImportSource = lockedPlaylist?.importSource || currentPlaylist.importSource;
+        if (!lockedPlaylist) {
+          deletedWhileWaiting = true;
+          return;
+        }
+        const lockedImportSource = lockedPlaylist.importSource || currentPlaylist.importSource;
         const shouldDeleteUnsharedFiles =
           deleteUnsharedFiles ||
           (mergeImportSource && lockedImportSource?.keepRemovedTracks === false);
@@ -650,8 +701,8 @@ async function updateStaticPlaylistLocked({
           .getByPlaylistType(safePlaylistId)
           .filter((job) => !job.upgradeForJobId);
         const matchedJobIds = new Set();
-        const groupJobsBy = (buildKey) => {
-          const groups = new Map();
+        const groupJobsBy = (buildKey: typeof buildPlaylistTrackIdentity) => {
+          const groups = new Map<string | null, DownloadJob[]>();
           for (const job of existingJobs) {
             const key = buildKey(job);
             if (key) groups.set(key, [...(groups.get(key) || []), job]);
@@ -659,7 +710,7 @@ async function updateStaticPlaylistLocked({
           for (const [key, jobs] of groups) groups.set(key, sortJobsForTrackReuse(jobs));
           return groups;
         };
-        const takeReusableJob = (jobs = []) => {
+        const takeReusableJob = (jobs: DownloadJob[] = []) => {
           const index = jobs.findIndex((job) => !matchedJobIds.has(job.id));
           if (index < 0) return null;
           const [job] = jobs.splice(index, 1);
@@ -683,14 +734,14 @@ async function updateStaticPlaylistLocked({
           flowPlaylistConfig.getStaticPlaylist(safePlaylistId)?.importSource;
         const importSourceToStore =
           mergeImportSource && hasImportSourceUpdate
-            ? { ...(latestImportSource || lockedImportSource), ...(importSource || {}) }
-            : importSource;
+            ? { ...(latestImportSource || lockedImportSource), ...(importSourcePatch || {}) }
+            : importSourcePatch;
         const removal = await removeStaticPlaylistSelectionsLocked({
           playlistId: safePlaylistId,
           selections: removedJobs
             .map((job) => captureStaticPlaylistSelection(lockedPlaylist, job.id))
-            .filter(Boolean),
-          deleteFiles: shouldDeleteUnsharedFiles,
+            .filter((selection): selection is NonNullable<typeof selection> => Boolean(selection)),
+          deleteFiles: Boolean(shouldDeleteUnsharedFiles),
           requireAll: true,
           onCommitted: () => {
             playlist = flowPlaylistConfig.updateStaticPlaylist(safePlaylistId, {
@@ -707,6 +758,7 @@ async function updateStaticPlaylistLocked({
       },
       { clearPending: false },
     );
+    if (deletedWhileWaiting) return { missing: true };
   }
 
   playlistManager.requestPlaylistSync([safePlaylistId, ...affectedPlaylistIds]);
@@ -725,7 +777,7 @@ async function updateStaticPlaylistLocked({
   return { success: true, playlist, tracksQueued, tracksReused };
 }
 
-async function deleteStaticPlaylistTrack({ playlistId, jobId } = {}) {
+async function deleteStaticPlaylistTrack({ playlistId, jobId }: HonkerPayload = {}) {
   const safePlaylistId = String(playlistId || "").trim();
   const safeJobId = String(jobId || "").trim();
   const playlist = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
@@ -735,7 +787,9 @@ async function deleteStaticPlaylistTrack({ playlistId, jobId } = {}) {
   const job = downloadTracker.getJob(safeJobId);
   const selection = job && captureStaticPlaylistSelection(playlist, safeJobId);
   if (!selection) {
-    const pending = db.prepare("SELECT value FROM settings WHERE key = ?").get(synchronizationKey);
+    const pending = db
+      .prepare<[string], Pick<SettingsRow, "value">>("SELECT value FROM settings WHERE key = ?")
+      .get(synchronizationKey);
     playlistManager.requestPlaylistSync(pending ? JSON.parse(pending.value) : [safePlaylistId]);
     await playlistManager.scheduleScanLibrary(true);
     await finalizeRetainedPlaylistRelocations(safePlaylistId, {
@@ -744,7 +798,7 @@ async function deleteStaticPlaylistTrack({ playlistId, jobId } = {}) {
     db.prepare("DELETE FROM settings WHERE key = ?").run(synchronizationKey);
     return { missingJob: true };
   }
-  let affectedPlaylistIds = [];
+  let affectedPlaylistIds: string[] = [];
   await withStaticPlaylistRemovalMutation(
     { playlistId: safePlaylistId, jobIds: [job.id] },
     async () => {
@@ -776,7 +830,7 @@ async function deleteStaticPlaylistTrack({ playlistId, jobId } = {}) {
   };
 }
 
-async function researchPlaylistTrack({ playlistId, jobId } = {}) {
+async function researchPlaylistTrack({ playlistId, jobId }: HonkerPayload = {}) {
   const safePlaylistId = String(playlistId || "").trim();
   const safeJobId = String(jobId || "").trim();
   const isLibraryJob = safePlaylistId === "library";
@@ -799,7 +853,7 @@ async function researchPlaylistTrack({ playlistId, jobId } = {}) {
     if (!downloadTracker.enqueueDownloadPipeline(replacementJobId)) {
       const replacementJob = downloadTracker.getJob(replacementJobId);
       const { finalizeQualityUpgradeFailure } = await import("../qualityProfileService.ts");
-      await finalizeQualityUpgradeFailure(replacementJob, "Could not queue a replacement search");
+      await finalizeQualityUpgradeFailure(replacementJob!, "Could not queue a replacement search");
       return { success: false, queueFailed: true };
     }
     const replacementJob = downloadTracker.getJob(replacementJobId);
@@ -871,7 +925,7 @@ async function researchPlaylistTrack({ playlistId, jobId } = {}) {
   };
 }
 
-async function researchLibraryTrack({ trackId, albumId } = {}) {
+async function researchLibraryTrack({ trackId, albumId }: HonkerPayload = {}) {
   const sourceJob = resolveAurralOwnedTrackJob({ trackId, albumId });
   if (!sourceJob) return { missingAurralOwnedTrack: true };
   if (downloadTracker.findActiveUpgradeJob(sourceJob)) {
@@ -883,7 +937,7 @@ async function researchLibraryTrack({ trackId, albumId } = {}) {
   if (!downloadTracker.enqueueDownloadPipeline(replacementJobId)) {
     const replacementJob = downloadTracker.getJob(replacementJobId);
     const { finalizeQualityUpgradeFailure } = await import("../qualityProfileService.ts");
-    await finalizeQualityUpgradeFailure(replacementJob, "Could not queue a replacement search");
+    await finalizeQualityUpgradeFailure(replacementJob!, "Could not queue a replacement search");
     return { success: false, queueFailed: true };
   }
 
@@ -897,7 +951,7 @@ async function researchLibraryTrack({ trackId, albumId } = {}) {
   };
 }
 
-async function deleteStaticPlaylist({ playlistId } = {}) {
+async function deleteStaticPlaylist({ playlistId }: HonkerPayload = {}) {
   const safePlaylistId = String(playlistId || "").trim();
   const exists = flowPlaylistConfig.getStaticPlaylist(safePlaylistId);
   if (!exists) {
@@ -910,14 +964,16 @@ async function deleteStaticPlaylist({ playlistId } = {}) {
   const selectionIds = [
     ...new Set([
       ...jobs.filter((job) => !job.upgradeForJobId).map((job) => job.id),
-      ...exists.tracks.map((track) => track.canonicalJobId).filter(Boolean),
+      ...exists.tracks
+        .map((track) => track.canonicalJobId)
+        .filter((id): id is string => Boolean(id)),
     ]),
   ];
   const selections = selectionIds
     .map((id) => captureStaticPlaylistSelection(exists, id))
-    .filter(Boolean);
+    .filter((selection): selection is NonNullable<typeof selection> => Boolean(selection));
   let deleted = false;
-  let affectedPlaylistIds = [];
+  let affectedPlaylistIds: string[] = [];
   try {
     await withStaticPlaylistRemovalMutation(
       { playlistId: safePlaylistId, jobIds: jobs.map((job) => job.id) },
@@ -971,7 +1027,7 @@ async function deleteStaticPlaylist({ playlistId } = {}) {
   return deleted;
 }
 
-export async function processPlaylistOperation(payload = {}) {
+export async function processPlaylistOperation(payload: HonkerPayload = {}) {
   const kind = String(payload?.kind || payload?.type || "").trim();
   return withHonkerLock(
     "weekly-flow-operation",

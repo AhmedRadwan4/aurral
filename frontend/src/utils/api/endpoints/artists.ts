@@ -143,6 +143,13 @@ const releaseGroupCoverCacheKey = (
   albumTitle: string | null | undefined = "",
 ) => `release-group:${mbid}:${normalizeCoverPart(artistName)}:${normalizeCoverPart(albumTitle)}`;
 
+const releaseGroupBatchCoverCacheKey = (
+  mbid: string,
+  artistName: string | null | undefined = "",
+  albumTitle: string | null | undefined = "",
+) =>
+  `release-group-batch:${mbid}:${normalizeCoverPart(artistName)}:${normalizeCoverPart(albumTitle)}`;
+
 export const getReleaseGroupTracks = async (
   mbid: string | undefined,
   context: {
@@ -151,11 +158,11 @@ export const getReleaseGroupTracks = async (
     albumTitle?: string;
     releaseType?: string;
     releaseDate?: string;
-    deezerAlbumId?: string;
+    deezerAlbumId?: string | number;
     signal?: AbortSignal;
   } = {},
 ): Promise<ReleaseGroupTrack[]> => {
-  const params: Record<string, string> = {};
+  const params: Record<string, string | number> = {};
   if (context.artistMbid) params.artistMbid = context.artistMbid;
   if (context.artistName) params.artistName = context.artistName;
   if (context.albumTitle) params.albumTitle = context.albumTitle;
@@ -169,7 +176,7 @@ export const getReleaseGroupTracks = async (
 };
 
 export const getArtistCover = async (
-  mbid: string,
+  mbid: string | number,
   artistName?: string | null,
   refresh = false,
 ): Promise<ArtistCoverResponse> => {
@@ -193,7 +200,12 @@ export const getArtistCover = async (
 };
 
 export const getReleaseGroupCoversBatch = async (
-  items: { mbid?: string; id?: string; artistName?: string; albumTitle?: string }[] = [],
+  items: {
+    mbid?: string | null;
+    id?: string;
+    artistName?: string | null;
+    albumTitle?: string | null;
+  }[] = [],
 ): Promise<Record<string, ReleaseGroupCoverEntry>> => {
   const normalizedItems = (Array.isArray(items) ? items : [])
     .map((item) => ({
@@ -208,8 +220,8 @@ export const getReleaseGroupCoversBatch = async (
   const covers: Record<string, ReleaseGroupCoverEntry> = {};
   const uncachedItems: ReleaseGroupCoverItem[] = [];
   normalizedItems.forEach((item) => {
-    const cached = getCoverCacheEntry<ReleaseGroupCoverEntry | ReleaseGroupCoverResponse>(
-      releaseGroupCoverCacheKey(item.mbid, item.artistName, item.albumTitle),
+    const cached = getCoverCacheEntry<ReleaseGroupCoverEntry>(
+      releaseGroupBatchCoverCacheKey(item.mbid, item.artistName, item.albumTitle),
     );
     if (cached) covers[item.mbid] = cached;
     else uncachedItems.push(item);
@@ -234,7 +246,7 @@ export const getReleaseGroupCoversBatch = async (
         const item = batch.find((candidate) => candidate.mbid === mbid);
         if (item && !cover?.transientError) {
           setCoverCacheEntry(
-            releaseGroupCoverCacheKey(mbid, item.artistName, item.albumTitle),
+            releaseGroupBatchCoverCacheKey(mbid, item.artistName, item.albumTitle),
             cover,
           );
         }
@@ -255,13 +267,13 @@ export const getReleaseGroupCover = async (
     albumTitle = "",
     bypassCache = false,
   }: { artistName?: string; albumTitle?: string; bypassCache?: boolean } = {},
-): Promise<ReleaseGroupCoverResponse | ReleaseGroupCoverEntry> => {
+): Promise<ReleaseGroupCoverResponse> => {
   const cacheKey = releaseGroupCoverCacheKey(mbid, artistName, albumTitle);
   const refreshKey = `${cacheKey}:refresh`;
   if (!bypassCache) {
     const refresh = coverInflightRequests.get(refreshKey);
     if (refresh) return refresh as Promise<ReleaseGroupCoverResponse>;
-    const cached = getCoverCacheEntry<ReleaseGroupCoverResponse | ReleaseGroupCoverEntry>(cacheKey);
+    const cached = getCoverCacheEntry<ReleaseGroupCoverResponse>(cacheKey);
     if (cached) {
       return cached;
     }
@@ -324,7 +336,7 @@ export const getSimilarArtistsForArtist = (
   });
 
 export const getArtistPreview = (
-  mbid: string | null | undefined,
+  mbid: string | number | null | undefined,
   artistName?: string | null,
   options: { signal?: AbortSignal } = {},
 ): Promise<{ tracks: Awaited<ReturnType<typeof deezerGetArtistTopTracksById>> }> =>

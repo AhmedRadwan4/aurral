@@ -1,12 +1,14 @@
+import type { Router } from "express";
 import { dbOps } from "../../../db/helpers/index.ts";
 import { clearImageProxyCache } from "../../../services/imageProxyService.ts";
 import { clearApiCaches } from "../../../services/apiClients/index.ts";
 import { getDiscoveryCache } from "../../../services/discovery/index.ts";
 import { enqueueDiscoveryRefresh } from "../../../services/discovery/refreshScheduler.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
 export type DiscoveryRefreshResponse = { message: string; isUpdating: boolean };
 
-export function registerAdmin(router) {
+export function registerAdmin(router: Router) {
   router.post("/refresh", requireAuth, requireAdmin, (req, res) => {
     const result = enqueueDiscoveryRefresh({
       reason: "manual",
@@ -32,8 +34,9 @@ export function registerAdmin(router) {
       clearApiCaches();
       res.json({ message: "Artwork cache cleared" });
     } catch (err) {
+      const failure = asAppError(err);
       res.status(500).json({
-        message: `Failed to clear cache: ${err.message || "Internal server error"}`,
+        message: `Failed to clear cache: ${failure?.message || "Internal server error"}`,
       });
     }
   });

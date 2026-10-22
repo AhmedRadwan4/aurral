@@ -3,12 +3,15 @@ import { getLibraryForAlbumIds, getLibraryForTrackIds } from "./libraryQueryServ
 import { isAurralOwnedPath } from "./qualityProfileService.ts";
 import { downloadTracker } from "./downloadJobs/downloadTracker.ts";
 
-function positiveInteger(value) {
+function positiveInteger(value: unknown) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-export function resolveAurralOwnedTrackJob({ trackId, albumId } = {}) {
+export function resolveAurralOwnedTrackJob({
+  trackId,
+  albumId,
+}: { trackId?: unknown; albumId?: unknown } = {}) {
   const safeTrackId = positiveInteger(trackId);
   const safeAlbumId =
     albumId == null || String(albumId).trim() === "" ? null : positiveInteger(albumId);
@@ -37,7 +40,7 @@ export function resolveAurralOwnedTrackJob({ trackId, albumId } = {}) {
         job.managedBy === "aurral" &&
         !job.upgradeForJobId &&
         job.finalPath &&
-        ownedFiles.some((file) => file.resolvedPath === path.resolve(job.finalPath)) &&
+        ownedFiles.some((file) => file.resolvedPath === path.resolve(job.finalPath!)) &&
         isAurralOwnedPath(job.finalPath),
     )
     .sort(
@@ -66,10 +69,12 @@ export function resolveAurralOwnedTrackJob({ trackId, albumId } = {}) {
         .filter((entry) => entry.title && entry.position)
         .sort(
           (left, right) =>
-            Number(left.position.discNumber || 1) - Number(right.position.discNumber || 1) ||
-            Number(left.position.trackNumber || 0) - Number(right.position.trackNumber || 0),
+            Number(left.position!.discNumber || 1) - Number(right.position!.discNumber || 1) ||
+            Number(left.position!.trackNumber || 0) - Number(right.position!.trackNumber || 0),
         )
     : [];
+
+  const metadataDurationMs = track?.metadata?.durationMs;
 
   return downloadTracker.ensureLibraryTrackJob(
     {
@@ -80,7 +85,9 @@ export function resolveAurralOwnedTrackJob({ trackId, albumId } = {}) {
       albumMbid: album?.releaseGroupMbid || album?.mbid || null,
       trackMbid: track?.mbid || null,
       releaseYear,
-      durationMs: sourceFile.durationMs ?? track?.metadata?.durationMs ?? null,
+      durationMs:
+        sourceFile.durationMs ??
+        (typeof metadataDurationMs === "number" ? metadataDurationMs : null),
       trackNumber: albumTrack?.trackNumber || 0,
       discNumber: albumTrack?.discNumber || null,
       albumTrackCount: albumTracks.length || null,

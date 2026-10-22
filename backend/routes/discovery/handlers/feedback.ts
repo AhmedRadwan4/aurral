@@ -1,3 +1,4 @@
+import type { Router } from "express";
 import { requireAuth } from "../../../middleware/requirePermission.ts";
 import {
   getDiscoveryFeedback,
@@ -6,6 +7,7 @@ import {
   restoreDiscoveryFeedback,
   resetDiscoveryFeedback,
 } from "../../../services/discovery/index.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
 type DiscoveryFeedbackList = ReturnType<typeof getDiscoveryFeedback>;
 
@@ -17,31 +19,32 @@ export type DiscoveryFeedbackAddResponse = DiscoveryFeedbackListResponse & {
   feedback: ReturnType<typeof addDiscoveryFeedback>;
 };
 
-export function registerFeedback(router) {
+export function registerFeedback(router: Router) {
   router.get("/feedback", requireAuth, (req, res) => {
     res.json({
-      feedback: getDiscoveryFeedback(req.user.id),
+      feedback: getDiscoveryFeedback(req.user!.id),
     });
   });
 
   router.post("/feedback", requireAuth, (req, res) => {
     try {
-      const feedback = addDiscoveryFeedback(req.user.id, req.body || {});
+      const feedback = addDiscoveryFeedback(req.user!.id, req.body || {});
       res.json({
         success: true,
         feedback,
-        feedbackList: getDiscoveryFeedback(req.user.id),
+        feedbackList: getDiscoveryFeedback(req.user!.id),
       });
     } catch (error) {
+      const failure = asAppError(error);
       res.status(400).json({
         error: "Failed to save discovery feedback",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
 
   router.delete("/feedback/:id", requireAuth, (req, res) => {
-    const feedbackList = removeDiscoveryFeedback(req.user.id, req.params.id);
+    const feedbackList = removeDiscoveryFeedback(req.user!.id, req.params.id);
     res.json({
       success: true,
       feedbackList,
@@ -62,12 +65,12 @@ export function registerFeedback(router) {
     }
     res.json({
       success: true,
-      feedbackList: restoreDiscoveryFeedback(req.user.id, { removeIds, entries }),
+      feedbackList: restoreDiscoveryFeedback(req.user!.id, { removeIds, entries }),
     });
   });
 
   router.post("/feedback/reset", requireAuth, (req, res) => {
-    const feedbackList = resetDiscoveryFeedback(req.user.id);
+    const feedbackList = resetDiscoveryFeedback(req.user!.id);
     res.json({
       success: true,
       feedbackList,

@@ -6,6 +6,50 @@ import { getArtistRecordId } from "../utils/artistTaste";
 import Tooltip from "./Tooltip";
 import RecommendationMeta from "./RecommendationMeta";
 import RouteLink from "./RouteLink";
+import type { SearchImageMap } from "./SearchMixedResultList";
+import type { ArtistFeedbackAction } from "../utils/artistTaste";
+
+type SearchArtistLifeSpan = {
+  begin?: string | null;
+  end?: string | null;
+  ended?: boolean | null;
+};
+
+type SearchArtist = {
+  id?: string | number | null;
+  mbid?: string | null;
+  foreignArtistId?: string | null;
+  name?: string | null;
+  image?: string | null;
+  imageUrl?: string | null;
+  artistType?: string | null;
+  type?: string | null;
+  area?: string | null;
+  country?: string | null;
+  disambiguation?: string | null;
+  sourceArtist?: string | null;
+  matchPercent?: number | null;
+  begin?: string | null;
+  end?: string | null;
+  ended?: boolean | null;
+  "life-span"?: SearchArtistLifeSpan | null;
+  lifeSpan?: SearchArtistLifeSpan | null;
+};
+
+interface SearchArtistResultsProps {
+  artists: SearchArtist[];
+  type: string;
+  artistImages: SearchImageMap;
+  libraryLookup: Record<string, boolean | undefined>;
+  onArtistFeedback?: (
+    artist: SearchArtist,
+    action: ArtistFeedbackAction,
+    options: { isSelected: boolean },
+  ) => unknown;
+  artistFeedbackLookup?: Parameters<typeof getArtistFeedbackFlags>[0];
+  variant?: string;
+  gridColumns?: number;
+}
 
 function SearchArtistResults({
   artists,
@@ -16,8 +60,8 @@ function SearchArtistResults({
   artistFeedbackLookup,
   variant = "square",
   gridColumns,
-}) {
-  const formatLifeSpan = (artist) => {
+}: SearchArtistResultsProps) {
+  const formatLifeSpan = (artist: SearchArtist) => {
     const begin = artist?.begin || artist?.["life-span"]?.begin || artist?.lifeSpan?.begin;
     if (!begin) return null;
     const ended = artist?.ended ?? artist?.["life-span"]?.ended ?? artist?.lifeSpan?.ended ?? false;
@@ -30,10 +74,10 @@ function SearchArtistResults({
     return `${beginYear} - Present`;
   };
 
-  const normalizeArtistType = (artist) => {
+  const normalizeArtistType = (artist: SearchArtist) => {
     const raw = artist?.artistType || artist?.type || null;
     if (!raw) return null;
-    const types = {
+    const types: Partial<Record<string, string>> = {
       Person: "Solo artist",
       Group: "Band",
       Orchestra: "Orchestra",
@@ -44,16 +88,18 @@ function SearchArtistResults({
     return types[raw] || raw;
   };
 
-  const normalizeArea = (artist) => {
-    const value = artist?.area || artist?.area?.name || null;
+  const normalizeArea = (artist: SearchArtist) => {
+    const value = artist?.area || null;
     if (!value) return null;
     return String(value).trim() || null;
   };
 
-  const artistLinkState = (artist, artistId) => ({
+  const artistLinkState = (artist: SearchArtist, artistKey: string) => ({
     artistName: artist.name,
-    artistImage: artistImages[artistId] || artist.image || artist.imageUrl || undefined,
-    ...(typeof libraryLookup[artistId] === "boolean" ? { inLibrary: libraryLookup[artistId] } : {}),
+    artistImage: artistImages[artistKey] || artist.image || artist.imageUrl || undefined,
+    ...(typeof libraryLookup[artistKey] === "boolean"
+      ? { inLibrary: libraryLookup[artistKey] }
+      : {}),
   });
 
   const isList = variant === "list";
@@ -71,6 +117,7 @@ function SearchArtistResults({
     <div className={gridClassName} style={gridStyle}>
       {artists.map((artist, index) => {
         const artistId = getArtistRecordId(artist);
+        const artistKey = String(artistId);
         const artistTypeLabel = normalizeArtistType(artist);
         const displayArtistTypeLabel =
           type === "recommended" && artistTypeLabel?.toLowerCase() === "artist"
@@ -100,7 +147,7 @@ function SearchArtistResults({
             data-artwork
           >
             <ArtistImage
-              src={artistImages[artistId] || artist.image || artist.imageUrl}
+              src={artistImages[artistKey] || artist.image || artist.imageUrl}
               mbid={artistId}
               artistName={artist.name}
               alt={artist.name}
@@ -108,18 +155,18 @@ function SearchArtistResults({
               showLoading={false}
               enableBackendFallback={false}
               enablePreviewPlayback
-              isInLibrary={!!libraryLookup[artistId]}
+              isInLibrary={!!libraryLookup[artistKey]}
             />
           </div>
         );
 
         const artistPath = `/artist/${artistId}`;
-        const linkState = artistLinkState(artist, artistId);
+        const linkState = artistLinkState(artist, artistKey);
         const contextMenu = (
           <div className="artist-discover-card__menu">
             <ArtistContextMenu
               artist={artist}
-              isInLibrary={!!libraryLookup[artistId]}
+              isInLibrary={!!libraryLookup[artistKey]}
               onFeedback={onArtistFeedback}
               menuLayout={isList ? "inline" : "text"}
               feedbackUsed={
@@ -186,7 +233,7 @@ function SearchArtistResults({
                   <Tooltip content={artist.name}>
                     <h3 className="artist-card-title--discover">{artist.name}</h3>
                   </Tooltip>
-                  {libraryLookup[artistId] && <SearchLibraryCheck />}
+                  {libraryLookup[artistKey] && <SearchLibraryCheck />}
                 </div>
                 <RecommendationMeta
                   artist={artist}

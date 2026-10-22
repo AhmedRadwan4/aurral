@@ -1,6 +1,12 @@
+import type { FormEvent } from "react";
 import { SettingsSelect } from "./SettingsField";
 import { SettingsArrFieldSet, SettingsArrFormGroup } from "./arr/SettingsArrLayout";
 import { SettingsPlaybackSection } from "./SettingsPlaybackSection";
+import type { fetchPlaybackSettings } from "../../../utils/api/endpoints/settings.ts";
+import type { useToast } from "../../../contexts/ToastContext";
+import type { SettingsState } from "../utils";
+
+type Toast = ReturnType<typeof useToast>["showSuccess"];
 
 const PLAYLIST_ARTWORK_STYLE_OPTIONS = [
   { value: "photo", label: "Photo texture" },
@@ -16,6 +22,19 @@ export function SettingsPlaybackTab({
   showSuccess,
   showError,
   showInfo,
+}: {
+  settings: SettingsState;
+  playbackSettings: Awaited<ReturnType<typeof fetchPlaybackSettings>>["destinations"] | null;
+  updateSettings: (settings: SettingsState) => void;
+  hasUnsavedChanges: boolean;
+  saving: boolean;
+  handleSaveSettings: (
+    event?: FormEvent<HTMLFormElement> | null,
+    settingsOverride?: SettingsState,
+  ) => Promise<boolean>;
+  showSuccess: Toast;
+  showError: Toast;
+  showInfo: ReturnType<typeof useToast>["showInfo"];
 }) {
   const playlistArtworkStyle = settings.playlistArtwork?.style === "aurral" ? "aurral" : "photo";
 
@@ -42,15 +61,17 @@ export function SettingsPlaybackTab({
             <SettingsSelect
               id="playlist-artwork-style"
               value={playlistArtworkStyle}
-              onChange={(event) =>
+              onChange={(event) => {
+                const style = event.target.value;
+                if (style !== "aurral" && style !== "photo") return;
                 updateSettings({
                   ...settings,
                   playlistArtwork: {
                     ...(settings.playlistArtwork || {}),
-                    style: event.target.value,
+                    style,
                   },
-                })
-              }
+                });
+              }}
             >
               {PLAYLIST_ARTWORK_STYLE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>

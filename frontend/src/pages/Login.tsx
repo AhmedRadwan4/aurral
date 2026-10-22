@@ -1,12 +1,14 @@
 import { useState } from "react";
+import type { FormEvent } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { getAppBasePath } from "../utils/basePath.ts";
 import { clearAuthStorage, setStoredAuth } from "../utils/api/core.ts";
+import { getApiErrorBody, getApiErrorText } from "./onboardingUtils";
 import { startPlexLoginPin, completePlexLogin } from "../utils/api/endpoints/auth.ts";
 import { DotLoader } from "../components/DotLoader";
 
-const buildApiUrl = (path) => {
+const buildApiUrl = (path: string) => {
   const basePath = getAppBasePath();
   const prefix = basePath === "/" ? "" : basePath.replace(/\/$/, "");
   return `${prefix}${path}`;
@@ -29,7 +31,7 @@ const Login = () => {
   const hasSsoOption = oidcEnabled || googleEnabled || plexEnabled;
   const localFormVisible = !ssoOnly || !hasSsoOption || showLocalForm;
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (submitting) return;
     setSubmitting(true);
@@ -73,8 +75,8 @@ const Login = () => {
       } catch (err) {
         if (popup && !popup.closed) popup.close();
         setError(
-          err.response?.data?.message ||
-            err.response?.data?.error ||
+          getApiErrorText(err, "message") ||
+            getApiErrorText(err, "error") ||
             "Failed to start Plex sign-in",
         );
         return;
@@ -90,10 +92,13 @@ const Login = () => {
           result = res;
           break;
         } catch (err) {
-          if (err.response?.data?.retryable) continue;
+          const body = getApiErrorBody(err);
+          if (body && "retryable" in body && body.retryable) continue;
           if (popup && !popup.closed) popup.close();
           setError(
-            err.response?.data?.message || err.response?.data?.error || "Plex sign-in failed",
+            getApiErrorText(err, "message") ||
+              getApiErrorText(err, "error") ||
+              "Plex sign-in failed",
           );
           return;
         }

@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from "react";
 import {
   getUpcomingTracks,
@@ -19,6 +20,7 @@ import {
 import type {
   ArtworkTarget,
   QueueAction,
+  QueueEntry,
   QueueSource,
   QueueState,
   QueueTrackInput,
@@ -50,8 +52,13 @@ const PASSIVE_ACTIONS = new Set([
   "RESTORE_QUEUE",
 ]);
 
-function normalizeVolume(value) {
-  const parsed = Number.parseFloat(value);
+const SHARED_AUDIO_KEYS: (string | null)[] = [SHARED_VOLUME_KEY, SHARED_MUTED_KEY];
+
+type StoredAudio = { volume: number; muted: boolean };
+type LoadTrackOptions = { formatAttemptIndex?: number; autoplay?: boolean };
+
+function normalizeVolume(value: string | number) {
+  const parsed = Number.parseFloat(String(value));
   if (!Number.isFinite(parsed)) return DEFAULT_VOLUME;
   return Math.max(0, Math.min(1, parsed));
 }
@@ -65,7 +72,7 @@ function readStoredAudio() {
   return { volume, muted: storedMuted === "true" };
 }
 
-function writeStoredAudio(audio) {
+function writeStoredAudio(audio: StoredAudio) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(SHARED_VOLUME_KEY, String(audio.volume));
   window.localStorage.setItem(SHARED_MUTED_KEY, String(audio.muted));
@@ -76,8 +83,8 @@ function useSharedVolume() {
   const [audio, setAudio] = useState(readStoredAudio);
 
   useEffect(() => {
-    const handleVolumeChange = (event) => {
-      if (event.type === "storage" && ![SHARED_VOLUME_KEY, SHARED_MUTED_KEY].includes(event.key)) {
+    const handleVolumeChange = (event: Event) => {
+      if (event.type === "storage" && !SHARED_AUDIO_KEYS.includes((event as StorageEvent).key)) {
         return;
       }
       setAudio(readStoredAudio());
@@ -92,21 +99,21 @@ function useSharedVolume() {
     };
   }, []);
 
-  const update = useCallback((change) => {
+  const update = useCallback((change: Partial<StoredAudio>) => {
     const next = { ...readStoredAudio(), ...change };
     setAudio(next);
     writeStoredAudio(next);
   }, []);
 
   const setVolume = useCallback(
-    (nextVolume) => {
+    (nextVolume: string | number) => {
       const volume = normalizeVolume(nextVolume);
       update(volume > 0 ? { volume, muted: false } : { muted: true });
     },
     [update],
   );
 
-  const setMuted = useCallback((muted) => update({ muted: Boolean(muted) }), [update]);
+  const setMuted = useCallback((muted: boolean) => update({ muted: Boolean(muted) }), [update]);
 
   return { ...audio, setVolume, setMuted };
 }
@@ -116,11 +123,16 @@ function trackAt(state: QueueState, playbackIndex: number) {
   return queueIndex == null ? null : (state.queue[queueIndex] ?? null);
 }
 
-function trackSignature(state, playbackIndex, track, formatKey) {
+function trackSignature(
+  state: QueueState,
+  playbackIndex: number,
+  track: QueueEntry,
+  formatKey: string,
+) {
   return `${state.queueRevision}:${track.entryId ?? state.playbackOrder[playbackIndex]}:${track.src}:${formatKey}`;
 }
 
-function readStoredQueue(owner) {
+function readStoredQueue(owner: string | null) {
   try {
     return parseStoredQueue(window.localStorage.getItem(QUEUE_STORAGE_KEY), {
       owner,
@@ -131,7 +143,7 @@ function readStoredQueue(owner) {
   }
 }
 
-function writeStoredQueue(value) {
+function writeStoredQueue(value: string | null) {
   try {
     if (value) window.localStorage.setItem(QUEUE_STORAGE_KEY, value);
     else window.localStorage.removeItem(QUEUE_STORAGE_KEY);
@@ -142,31 +154,33 @@ function writeStoredQueue(value) {
   }
 }
 
-export function AudioQueueProvider({ children }) {
+export function AudioQueueProvider({ children }: { children: ReactNode }) {
   const [engine] = useState(createAudioEngine);
   const playback = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
   const { user } = useAuth() ?? {};
   const owner = user ? String(user.id ?? user.username ?? "local") : null;
   const ownsQueueRef = useRef(false);
-  const restoredOwnerRef = useRef(null);
-  const resumeAtRef = useRef(null);
-  const channelRef = useRef(null);
+  const restoredOwnerRef = useRef<string | null>(null);
+  const resumeAtRef = useRef<{ entryId: string; position: number } | null>(null);
+  const channelRef = useRef<BroadcastChannel | null>(null);
 
   const { volume, muted, setVolume, setMuted } = useSharedVolume();
 
   const [state, applyAction] = useReducer(queueReducer, initialQueueState);
-  const dispatch = useCallback((action) => {
+  const dispatch = useCallback((action: QueueAction) => {
     if (!PASSIVE_ACTIONS.has(action.type)) ownsQueueRef.current = true;
     applyAction(action);
   }, []);
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const loadedSignatureRef = useRef(null);
+  const loadedSignatureRef = useRef<string | null>(null);
 
-  const loadTrackRef = useRef(() => {});
+  const loadTrackRef = useRef<
+    (s: QueueState, playbackIndex: number, options?: LoadTrackOptions) => void
+  >(() => {});
 
-  const recordPlay = useCallback((track) => {
+  const recordPlay = useCallback((track: QueueEntry) => {
     if (!track.recordHistory) return;
     recordPlayEvent({
       trackId: track.id,
@@ -183,7 +197,11 @@ export function AudioQueueProvider({ children }) {
   }, []);
 
   const loadTrack = useCallback(
-    (s, playbackIndex, { formatAttemptIndex = 0, autoplay = true } = {}) => {
+    (
+      s: QueueState,
+      playbackIndex: number,
+      { formatAttemptIndex = 0, autoplay = true }: LoadTrackOptions = {},
+    ) => {
       const track = trackAt(s, playbackIndex);
       if (!track?.src) return;
       const formatAttempts = getFormatLoadAttempts(track);
@@ -231,7 +249,8 @@ export function AudioQueueProvider({ children }) {
   );
 
   const loadTrackAtIndex = useCallback(
-    (playbackIndex, options) => loadTrack(stateRef.current, playbackIndex, options),
+    (playbackIndex: number, options?: LoadTrackOptions) =>
+      loadTrack(stateRef.current, playbackIndex, options),
     [loadTrack],
   );
 
@@ -618,7 +637,7 @@ export function AudioQueueProvider({ children }) {
       const snapshot = engine.getSnapshot();
       return snapshot.isPlaying || snapshot.isStarting;
     };
-    const seekBy = (offset) => seek(engine.getPosition() + offset);
+    const seekBy = (offset: number) => seek(engine.getPosition() + offset);
     const handlers = {
       play: () => {
         if (!isRunning()) togglePlayPause();
@@ -628,18 +647,25 @@ export function AudioQueueProvider({ children }) {
       },
       nexttrack: playNext,
       previoustrack: playPrevious,
-      seekto: (details) => seek(details?.seekTime),
-      seekforward: (details) => seekBy(details?.seekOffset || MEDIA_SESSION_SEEK_SECONDS),
-      seekbackward: (details) => seekBy(-(details?.seekOffset || MEDIA_SESSION_SEEK_SECONDS)),
+      seekto: (details: MediaSessionActionDetails) => {
+        if (details?.seekTime !== undefined) seek(details.seekTime);
+      },
+      seekforward: (details: MediaSessionActionDetails) =>
+        seekBy(details?.seekOffset || MEDIA_SESSION_SEEK_SECONDS),
+      seekbackward: (details: MediaSessionActionDetails) =>
+        seekBy(-(details?.seekOffset || MEDIA_SESSION_SEEK_SECONDS)),
       stop: clearQueue,
-    };
-    for (const [action, handler] of Object.entries(handlers)) {
+    } satisfies Partial<Record<MediaSessionAction, MediaSessionActionHandler>>;
+    for (const [action, handler] of Object.entries(handlers) as [
+      MediaSessionAction,
+      MediaSessionActionHandler,
+    ][]) {
       try {
         mediaSession.setActionHandler(action, handler);
       } catch {}
     }
     return () => {
-      for (const action of Object.keys(handlers)) {
+      for (const action of Object.keys(handlers) as MediaSessionAction[]) {
         try {
           mediaSession.setActionHandler(action, null);
         } catch {}

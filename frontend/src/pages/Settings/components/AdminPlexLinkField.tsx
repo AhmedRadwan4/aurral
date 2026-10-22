@@ -10,8 +10,26 @@ import {
 } from "../../../utils/api/endpoints/auth.ts";
 import { isReauthRequiredError, promptReauth } from "../../../utils/reauth.ts";
 import { queryKeys } from "../../../queryClient.ts";
+import { readApiError } from "../utils/apiError.ts";
+import type { userOps } from "../../../../../backend/db/helpers/users.ts";
+import type { UserListResponse } from "../../../../../backend/routes/users.ts";
+import type { useToast } from "../../../contexts/ToastContext";
 
-export function AdminPlexLinkField({ user, onChanged, showSuccess, showError }) {
+type Toast = ReturnType<typeof useToast>["showSuccess"];
+type SettingsUser = ReturnType<typeof userOps.getAllUsers>[number] &
+  Partial<Pick<UserListResponse[number], "plexLink" | "plexGlobalAccount">>;
+
+export function AdminPlexLinkField({
+  user,
+  onChanged,
+  showSuccess,
+  showError,
+}: {
+  user: SettingsUser;
+  onChanged?: () => unknown;
+  showSuccess: Toast;
+  showError: Toast;
+}) {
   const queryClient = useQueryClient();
   const [showHomeUsers, setShowHomeUsers] = useState(false);
   const homeUsersQuery = useQuery({
@@ -22,11 +40,8 @@ export function AdminPlexLinkField({ user, onChanged, showSuccess, showError }) 
         return users || [];
       } catch (err) {
         if (!signal.aborted) {
-          showError?.(
-            err.response?.data?.message ||
-              err.response?.data?.error ||
-              "Failed to load Plex Home users",
-          );
+          const failure = readApiError(err);
+          showError?.(failure.message || failure.error || "Failed to load Plex Home users");
         }
         throw err;
       }
@@ -68,9 +83,8 @@ export function AdminPlexLinkField({ user, onChanged, showSuccess, showError }) 
       void queryClient.invalidateQueries({ queryKey: queryKeys.plexHomeUsers });
       await onChanged?.();
     } catch (err) {
-      showError?.(
-        err.response?.data?.message || err.response?.data?.error || "Failed to link Plex user",
-      );
+      const failure = readApiError(err);
+      showError?.(failure.message || failure.error || "Failed to link Plex user");
     } finally {
       setLinking(false);
     }
@@ -83,10 +97,13 @@ export function AdminPlexLinkField({ user, onChanged, showSuccess, showError }) 
       showSuccess?.(`Unlinked ${user.username}'s Plex account.`);
       await onChanged?.();
     } catch (err) {
+      const failure = readApiError(err);
       if (
-        err.response?.status === 409 &&
-        err.response?.data?.error === "last_auth_method" &&
-        err.response?.data?.requiresForce
+        failure.status === 409 &&
+        failure.error === "last_auth_method" &&
+        failure.body &&
+        "requiresForce" in failure.body &&
+        failure.body.requiresForce
       ) {
         const confirmed = window.confirm(
           `Unlink Plex for ${user.username}? They will be unable to sign in until an admin sets a password or links another account.`,
@@ -104,7 +121,7 @@ export function AdminPlexLinkField({ user, onChanged, showSuccess, showError }) 
         );
         await onChanged?.();
       } else {
-        showError?.(err.response?.data?.message || "Failed to unlink Plex");
+        showError?.(failure.message || "Failed to unlink Plex");
       }
     } finally {
       setUnlinking(false);
@@ -116,7 +133,7 @@ export function AdminPlexLinkField({ user, onChanged, showSuccess, showError }) 
       <div className="settings-page__inline-row">
         <span className="settings-page__muted-copy">
           {plexLink.linkType === "managed" ? "Managed user: " : "Self-linked: "}
-          <strong>{plexLink.plexUsername || "unknown"}</strong>
+          <strong>{String(plexLink.plexUsername || "unknown")}</strong>
         </span>
         {plexLink.lastError && (
           <span className="settings-page__hint settings-page__hint--warning">

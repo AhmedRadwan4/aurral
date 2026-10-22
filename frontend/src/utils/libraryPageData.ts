@@ -18,11 +18,30 @@ interface LibraryArtworkFields {
 
 export type LibraryArtist = BackendLibraryArtist & LibraryArtworkFields;
 export type LibraryAlbum = BackendLibraryAlbum & LibraryArtworkFields;
-type LibraryTrackFile = BackendLibraryTrackFile & { previewUrl?: string };
-export type LibraryTrack = Omit<BackendLibraryTrack, "files"> &
-  LibraryArtworkFields & { files: LibraryTrackFile[] };
+type PlaylistSongFileFields =
+  | "id"
+  | "albumId"
+  | "source"
+  | "size"
+  | "mtimeMs"
+  | "quality"
+  | "createdAt";
+type LibraryTrackFile = Omit<BackendLibraryTrackFile, "path" | PlaylistSongFileFields> &
+  Partial<Pick<BackendLibraryTrackFile, PlaylistSongFileFields>> & { previewUrl?: string };
+type PlaylistSongFields =
+  | "id"
+  | "mbid"
+  | "createdAt"
+  | "metadata"
+  | "monitored"
+  | "keepFile"
+  | "sources"
+  | "available";
+export type LibraryTrack = Omit<BackendLibraryTrack, "files" | PlaylistSongFields> &
+  Partial<Omit<Pick<BackendLibraryTrack, PlaylistSongFields>, "id">> &
+  LibraryArtworkFields & { id: number | string; files: LibraryTrackFile[] };
 
-interface LibraryData {
+export interface LibraryData {
   artists: LibraryArtist[];
   albums: LibraryAlbum[];
   tracks: LibraryTrack[];
@@ -56,16 +75,23 @@ export const firstAvailableFile = (
 
 export const EMPTY_LIBRARY: LibraryData = { artists: [], albums: [], tracks: [], genres: [] };
 
+const appendMissing = <Entity extends { id: string | number }>(
+  target: Entity[],
+  incoming: Entity[] | undefined,
+) => {
+  (Array.isArray(incoming) ? incoming : []).forEach((entity) => {
+    if (!target.some((candidate) => String(candidate.id) === String(entity.id))) {
+      target.push(entity);
+    }
+  });
+};
+
 export const normalizeLibraryPages = (pages: Partial<LibraryData>[]) =>
   pages.reduce<LibraryData>(
     (result, page) => {
-      (["artists", "albums", "tracks"] as const).forEach((kind) => {
-        (Array.isArray(page?.[kind]) ? page[kind] : []).forEach((entity) => {
-          if (!result[kind].some((candidate) => String(candidate.id) === String(entity.id))) {
-            result[kind].push(entity);
-          }
-        });
-      });
+      appendMissing(result.artists, page?.artists);
+      appendMissing(result.albums, page?.albums);
+      appendMissing(result.tracks, page?.tracks);
       if (Array.isArray(page?.genres) && page.genres.length > result.genres.length) {
         result.genres = page.genres;
       }
@@ -103,16 +129,16 @@ export const favoriteLibraryFromResponse = (
       return {
         id: track.id,
         identityKey: track.id,
-        title: track.title,
-        artistName: track.artist,
-        albumName: track.album,
+        title: typeof track.title === "string" ? track.title : "",
+        artistName: typeof track.artist === "string" ? track.artist : null,
+        albumName: typeof track.album === "string" ? track.album : null,
         durationMs,
         albums: [],
         files: [
           {
             available: true,
             previewUrl: getPlaylistTrackStreamUrl(jobId!),
-            format: track.suffix || null,
+            format: typeof track.suffix === "string" && track.suffix ? track.suffix : null,
             durationMs,
           },
         ],
@@ -176,24 +202,31 @@ export const getCachedAlbumTracks = (
   const cached = queryClient.getQueryState(queryKey)?.isInvalidated
     ? null
     : queryClient.getQueryData<{ tracks: LibraryTrack[] }>(queryKey)?.tracks;
-  return cached || album?.trackIds?.map((id) => tracksById.get(String(id))).filter(Boolean) || [];
+  return (
+    cached ||
+    album?.trackIds
+      ?.map((id) => tracksById.get(String(id)))
+      .filter((track): track is LibraryTrack => Boolean(track)) ||
+    []
+  );
 };
 
 export const yearOf = (value: string | null | undefined) =>
   /^(\d{4})/.exec(String(value || "").trim())?.[1] || "";
 
-const RELEASE_TYPES = { single: "Single", ep: "EP", broadcast: "Broadcast" };
+const RELEASE_TYPES: Partial<Record<string, string>> = {
+  single: "Single",
+  ep: "EP",
+  broadcast: "Broadcast",
+};
 
 export const releaseTypeOf = (album: LibraryAlbum | null | undefined) => {
   const metadata = album?.metadata || {};
   const type = metadata.albumType || metadata.releaseType || [metadata.tags?.releasetype].flat()[0];
-  return (
-    RELEASE_TYPES[
-      String(type || "")
-        .trim()
-        .toLowerCase()
-    ] || null
-  );
+  const key = String(type || "")
+    .trim()
+    .toLowerCase();
+  return (Object.hasOwn(RELEASE_TYPES, key) && RELEASE_TYPES[key]) || null;
 };
 
 export const albumCardMeta = (

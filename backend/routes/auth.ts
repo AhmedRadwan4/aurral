@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type Request } from "express";
 import { userOps } from "../db/helpers/index.ts";
 import {
   createSession,
@@ -22,10 +22,11 @@ import {
 import { startPlexLogin, completePlexLogin } from "../services/plexLoginAuth.ts";
 import { logger } from "../services/logger.ts";
 import type { RequestUser } from "../middleware/requestUser.ts";
+import { asAppError } from "../../lib/errors.ts";
 
 const router = express.Router();
 
-const getBearerToken = (req) => {
+const getBearerToken = (req: Request) => {
   const authHeader = String(req.headers.authorization || "");
   if (!authHeader.startsWith("Bearer ")) return null;
   return authHeader.slice(7).trim();
@@ -47,7 +48,7 @@ router.post("/login", async (req, res) => {
     if (user.status !== "active") {
       return res.status(403).json({ error: "This account has been suspended or disabled" });
     }
-    const updates = { subsonicPassword: password };
+    const updates: Parameters<typeof userOps.updateUser>[1] = { subsonicPassword: password };
     if (needsRehash(user.passwordHash)) {
       updates.passwordHash = hashPassword(password);
     }
@@ -105,7 +106,7 @@ router.post("/reauth", requireAuth, (req, res) => {
   if (!token) {
     return res.status(400).json({ error: "Reauthentication requires an active session" });
   }
-  const user = userOps.getUserById(req.user.id);
+  const user = userOps.getUserById(req.user!.id);
   if (!user) {
     return res.status(400).json({ error: "Current password is incorrect" });
   }
@@ -136,7 +137,8 @@ router.get("/oidc/login", async (req, res) => {
   try {
     await startOidcLogin(req, res);
   } catch (error) {
-    logger.error("auth", "OIDC login start failed:", { message: error.message });
+    const failure = asAppError(error);
+    logger.error("auth", "OIDC login start failed:", { message: failure?.message });
     if (!res.headersSent) {
       res.status(500).json({ error: "OIDC login failed" });
     }
@@ -145,9 +147,10 @@ router.get("/oidc/login", async (req, res) => {
 
 router.post("/oidc/link/start", requireAuth, requireRecentAuth(), async (req, res) => {
   try {
-    await startOidcLogin(req, res, { mode: "link", linkUserId: req.user.id, returnUrl: true });
+    await startOidcLogin(req, res, { mode: "link", linkUserId: req.user!.id, returnUrl: true });
   } catch (error) {
-    logger.error("auth", "OIDC link start failed:", { message: error.message });
+    const failure = asAppError(error);
+    logger.error("auth", "OIDC link start failed:", { message: failure?.message });
     if (!res.headersSent) {
       res.status(500).json({ error: "Single sign-on link failed" });
     }
@@ -160,7 +163,8 @@ router.post("/oidc/exchange", (req, res) => {
     clearOidcTransactionCookie(req, res);
     res.json(result);
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message || "OIDC exchange failed" });
+    const failure = asAppError(error);
+    res.status(failure?.status || 500).json({ error: failure?.message || "OIDC exchange failed" });
   }
 });
 
@@ -168,7 +172,8 @@ router.get("/google/login", async (req, res) => {
   try {
     await startGoogleAuth(req, res, { mode: "login" });
   } catch (error) {
-    logger.error("auth", "Google login start failed:", { message: error.message });
+    const failure = asAppError(error);
+    logger.error("auth", "Google login start failed:", { message: failure?.message });
     if (!res.headersSent) {
       res.status(500).json({ error: "Google login failed" });
     }
@@ -177,9 +182,10 @@ router.get("/google/login", async (req, res) => {
 
 router.get("/google/link", requireAuth, requireRecentAuth(), async (req, res) => {
   try {
-    await startGoogleAuth(req, res, { mode: "link", linkUserId: req.user.id });
+    await startGoogleAuth(req, res, { mode: "link", linkUserId: req.user!.id });
   } catch (error) {
-    logger.error("auth", "Google link start failed:", { message: error.message });
+    const failure = asAppError(error);
+    logger.error("auth", "Google link start failed:", { message: failure?.message });
     if (!res.headersSent) {
       res.status(500).json({ error: "Google link failed" });
     }
@@ -190,11 +196,12 @@ router.post("/google/link/start", requireAuth, requireRecentAuth(), async (req, 
   try {
     await startGoogleAuth(req, res, {
       mode: "link",
-      linkUserId: req.user.id,
+      linkUserId: req.user!.id,
       returnUrl: true,
     });
   } catch (error) {
-    logger.error("auth", "Google link start failed:", { message: error.message });
+    const failure = asAppError(error);
+    logger.error("auth", "Google link start failed:", { message: failure?.message });
     if (!res.headersSent) {
       res.status(500).json({ error: "Google link failed" });
     }
@@ -207,7 +214,10 @@ router.post("/google/exchange", (req, res) => {
     clearGoogleTransactionCookie(req, res);
     res.json(result);
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message || "Google exchange failed" });
+    const failure = asAppError(error);
+    res
+      .status(failure?.status || 500)
+      .json({ error: failure?.message || "Google exchange failed" });
   }
 });
 
@@ -215,9 +225,10 @@ router.post("/plex/login/pin", async (req, res) => {
   try {
     await startPlexLogin(req, res);
   } catch (error) {
-    logger.error("auth", "Plex login PIN generation failed:", error.message);
+    const failure = asAppError(error);
+    logger.error("auth", "Plex login PIN generation failed:", failure?.message);
     if (!res.headersSent) {
-      res.status(500).json({ error: "Failed to start Plex login", message: error.message });
+      res.status(500).json({ error: "Failed to start Plex login", message: failure?.message });
     }
   }
 });
@@ -226,9 +237,10 @@ router.post("/plex/login/complete", async (req, res) => {
   try {
     await completePlexLogin(req, res);
   } catch (error) {
-    logger.error("auth", "Plex login completion failed:", error.message);
+    const failure = asAppError(error);
+    logger.error("auth", "Plex login completion failed:", failure?.message);
     if (!res.headersSent) {
-      res.status(500).json({ error: "Plex login failed", message: error.message });
+      res.status(500).json({ error: "Plex login failed", message: failure?.message });
     }
   }
 });

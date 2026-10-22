@@ -7,6 +7,25 @@ import { logger } from "../logger.ts";
 import { LASTFM_API } from "../../config/constants.ts";
 import { getLastfmApiKey, getLastfmApiSecret } from "./config.ts";
 import { runSharedInflight } from "../sharedInflight.ts";
+import { asAppError } from "../../../lib/errors.ts";
+
+interface LastfmScrobbleEvent {
+  playedAt: number | string;
+  artist: string;
+  title: string;
+  album?: string | null;
+  durationMs?: number | null;
+  trackMbid?: string | null;
+  artistMbid?: string | null;
+}
+
+interface LastfmErrorDetails {
+  method: string;
+  status: number | null;
+  code: string | null;
+  message: string;
+  error: unknown;
+}
 
 const lastfmCache = createCache(300);
 
@@ -21,17 +40,24 @@ const lastfmHttpsAgent = new https.Agent({
 });
 
 const LASTFM_TIMEOUT_MS =
-  Math.max(3000, parseInt(process.env.AURRAL_LASTFM_TIMEOUT_MS, 10) || 0) || 15000;
+  Math.max(3000, parseInt(String(process.env.AURRAL_LASTFM_TIMEOUT_MS), 10) || 0) || 15000;
 const LASTFM_MAX_RETRIES = 2;
 
 const lastfmInflightRequests = new Map();
 const lastfmErrorLogAt = new Map();
 
-const signedLastfmRequest = async (method, params = {}) => {
+const signedLastfmRequest = async (
+  method: string,
+  params: Record<string, string | number | null | undefined> = {},
+) => {
   const apiKey = getLastfmApiKey();
   const apiSecret = getLastfmApiSecret();
   if (!apiKey || !apiSecret) throw new Error("Last.fm API credentials are not configured");
-  const signedParams = { ...params, api_key: apiKey, method };
+  const signedParams: Record<string, string | number | null | undefined> = {
+    ...params,
+    api_key: apiKey,
+    method,
+  };
   const signature = Object.keys(signedParams)
     .sort()
     .map((key) => `${key}${signedParams[key]}`)
@@ -51,10 +77,10 @@ const signedLastfmRequest = async (method, params = {}) => {
   return response.data;
 };
 
-export const lastfmGetSession = (token) =>
+export const lastfmGetSession = (token: string | null | undefined) =>
   signedLastfmRequest("auth.getSession", { token: String(token || "").trim() });
 
-export const lastfmScrobble = (event, sessionKey) =>
+export const lastfmScrobble = (event: LastfmScrobbleEvent, sessionKey: string | null | undefined) =>
   signedLastfmRequest("track.scrobble", {
     sk: sessionKey,
     artist: event.artist,
@@ -66,7 +92,11 @@ export const lastfmScrobble = (event, sessionKey) =>
     ...(event.durationMs ? { duration: Math.round(event.durationMs / 1000) } : {}),
   });
 
-export async function lastfmRequest(method, params = {}, options = {}) {
+export async function lastfmRequest(
+  method: string,
+  params: Record<string, string | number | null | undefined> = {},
+  options: { timeoutMs?: number; maxRetries?: number; signal?: AbortSignal } = {},
+) {
   const apiKey = getLastfmApiKey();
   if (!apiKey) return null;
 
@@ -83,22 +113,23 @@ export async function lastfmRequest(method, params = {}, options = {}) {
   return runSharedInflight(
     lastfmInflightRequests,
     cacheKey,
-    async (sharedSignal) => {
-      const isRetryable = (error) => {
-        const status = error.response?.status;
-        const code = error.code;
+    async (sharedSignal: AbortSignal) => {
+      const isRetryable = (error: unknown) => {
+        const failure = asAppError(error);
+        const status = failure?.response?.status;
+        const code = failure?.code;
         return (
           code === "ECONNABORTED" ||
           code === "ETIMEDOUT" ||
           code === "ECONNRESET" ||
           code === "ENOTFOUND" ||
           code === "EAI_AGAIN" ||
-          [408, 425, 500, 502, 503, 504].includes(status)
+          (status !== undefined && [408, 425, 500, 502, 503, 504].includes(status))
         );
       };
-      const getLogKey = (details) =>
+      const getLogKey = (details: LastfmErrorDetails) =>
         `${details.method}:${details.status || "none"}:${details.code || "none"}`;
-      const logError = (message, details) => {
+      const logError = (message: string, details: LastfmErrorDetails) => {
         const key = getLogKey(details);
         const now = Date.now();
         const last = lastfmErrorLogAt.get(key) || 0;
@@ -106,7 +137,7 @@ export async function lastfmRequest(method, params = {}, options = {}) {
         lastfmErrorLogAt.set(key, now);
         logger.error("api", message, details);
       };
-      let lastError = null;
+      let lastError: unknown = null;
       for (let retryCount = 0; retryCount <= maxRetries; retryCount++) {
         sharedSignal.throwIfAborted?.();
         try {
@@ -136,14 +167,19 @@ export async function lastfmRequest(method, params = {}, options = {}) {
           break;
         }
       }
-      const status = lastError?.response?.status || null;
+      const failure = asAppError(lastError);
+      const status = failure?.response?.status || null;
+      const responseData = failure?.response?.data;
       const payloadError =
-        lastError?.response?.data?.message || lastError?.response?.data?.error || null;
+        (typeof responseData === "object" &&
+          responseData !== null &&
+          (Reflect.get(responseData, "message") || Reflect.get(responseData, "error"))) ||
+        null;
       const details = {
         method,
         status,
-        code: lastError?.code || null,
-        message: lastError?.message || "Unknown Last.fm error",
+        code: failure?.code || null,
+        message: failure?.message || "Unknown Last.fm error",
         error: payloadError,
       };
       if (details.code === "ECONNABORTED") {

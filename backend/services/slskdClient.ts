@@ -3,6 +3,8 @@ import { randomUUID } from "crypto";
 import { dbOps } from "../db/helpers/index.ts";
 import { withHonkerLock } from "./honkerDb.ts";
 import { logger } from "./logger.ts";
+import { asAppError } from "../../lib/errors.ts";
+import type { StoredIntegrations } from "../db/helpers/settings.ts";
 
 const NORMALIZED_SEARCH_RESULTS = Symbol("normalizedSearchResults");
 const DEFAULT_SEARCH_TIMEOUT_MS = 60000;
@@ -16,6 +18,87 @@ const SEARCH_START_GAP_MS = 5000;
 const SEARCH_STARTED_AT_SETTING = "slskdSearchStartedAt";
 const SOULSEEK_LOGGED_OUT_CODE = "SLSKD_SOULSEEK_LOGGED_OUT";
 export const SOULSEEK_LOGGED_OUT_MESSAGE = "slskd is not logged in to Soulseek";
+
+type SlskdConfig = NonNullable<StoredIntegrations["slskd"]>;
+type SlskdArrayPayload = unknown[] | { $values?: unknown[] } | null | undefined;
+type SlskdServer = { state?: string; isConnected?: boolean; isLoggedIn?: boolean };
+type SlskdRequestOptions = { timeout?: number; signal?: AbortSignal };
+export type SlskdTransfer = {
+  id?: string;
+  Id?: string;
+  transferId?: string;
+  TransferId?: string;
+  username?: string;
+  Username?: string;
+  filename?: string;
+  Filename?: string;
+  file?: string;
+  File?: string;
+  state?: string;
+  State?: string;
+  exception?: string;
+  Exception?: string;
+  bytesTransferred?: number;
+  BytesTransferred?: number;
+  placeInQueue?: number;
+  PlaceInQueue?: number;
+};
+type SlskdOptionsBody = {
+  directories?: { downloads?: string | string[]; download?: string | string[] };
+};
+type SlskdTransferRef = { username?: string | null; transferId?: string; id?: string };
+type CodedError = Error & { code?: string };
+
+interface SlskdConnectionStatus {
+  ok: boolean;
+  configured: boolean;
+  connected: boolean;
+  message: string;
+  soulseekConnected?: boolean;
+  warning?: boolean;
+  serverState?: string;
+  downloadPath?: string | null;
+}
+
+interface SlskdSearch {
+  state?: string;
+  State?: string;
+  isComplete?: boolean;
+  IsComplete?: boolean;
+  fileCount?: number;
+  FileCount?: number;
+  responseCount?: number;
+  ResponseCount?: number;
+  responses?: SlskdArrayPayload;
+  [NORMALIZED_SEARCH_RESULTS]?: SlskdSearchFile[];
+}
+
+interface SlskdSearchOptions {
+  id?: string;
+  deadline?: number;
+  signal?: AbortSignal;
+  shouldCancel?: () => boolean;
+  startedAt?: number;
+  queued?: boolean;
+  timeoutMs?: number;
+  searchTimeoutMs?: number;
+  emptyTimeoutMs?: number;
+  gracePeriodMs?: number;
+  cleanupTimeoutMs?: number;
+  fileLimit?: number;
+  filterResponses?: boolean;
+  maximumPeerQueueLength?: number;
+  minimumPeerUploadSpeed?: number;
+  minimumResponseFileCount?: number;
+  responseLimit?: number;
+  earlyExitWhen?: (data: SlskdSearch) => boolean;
+  onSearchCreated?: (id: string) => void;
+  onSearchSettled?: (id: string) => void;
+}
+
+type SlskdSearchPoll =
+  | { done: true; data: SlskdSearch | null }
+  | { done: false; data: SlskdSearch; waitMs: number };
 
 export const slskdSettings = Object.freeze({
   key: "slskd",
@@ -67,21 +150,31 @@ export const slskdSettings = Object.freeze({
   testConnection: true,
 });
 
-let connectionCache = { checkedAt: 0, result: null, settingsKey: null };
+let connectionCache: {
+  checkedAt: number;
+  result: SlskdConnectionStatus | null;
+  settingsKey: string | null;
+} = { checkedAt: 0, result: null, settingsKey: null };
 
-function getSettingsKey({ url, apiKey }) {
+function getSettingsKey({ url, apiKey }: { url: string; apiKey: string }) {
   return `${url}\u0000${apiKey}`;
 }
 
-function cacheConnectionResult(settingsKey, result, config = null) {
+function cacheConnectionResult(
+  settingsKey: string,
+  result: SlskdConnectionStatus,
+  config: SlskdConfig | null = null,
+) {
   const activeSettings = getSettings(config);
   if (getSettingsKey(activeSettings) !== settingsKey) return;
   connectionCache = { checkedAt: Date.now(), result, settingsKey };
 }
 
-function getSettings(config = null) {
-  const integrations = config ? { slskd: config } : dbOps.getSettings()?.integrations || {};
-  const slskd = integrations.slskd || {};
+function getSettings(config: SlskdConfig | null = null) {
+  const integrations: StoredIntegrations = config
+    ? { slskd: config }
+    : dbOps.getSettings()?.integrations || {};
+  const slskd: SlskdConfig = integrations.slskd || {};
   const url = String(slskd.url || "")
     .trim()
     .replace(/\/+$/, "");
@@ -89,7 +182,7 @@ function getSettings(config = null) {
   return { url, apiKey, slskd };
 }
 
-export function getSlskdSearchFormatOptions(config = null) {
+export function getSlskdSearchFormatOptions(config: SlskdConfig | null = null) {
   const slskd = getSettings(config).slskd || {};
   const preferredFormat =
     String(slskd.preferredFormat || "").toLowerCase() === "mp3" ? "mp3" : "flac";
@@ -99,12 +192,12 @@ export function getSlskdSearchFormatOptions(config = null) {
   };
 }
 
-export function isSlskdCleanupAfterRunsEnabled(config = null) {
+export function isSlskdCleanupAfterRunsEnabled(config: SlskdConfig | null = null) {
   const slskd = getSettings(config).slskd || {};
   return slskd.cleanupAfterRuns === true;
 }
 
-function buildClientFromCredentials(url, apiKey) {
+function buildClientFromCredentials(url: string, apiKey: string) {
   const trimmedUrl = String(url || "")
     .trim()
     .replace(/\/+$/, "");
@@ -112,7 +205,7 @@ function buildClientFromCredentials(url, apiKey) {
   if (!trimmedUrl) {
     throw new Error("slskd not configured");
   }
-  const headers = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json" };
   if (trimmedKey) {
     headers["X-API-KEY"] = trimmedKey;
   }
@@ -124,25 +217,25 @@ function buildClientFromCredentials(url, apiKey) {
   });
 }
 
-function buildClient(config = null) {
+function buildClient(config: SlskdConfig | null = null) {
   const { url, apiKey } = getSettings(config);
   return buildClientFromCredentials(url, apiKey);
 }
 
-function calculateQuadraticDelay(progress) {
+function calculateQuadraticDelay(progress: number) {
   const delay = 16 * progress ** 2 - 16 * progress + 5;
   return Math.min(5, Math.max(0.5, delay));
 }
 
-function readProperty(object, ...keys) {
+function readProperty<T = unknown>(object: unknown, ...keys: string[]): T | null {
   for (const key of keys) {
-    const value = object?.[key];
-    if (value != null && value !== "") return value;
+    const value = (object as Record<string, unknown> | null | undefined)?.[key];
+    if (value != null && value !== "") return value as T;
   }
   return null;
 }
 
-function normalizeArrayPayload(value) {
+function normalizeArrayPayload(value: SlskdArrayPayload): unknown[] {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.$values)) return value.$values;
   if (value && typeof value === "object") {
@@ -154,18 +247,18 @@ function normalizeArrayPayload(value) {
   return [];
 }
 
-export function isSearchComplete(data) {
+export function isSearchComplete(data: SlskdSearch | null | undefined) {
   if (data?.isComplete === true || data?.IsComplete === true) return true;
   const state = String(data?.state || data?.State || "");
   return state.includes("Completed");
 }
 
-function isSearchQueued(data) {
+function isSearchQueued(data: SlskdSearch | null | undefined) {
   const state = String(data?.state || data?.State || "").trim();
   return state === "Requested" || state === "Queued";
 }
 
-export function isSearchInProgress(data) {
+export function isSearchInProgress(data: SlskdSearch | null | undefined) {
   if (isSearchComplete(data)) return false;
   const state = String(data?.state || data?.State || "").trim();
   if (!state || state === "None") return true;
@@ -173,13 +266,18 @@ export function isSearchInProgress(data) {
   return state === "Requested" || state === "Queued";
 }
 
-function readSearchResponses(searchData) {
+function readSearchResponses(searchData: unknown): unknown[] {
   if (Array.isArray(searchData)) return searchData;
-  const responses = readProperty(searchData, "responses", "Responses");
+  const responses = readProperty<SlskdArrayPayload>(searchData, "responses", "Responses");
   return normalizeArrayPayload(responses);
 }
 
-function normalizeSearchFile(file, user, response = null, fromLockedList = false) {
+function normalizeSearchFile(
+  file: unknown,
+  user: string,
+  response: unknown = null,
+  fromLockedList = false,
+) {
   const filename = String(readProperty(file, "filename", "Filename", "file", "File") || "").trim();
   const size = Number(readProperty(file, "size", "Size") || 0);
   const responseUser = readProperty(response, "username", "Username");
@@ -189,7 +287,7 @@ function normalizeSearchFile(file, user, response = null, fromLockedList = false
   const responseSlots = readProperty(response, "hasFreeUploadSlot", "HasFreeUploadSlot");
   const locked =
     fromLockedList || readProperty(file, "isLocked", "IsLocked", "locked", "Locked") === true;
-  const bitRate = readProperty(file, "bitRate", "BitRate", "bitrate") ?? null;
+  const bitRate = readProperty<number>(file, "bitRate", "BitRate", "bitrate") ?? null;
   const advertisedLength = Number(readProperty(file, "length", "Length"));
   const length =
     Number.isFinite(advertisedLength) && advertisedLength > 0 ? advertisedLength : null;
@@ -209,21 +307,27 @@ function normalizeSearchFile(file, user, response = null, fromLockedList = false
     bitRate,
     bitrate: bitRate,
     length,
-    extension: readProperty(file, "extension", "Extension") ?? null,
+    extension: readProperty<string>(file, "extension", "Extension") ?? null,
     locked,
     isLocked: locked,
   };
 }
 
-function readBatchFailures(data) {
-  return normalizeArrayPayload(readProperty(data, "failed", "Failed", "failures", "Failures"));
+type SlskdSearchFile = ReturnType<typeof normalizeSearchFile>;
+
+function readBatchFailures(data: unknown) {
+  return normalizeArrayPayload(
+    readProperty<SlskdArrayPayload>(data, "failed", "Failed", "failures", "Failures"),
+  );
 }
 
-function readLegacyEnqueued(data) {
-  return normalizeArrayPayload(readProperty(data, "enqueued", "Enqueued"));
+function readLegacyEnqueued(data: unknown) {
+  return normalizeArrayPayload(
+    readProperty<SlskdArrayPayload>(data, "enqueued", "Enqueued"),
+  ) as SlskdTransfer[];
 }
 
-function summarizeBatchFailures(failures) {
+function summarizeBatchFailures(failures: SlskdArrayPayload) {
   const messages = normalizeArrayPayload(failures)
     .map((failure) => {
       if (typeof failure === "string") return failure.trim();
@@ -239,17 +343,17 @@ function searchStillQueuedError() {
   return new Error("slskd is busy: the search is still waiting in its queue");
 }
 
-function soulseekLoggedOutError(detail) {
-  const error = new Error(`${SOULSEEK_LOGGED_OUT_MESSAGE}: ${detail}`);
+function soulseekLoggedOutError(detail: string) {
+  const error: CodedError = new Error(`${SOULSEEK_LOGGED_OUT_MESSAGE}: ${detail}`);
   error.code = SOULSEEK_LOGGED_OUT_CODE;
   return error;
 }
 
-export function isSoulseekLoggedOutError(error) {
-  return error?.code === SOULSEEK_LOGGED_OUT_CODE;
+export function isSoulseekLoggedOutError(error: unknown) {
+  return asAppError(error)?.code === SOULSEEK_LOGGED_OUT_CODE;
 }
 
-function isSoulseekLoggedIn(server) {
+function isSoulseekLoggedIn(server: SlskdServer | null | undefined) {
   if (typeof server?.isLoggedIn === "boolean") return server.isLoggedIn;
   return String(server?.state || "")
     .split(",")
@@ -257,11 +361,11 @@ function isSoulseekLoggedIn(server) {
     .includes("LoggedIn");
 }
 
-function readId(value) {
+function readId(value: unknown) {
   return readProperty(value, "id", "Id");
 }
 
-function createSearchCancellation(shouldCancel, externalSignal) {
+function createSearchCancellation(shouldCancel?: () => boolean, externalSignal?: AbortSignal) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (externalSignal?.aborted || shouldCancel?.()) abort();
@@ -276,15 +380,15 @@ function createSearchCancellation(shouldCancel, externalSignal) {
   return {
     signal: controller.signal,
     dispose: () => {
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
       externalSignal?.removeEventListener("abort", abort);
     },
   };
 }
 
-function waitSearchDelay(ms, signal) {
-  return new Promise((resolve) => {
-    let timer;
+function waitSearchDelay(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    let timer: NodeJS.Timeout | undefined;
     const finish = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", finish);
@@ -299,7 +403,7 @@ function waitSearchDelay(ms, signal) {
   });
 }
 
-async function waitForSearchStartSlot(signal) {
+async function waitForSearchStartSlot(signal: AbortSignal) {
   const lastStartedAt = Number(dbOps.getJSONSetting<number>(SEARCH_STARTED_AT_SETTING));
   const waitMs =
     lastStartedAt > 0
@@ -309,7 +413,11 @@ async function waitForSearchStartSlot(signal) {
   if (signal.aborted) throw new Error("slskd search cancelled");
 }
 
-async function withSearchLock(name, operation, { deadline, signal }) {
+async function withSearchLock<T>(
+  name: string,
+  operation: () => Promise<T>,
+  { deadline, signal }: { deadline?: number; signal: AbortSignal },
+): Promise<T> {
   const lockDeadline = Number(deadline) || Date.now() + 300000;
   while (true) {
     if (signal.aborted) throw new Error("slskd search cancelled");
@@ -326,7 +434,7 @@ async function withSearchLock(name, operation, { deadline, signal }) {
         { waitTimeoutMs: Math.min(250, remaining) },
       );
     } catch (error) {
-      if (error.message !== `Timed out waiting for Honker lock: ${name}`) throw error;
+      if (asAppError(error)?.message !== `Timed out waiting for Honker lock: ${name}`) throw error;
     }
   }
 }
@@ -335,7 +443,26 @@ async function withSearchLock(name, operation, { deadline, signal }) {
 // the download pipeline polls it once per step so a search never holds the
 // pipeline while Soulseek peers answer.
 class SearchMonitor {
-  constructor(client, searchId, options = {}) {
+  declare client: SlskdClient;
+  declare searchId: string;
+  declare onSearchSettled: ((id: string) => void) | undefined;
+  declare cleanupTimeoutMs: number | undefined;
+  declare emptyTimeoutMs: number;
+  declare activeTimeoutMs: number;
+  declare gracePeriodMs: number;
+  declare hardDeadline: number;
+  declare startedAt: number;
+  declare graceStartsAt: number;
+  declare deadline: number;
+  declare queued: boolean;
+  declare totalFiles: number;
+  declare hasSeenFiles: boolean;
+  declare latest: SlskdSearch | null;
+  declare collected: Map<string, SlskdSearchFile>;
+  declare eligibilityAssessed: boolean;
+  declare lastEligibility: boolean;
+
+  constructor(client: SlskdClient, searchId: string, options: SlskdSearchOptions = {}) {
     this.client = client;
     this.searchId = searchId;
     this.onSearchSettled = options.onSearchSettled;
@@ -361,7 +488,7 @@ class SearchMonitor {
     this.lastEligibility = false;
   }
 
-  startWindows(startedAt) {
+  startWindows(startedAt: number) {
     this.startedAt = startedAt;
     this.graceStartsAt = startedAt + this.activeTimeoutMs;
     this.deadline = Math.min(this.hardDeadline, this.graceStartsAt + this.gracePeriodMs);
@@ -383,12 +510,12 @@ class SearchMonitor {
     } catch (error) {
       logger.warn("slskd", "Could not stop owned search", {
         searchId: this.searchId,
-        reason: error?.message,
+        reason: asAppError(error)?.message,
       });
     }
   }
 
-  async finish(data) {
+  async finish(data: SlskdSearch | null): Promise<{ done: true; data: SlskdSearch | null }> {
     if (isSearchComplete(data) && !this.client.isCleanupAfterRunsEnabled()) {
       this.onSearchSettled?.(this.searchId);
     } else {
@@ -397,7 +524,14 @@ class SearchMonitor {
     return { done: true, data };
   }
 
-  async poll({ earlyExitWhen, shouldCancel, signal } = {}) {
+  async poll({
+    earlyExitWhen,
+    shouldCancel,
+    signal,
+  }: Pick<
+    SlskdSearchOptions,
+    "earlyExitWhen" | "shouldCancel" | "signal"
+  > = {}): Promise<SlskdSearchPoll> {
     const cancelled = () => signal?.aborted || shouldCancel?.();
     try {
       if (cancelled()) {
@@ -409,7 +543,7 @@ class SearchMonitor {
         if (this.queued) throw searchStillQueuedError();
         return this.finish(this.latest);
       }
-      let data;
+      let data: SlskdSearch;
       try {
         data = await this.client.getSearch(this.searchId, {
           timeout: Math.max(1, Math.min(60000, cutoff - Date.now())),
@@ -450,14 +584,16 @@ class SearchMonitor {
         const previous = this.collected.get(key);
         if (
           !previous ||
-          Object.keys(file).some((field) => !Object.is(file[field], previous[field]))
+          (Object.keys(file) as (keyof SlskdSearchFile)[]).some(
+            (field) => !Object.is(file[field], previous[field]),
+          )
         ) {
           this.collected.set(key, file);
           eligibilityChanged = true;
         }
       }
       if (this.collected.size > files.length) {
-        const responses = new Map();
+        const responses = new Map<string, { username: string; files: SlskdSearchFile[] }>();
         for (const file of this.collected.values()) {
           const response = responses.get(file.user) || { username: file.user, files: [] };
           response.files.push(file);
@@ -520,13 +656,17 @@ class SearchMonitor {
 }
 
 export class SlskdClient {
-  constructor(config = null) {
+  declare key: string;
+  declare name: string;
+  declare _config: SlskdConfig | null;
+
+  constructor(config: SlskdConfig | null = null) {
     this.key = "slskd";
     this.name = "slskd";
     this._config = config;
   }
 
-  updateConfig(config = null) {
+  updateConfig(config: SlskdConfig | null = null) {
     this._config = config;
   }
 
@@ -539,7 +679,7 @@ export class SlskdClient {
     return slskd.enabled !== false && !!url;
   }
 
-  async testConnection({ force = false } = {}) {
+  async testConnection({ force = false } = {}): Promise<SlskdConnectionStatus> {
     const { url, apiKey } = getSettings(this._config);
     if (!url) {
       return {
@@ -574,11 +714,14 @@ export class SlskdClient {
         cacheConnectionResult(settingsKey, result, this._config);
         return result;
       }
-      const server = appRes.data?.server || {};
+      const server = readProperty<SlskdServer>(appRes.data, "server") || {};
       const serverState = String(server.state || "");
       const soulseekConnected = isSoulseekLoggedIn(server);
-      const rawDownloadPath =
-        optionsRes.data?.directories?.downloads || optionsRes.data?.directories?.download;
+      const directories = readProperty<SlskdOptionsBody["directories"]>(
+        optionsRes.data,
+        "directories",
+      );
+      const rawDownloadPath = directories?.downloads || directories?.download;
       const downloadPath = Array.isArray(rawDownloadPath)
         ? String(rawDownloadPath[0] || "").trim() || null
         : String(rawDownloadPath || "").trim() || null;
@@ -603,7 +746,7 @@ export class SlskdClient {
         ok: false,
         configured: true,
         connected: false,
-        message: error?.message || "Failed to reach slskd",
+        message: asAppError(error)?.message || "Failed to reach slskd",
       };
       cacheConnectionResult(settingsKey, result, this._config);
       return result;
@@ -631,7 +774,7 @@ export class SlskdClient {
     return downloadPath || null;
   }
 
-  async createSearch(searchText, options = {}) {
+  async createSearch(searchText: string, options: SlskdSearchOptions = {}) {
     const control = createSearchCancellation(options.shouldCancel, options.signal);
     const id = String(options.id || randomUUID());
     const client = buildClient(this._config);
@@ -661,7 +804,7 @@ export class SlskdClient {
               "slskd-api",
               async () => {
                 const remaining = Number(options.deadline)
-                  ? options.deadline - Date.now()
+                  ? options.deadline! - Date.now()
                   : Infinity;
                 if (remaining < 5000) throw new Error("slskd search deadline expired");
                 dbOps.setJSONSetting(SEARCH_STARTED_AT_SETTING, Date.now());
@@ -692,7 +835,9 @@ export class SlskdClient {
             );
             if ([200, 201].includes(response.status)) return { id, searchText: body.searchText };
             if (response.status === 429 && attempt < 3) {
-              const remaining = Number(options.deadline) ? options.deadline - Date.now() : Infinity;
+              const remaining = Number(options.deadline)
+                ? options.deadline! - Date.now()
+                : Infinity;
               await waitSearchDelay(Math.min(30000 * 2 ** attempt, remaining), control.signal);
               continue;
             }
@@ -722,7 +867,7 @@ export class SlskdClient {
         } catch (cleanupError) {
           logger.warn("slskd", "Could not stop owned search after creation failed", {
             searchId: id,
-            reason: cleanupError?.message,
+            reason: asAppError(cleanupError)?.message,
           });
         }
       }
@@ -732,7 +877,7 @@ export class SlskdClient {
     }
   }
 
-  async getSearch(searchId, options = {}) {
+  async getSearch(searchId: string, options: SlskdRequestOptions = {}): Promise<SlskdSearch> {
     const client = buildClient(this._config);
     const response = await client.get(`/api/v0/searches/${searchId}`, {
       params: { includeResponses: true },
@@ -741,10 +886,10 @@ export class SlskdClient {
     if (response.status !== 200) {
       throw new Error(`slskd search status failed: HTTP ${response.status}`);
     }
-    return response.data;
+    return typeof response.data === "object" && response.data !== null ? response.data : {};
   }
 
-  async getSearchResponses(searchId, options = {}) {
+  async getSearchResponses(searchId: string, options: SlskdRequestOptions = {}) {
     const client = buildClient(this._config);
     const response = await client.get(`/api/v0/searches/${searchId}/responses`, options);
     if (response.status !== 200) return [];
@@ -752,9 +897,13 @@ export class SlskdClient {
   }
 
   async hydrateCompletedSearch(
-    searchId,
-    data,
-    { deadline = Date.now() + 15000, shouldCancel, signal } = {},
+    searchId: string,
+    data: SlskdSearch,
+    {
+      deadline = Date.now() + 15000,
+      shouldCancel,
+      signal,
+    }: Pick<SlskdSearchOptions, "deadline" | "shouldCancel" | "signal"> = {},
   ) {
     const responseCount = Number(data?.responseCount || data?.ResponseCount || 0);
     const fileCount = Number(data?.fileCount || data?.FileCount || 0);
@@ -762,7 +911,7 @@ export class SlskdClient {
     const collectedCount = this.flattenSearchResults(data).length;
     if (collectedCount > 0 && (fileCount <= 0 || collectedCount >= fileCount)) return data;
     const collected = new Map(
-      this.flattenSearchResults(data).map((file) => [`${file.user}\0${file.file}`, file]),
+      this.flattenSearchResults(data).map((file) => [`${file.user}\0${file.file}`, file] as const),
     );
     const hydrationDeadline = Math.min(deadline, Date.now() + 15000);
     while (Date.now() < hydrationDeadline && !signal?.aborted && !shouldCancel?.()) {
@@ -796,11 +945,15 @@ export class SlskdClient {
     return data;
   }
 
-  monitorSearch(searchId, options = {}) {
+  monitorSearch(searchId: string, options: SlskdSearchOptions = {}) {
     return new SearchMonitor(this, searchId, options);
   }
 
-  async waitForSearch(searchId, timeoutMs = DEFAULT_SEARCH_TIMEOUT_MS, options = {}) {
+  async waitForSearch(
+    searchId: string,
+    timeoutMs = DEFAULT_SEARCH_TIMEOUT_MS,
+    options: SlskdSearchOptions = {},
+  ) {
     const { earlyExitWhen, shouldCancel, signal: externalSignal } = options;
     const control = createSearchCancellation(shouldCancel, externalSignal);
     const monitor = this.monitorSearch(searchId, { ...options, timeoutMs });
@@ -815,19 +968,20 @@ export class SlskdClient {
     }
   }
 
-  flattenSearchResults(searchData) {
-    if (searchData?.[NORMALIZED_SEARCH_RESULTS]) return searchData[NORMALIZED_SEARCH_RESULTS];
+  flattenSearchResults(searchData: unknown): SlskdSearchFile[] {
+    if ((searchData as SlskdSearch | null | undefined)?.[NORMALIZED_SEARCH_RESULTS])
+      return (searchData as SlskdSearch)[NORMALIZED_SEARCH_RESULTS]!;
     const results = [];
-    const seen = new Set();
+    const seen = new Set<string>();
     for (const response of readSearchResponses(searchData)) {
       const user = String(readProperty(response, "username", "Username") || "").trim();
       const fileLists = [
         {
-          files: readProperty(response, "files", "Files"),
+          files: readProperty<SlskdArrayPayload>(response, "files", "Files"),
           locked: false,
         },
         {
-          files: readProperty(response, "lockedFiles", "LockedFiles"),
+          files: readProperty<SlskdArrayPayload>(response, "lockedFiles", "LockedFiles"),
           locked: true,
         },
       ];
@@ -846,7 +1000,7 @@ export class SlskdClient {
     return results;
   }
 
-  async searchQuery(searchText, options = {}) {
+  async searchQuery(searchText: string, options: SlskdSearchOptions = {}) {
     const timeoutMs =
       Number(options.timeoutMs) > 0
         ? Number(options.timeoutMs)
@@ -864,7 +1018,13 @@ export class SlskdClient {
     return this.flattenSearchResults(completed);
   }
 
-  async enqueueBatch({ username, files }) {
+  async enqueueBatch({
+    username,
+    files,
+  }: {
+    username: string;
+    files: { filename?: string | null; file?: string | null; size?: number }[];
+  }) {
     return withHonkerLock("slskd-api", async () => {
       const client = buildClient(this._config);
       const normalizedUsername = String(username || "").trim();
@@ -908,16 +1068,16 @@ export class SlskdClient {
     });
   }
 
-  async getTransfer(username, id) {
+  async getTransfer(username: string | null | undefined, id: string) {
     const client = buildClient(this._config);
     const response = await client.get(
-      `/api/v0/transfers/downloads/${encodeURIComponent(username)}/${id}`,
+      `/api/v0/transfers/downloads/${encodeURIComponent(String(username))}/${id}`,
     );
     if (response.status !== 200) return null;
     return response.data;
   }
 
-  async deleteTransfer(username, id, { remove = true } = {}) {
+  async deleteTransfer(username: string | null | undefined, id: string, { remove = true } = {}) {
     const normalizedUsername = String(username || "").trim();
     const normalizedId = String(id || "").trim();
     if (!normalizedUsername || !normalizedId) return false;
@@ -931,14 +1091,14 @@ export class SlskdClient {
     return [200, 202, 204, 404].includes(response.status);
   }
 
-  async listDownloads() {
+  async listDownloads(): Promise<unknown[]> {
     const client = buildClient(this._config);
     const response = await client.get("/api/v0/transfers/downloads");
     if (response.status !== 200) return [];
     return Array.isArray(response.data) ? response.data : [];
   }
 
-  async getEvents(offset = 0, limit = 50) {
+  async getEvents(offset = 0, limit = 50): Promise<{ events: unknown[]; totalCount: number }> {
     const client = buildClient(this._config);
     const response = await client.get("/api/v0/events", {
       params: { offset, limit },
@@ -953,14 +1113,14 @@ export class SlskdClient {
     };
   }
 
-  async listSearches() {
+  async listSearches(): Promise<SlskdSearch[]> {
     const client = buildClient(this._config);
     const response = await client.get("/api/v0/searches");
     if (response.status !== 200) return [];
-    return normalizeArrayPayload(response.data);
+    return normalizeArrayPayload(response.data as SlskdArrayPayload) as SlskdSearch[];
   }
 
-  async deleteSearch(searchId, options = {}) {
+  async deleteSearch(searchId: string, options: SlskdRequestOptions = {}) {
     const id = String(searchId || "").trim();
     if (!id) return false;
     const client = buildClient(this._config);
@@ -974,20 +1134,22 @@ export class SlskdClient {
     return [200, 204, 404].includes(response.status);
   }
 
-  async cleanupAfterRun(options = {}) {
+  async cleanupAfterRun(
+    options: { ownedOnly?: boolean; searchIds?: string[]; transfers?: SlskdTransferRef[] } = {},
+  ) {
     if (!this.isConfigured()) {
       return { skipped: true, reason: "not configured" };
     }
     return withHonkerLock("slskd-api", async () => {
       let searchesRemoved = 0;
       let transfersRemoved = 0;
-      const cleanedSearchIds = [];
+      const cleanedSearchIds: string[] = [];
       const ownedOnly = options.ownedOnly !== false;
       const explicitSearchIds = Array.isArray(options.searchIds) ? options.searchIds : [];
       const explicitTransfers = Array.isArray(options.transfers) ? options.transfers : [];
       let searchIds = explicitSearchIds.map((entry) => String(entry || "").trim()).filter(Boolean);
       let transfers = explicitTransfers;
-      let markCleaned = null;
+      let markCleaned: (() => void) | null = null;
 
       if (ownedOnly && searchIds.length === 0 && transfers.length === 0) {
         try {
@@ -999,7 +1161,7 @@ export class SlskdClient {
           markCleaned = markSlskdCleanupTargetsCleaned;
         } catch (error) {
           logger.warn("slskd", "Failed to read scoped slskd cleanup targets", {
-            error: error?.message || String(error),
+            error: asAppError(error)?.message || String(error),
           });
         }
       }
@@ -1009,7 +1171,8 @@ export class SlskdClient {
         searchIds = searches
           .filter((search) => !isSearchInProgress(search))
           .map((search) => readId(search))
-          .filter(Boolean);
+          .filter(Boolean)
+          .map(String);
       }
 
       for (const searchId of [...new Set(searchIds)]) {

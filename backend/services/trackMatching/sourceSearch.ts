@@ -9,8 +9,14 @@
 // `hasUsableSearchCandidates` is the cheap early-exit used while queries are
 // still running. `buildSourceCandidates` evaluates the complete search pool.
 
-import { buildTrackRequest } from "./trackIdentity.ts";
-import { prefilterCandidates, evaluateTrackCandidates } from "./decisionEngine.ts";
+import { buildTrackRequest, type SearchTrackRequest } from "./trackIdentity.ts";
+import {
+  prefilterCandidates,
+  evaluateTrackCandidates,
+  type CandidateEvaluation,
+  type SearchResult,
+  type TrackEvaluation,
+} from "./decisionEngine.ts";
 import { buildSoulseekCandidates } from "./providers/soulseekProvider.ts";
 
 export async function buildSourceCandidates({
@@ -20,6 +26,13 @@ export async function buildSourceCandidates({
   request,
   context,
   options = {},
+}: {
+  source?: string;
+  results?: SearchResult[];
+  candidates?: SearchResult[];
+  request?: SearchTrackRequest;
+  context?: Parameters<typeof buildTrackRequest>[0];
+  options?: Parameters<typeof buildSoulseekCandidates>[2];
 } = {}) {
   const trackRequest = request || buildTrackRequest(context);
   const rawResults = results ?? candidates ?? [];
@@ -29,7 +42,6 @@ export async function buildSourceCandidates({
       request: trackRequest,
       source,
       candidates: built.candidates,
-      options,
       providerEvidence: built.providerEvidence,
     });
   }
@@ -37,14 +49,23 @@ export async function buildSourceCandidates({
     request: trackRequest,
     source,
     candidates: rawResults,
-    options,
   });
 }
 
 // Node-only pre-filter used for early-exit checks while searches run.
 // Applies the same contradictions, identifier conflicts, noise, and lock
 // gates as the full evaluation so early exits agree with final decisions.
-export function hasUsableSearchCandidates({ source, results = [], request, context } = {}) {
+export function hasUsableSearchCandidates({
+  source,
+  results = [],
+  request,
+  context,
+}: {
+  source?: string;
+  results?: SearchResult[];
+  request?: SearchTrackRequest;
+  context?: Parameters<typeof buildTrackRequest>[0];
+} = {}) {
   const trackRequest = request || buildTrackRequest(context);
   if (!trackRequest.trackName) return false;
   return prefilterCandidates({ request: trackRequest, source, candidates: results }).some(
@@ -53,7 +74,7 @@ export function hasUsableSearchCandidates({ source, results = [], request, conte
 }
 
 // Payload shape the download orchestrators carry between phases.
-export function toPipelineCandidate(evaluation) {
+export function toPipelineCandidate(evaluation: CandidateEvaluation) {
   return {
     raw: evaluation.candidate.raw,
     candidate: evaluation.candidate,
@@ -64,7 +85,7 @@ export function toPipelineCandidate(evaluation) {
       recommendation: evaluation.recommendation || null,
       gap: null,
       reasons: evaluation.reasons || [],
-      penalties: evaluation.penalties || {},
+      penalties: {},
       aurralEvidence: evaluation.aurralEvidence || null,
       contradictions: evaluation.contradictions || [],
     },
@@ -72,7 +93,7 @@ export function toPipelineCandidate(evaluation) {
 }
 
 // Candidates the orchestrator may attempt, in decision order.
-export function usableEvaluationEntries(evaluation) {
+export function usableEvaluationEntries(evaluation: TrackEvaluation | null | undefined) {
   // Review-tier candidates are usable as a last resort: the orchestrator
   // tries them after every accept/verify candidate, under strict
   // post-download validation, before failing the source.

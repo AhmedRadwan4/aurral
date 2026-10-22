@@ -1,16 +1,20 @@
+import type { Router } from "express";
 import { noCache } from "../../../middleware/cache.ts";
 import { logger } from "../../../services/logger.ts";
 import {
   checkUpgradeReadiness,
   queueUpgradeReadinessRecheck,
 } from "../../../services/upgradeReadiness.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
-export function registerUpgradeReadiness(router) {
+export function registerUpgradeReadiness(router: Router) {
   router.get("/upgrade-readiness", noCache, (_req, res) => {
     try {
       res.json(checkUpgradeReadiness());
     } catch (error) {
-      logger.error("settings", "Could not check Aurral 3.0 readiness", { reason: error.message });
+      logger.error("settings", "Could not check Aurral 3.0 readiness", {
+        reason: asAppError(error)?.message,
+      });
       res.status(500).json({ error: "Failed to check Aurral 3.0 readiness" });
     }
   });
@@ -20,7 +24,7 @@ export function registerUpgradeReadiness(router) {
       res.status(202).json({ queued: queueUpgradeReadinessRecheck() });
     } catch (error) {
       logger.error("settings", "Could not queue the Aurral 3.0 readiness check", {
-        reason: error.message,
+        reason: asAppError(error)?.message,
       });
       res.status(500).json({ error: "Failed to queue the Aurral 3.0 readiness check" });
     }

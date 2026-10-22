@@ -1,8 +1,9 @@
 import { ISOLATED_WORKER_GROUPS, isQueueOwnedByGroup } from "./backgroundWorkerQueues.ts";
 import { logger } from "./logger.ts";
+import { asAppError } from "../../lib/errors.ts";
 
 const group = process.env.AURRAL_BACKGROUND_WORKER_GROUP;
-if (!ISOLATED_WORKER_GROUPS.includes(group) || !process.send) {
+if (!group || !ISOLATED_WORKER_GROUPS.includes(group) || !process.send) {
   throw new Error("Background worker process requires a supervised queue group");
 }
 
@@ -11,8 +12,15 @@ const { startWorkerSupervisor, wakeQueuedBackgroundWork, hasQueuedBackgroundWork
 const { getHonkerWorkerStatuses, getWorkerIdleStopMs, shutdownHonkerInfrastructure } =
   await import("./honkerWorkerRuntime.ts");
 const { isHonkerScheduleDue } = await import("./honkerDb.ts");
-const downloadWorker =
-  group === "downloads" ? (await import("./downloadJobs/downloadWorker.ts")).downloadWorker : null;
+async function loadDownloadOwner() {
+  const { DownloadWorker, downloadWorker } = await import("./downloadJobs/downloadWorker.ts");
+  if (!(downloadWorker instanceof DownloadWorker)) {
+    throw new Error("Download worker process requires the download owner");
+  }
+  return downloadWorker;
+}
+
+const downloadWorker = group === "downloads" ? await loadDownloadOwner() : null;
 const playlistOperationStatus =
   group === "downloads"
     ? (await import("./playlists/playlistOperationWorker.ts")).getPlaylistOperationWorkerStatus
@@ -25,7 +33,7 @@ const hasApprovalFollowUps =
 let stopping = false;
 let ownerCommandsInFlight = 0;
 let lastOwnerCommandAt = 0;
-const DOWNLOAD_OWNER_COMMANDS = new Set([
+const DOWNLOAD_OWNER_COMMAND_NAMES = [
   "start",
   "stop",
   "stopAndDrain",
@@ -51,12 +59,25 @@ const DOWNLOAD_OWNER_COMMANDS = new Set([
   "denyBlockedJob",
   "cancelTrackDownload",
   "retryTrackDownload",
-]);
+] as const;
 
-async function handleDownloadOwnerCommand(message) {
+type DownloadOwnerCommand = (typeof DOWNLOAD_OWNER_COMMAND_NAMES)[number];
+
+const DOWNLOAD_OWNER_COMMANDS: ReadonlySet<unknown> = new Set(DOWNLOAD_OWNER_COMMAND_NAMES);
+
+const isDownloadOwnerCommand = (method: unknown): method is DownloadOwnerCommand =>
+  DOWNLOAD_OWNER_COMMANDS.has(method);
+
+type SupervisorMessage =
+  | { type: "shutdown" | "retire" | "queue-wake" }
+  | { type: "download-owner-command"; requestId: number; method: unknown; args?: unknown };
+
+async function handleDownloadOwnerCommand(
+  message: Extract<SupervisorMessage, { type: "download-owner-command" }>,
+) {
   const { requestId, method, args = [] } = message;
   try {
-    if (group !== "downloads" || !DOWNLOAD_OWNER_COMMANDS.has(method) || !Array.isArray(args)) {
+    if (!downloadWorker || !isDownloadOwnerCommand(method) || !Array.isArray(args)) {
       throw new Error("Unsupported download worker command");
     }
     const [{ dbOps }, { invalidateFlowPlaylistConfigCache }] = await Promise.all([
@@ -100,34 +121,36 @@ async function handleDownloadOwnerCommand(message) {
       try {
         result = { ok: true, result: await syncStaticPlaylistImport(args[0]) };
       } catch (error) {
+        const failure = asAppError(error);
         result = {
           ok: false,
           error: {
-            message: error?.message || "Playlist sync failed",
-            code: error?.code || null,
-            statusCode: error?.statusCode || null,
+            message: failure?.message || "Playlist sync failed",
+            code: failure?.code || null,
+            statusCode: failure?.statusCode || null,
           },
         };
       }
     } else {
-      result = await downloadWorker[method](...args);
+      result = await Reflect.apply(downloadWorker[method], downloadWorker, args);
     }
     if (process.connected) {
-      process.send({ type: "cache-invalidate", cache: "playlists" });
-      process.send({ type: "download-owner-response", requestId, result });
+      process.send!({ type: "cache-invalidate", cache: "playlists" });
+      process.send!({ type: "download-owner-response", requestId, result });
     }
   } catch (error) {
+    const failure = asAppError(error);
     logger.error("workers", "Download worker command failed", {
       group,
       method,
       requestId,
-      reason: error?.message || String(error),
+      reason: failure?.message || String(error),
     });
     if (process.connected) {
-      process.send({
+      process.send!({
         type: "download-owner-response",
         requestId,
-        error: error?.message || String(error),
+        error: failure?.message || String(error),
       });
     }
   }
@@ -153,7 +176,8 @@ function isIdle() {
   }
 }
 
-process.on("message", (message) => {
+process.on("message", (received) => {
+  const message = received as SupervisorMessage;
   if (message?.type === "shutdown") void stop();
   if (message?.type === "download-owner-command") {
     ownerCommandsInFlight += 1;
@@ -165,7 +189,7 @@ process.on("message", (message) => {
   if (message?.type === "queue-wake") wakeQueuedBackgroundWork(group);
   if (message?.type === "retire") {
     if (isIdle()) void stop();
-    else if (process.connected) process.send({ type: "busy" });
+    else if (process.connected) process.send!({ type: "busy" });
   }
 });
 process.once("SIGTERM", () => {
@@ -190,10 +214,10 @@ process.send({ type: "ready", group });
 const heartbeat = setInterval(() => {
   if (process.connected) {
     const downloadOwnerStatus = downloadWorker
-      ? { ...downloadWorker.getStatus(), operationWorker: playlistOperationStatus() }
+      ? { ...downloadWorker.getStatus(), operationWorker: playlistOperationStatus!() }
       : null;
     const { rss, heapUsed } = process.memoryUsage();
-    process.send({
+    process.send!({
       type: "heartbeat",
       group,
       memory: { rss, heapUsed },
@@ -206,6 +230,6 @@ const heartbeat = setInterval(() => {
 }, 5000);
 heartbeat.unref?.();
 const idleCheck = setInterval(() => {
-  if (process.connected && isIdle()) process.send({ type: "idle" });
+  if (process.connected && isIdle()) process.send!({ type: "idle" });
 }, 1000);
 idleCheck.unref?.();

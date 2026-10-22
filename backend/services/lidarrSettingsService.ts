@@ -2,12 +2,9 @@ import { validateLidarrTestCredentials, withTemporaryLidarrClient } from "./lida
 import { runLidarrLibraryAccessTest } from "./lidarrLibraryAccessTest.ts";
 import { applyLidarrCommunityGuide } from "./lidarrCommunityGuide.ts";
 import { logger } from "./logger.ts";
+import type { LidarrNamedProfile, LidarrRootFolder, LidarrTag } from "./lidarrClient.ts";
 
 type LidarrCredentials = { url: string; apiKey: string };
-
-export type LidarrRootFolder = { path: string };
-export type LidarrNamedProfile = { id: number; name: string };
-export type LidarrTag = { id: number; label: string };
 
 function resolve({ url, apiKey }: LidarrCredentials) {
   const validation = validateLidarrTestCredentials(url, apiKey);
@@ -43,7 +40,7 @@ export async function fetchTags(credentials: LidarrCredentials): Promise<LidarrT
   return withTemporaryLidarrClient(url, apiKey, (client) => client.getTags(true));
 }
 
-export async function testLidarrConnection(credentials) {
+export async function testLidarrConnection(credentials: LidarrCredentials) {
   const { url, apiKey } = resolve(credentials);
   const result = await withTemporaryLidarrClient(url, apiKey, (client) =>
     client.testConnection(true),
@@ -52,12 +49,12 @@ export async function testLidarrConnection(credentials) {
   return result;
 }
 
-export async function testLidarrLibraryAccess(credentials) {
+export async function testLidarrLibraryAccess(credentials: LidarrCredentials) {
   const { url, apiKey } = resolve(credentials);
   return withTemporaryLidarrClient(url, apiKey, (client) => runLidarrLibraryAccessTest(client));
 }
 
-export async function applyCommunityGuide(credentials) {
+export async function applyCommunityGuide(credentials: LidarrCredentials) {
   const { url, apiKey } = resolve(credentials);
   return withTemporaryLidarrClient(url, apiKey, (client) => applyLidarrCommunityGuide(client));
 }

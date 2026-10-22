@@ -12,8 +12,10 @@ import {
 import { syncStaticPlaylistImport } from "../../../services/importLists/importListSync.ts";
 import { flowPlaylistConfig } from "../../../services/playlists/flowPlaylistConfig.ts";
 import { getAccessibleStaticPlaylist } from "./utils.ts";
+import { asAppError } from "../../../../lib/errors.ts";
+import type { Response, Router } from "express";
 
-const parseExpiresAt = (value) => {
+const parseExpiresAt = (value: unknown) => {
   const expiresIn = Number(value);
   if (Number.isFinite(expiresIn) && expiresIn > 0) {
     return Date.now() + expiresIn * 1000;
@@ -25,17 +27,18 @@ const parseExpiresAt = (value) => {
   return Date.now() + 3600 * 1000;
 };
 
-function sendSpotifyError(res, error, fallback) {
-  if (error?.code === SPOTIFY_AUTH_REQUIRED_CODE) {
+function sendSpotifyError(res: Response, error: unknown, fallback: string) {
+  const failure = asAppError(error);
+  if (failure?.code === SPOTIFY_AUTH_REQUIRED_CODE) {
     return res.status(401).json({
       error: "Spotify authentication required",
       code: SPOTIFY_AUTH_REQUIRED_CODE,
       message: "Your Spotify connection expired. Connect Spotify again.",
     });
   }
-  return res.status(error?.statusCode || 500).json({
+  return res.status(failure?.statusCode || 500).json({
     error: fallback,
-    message: error?.message || "Unknown error",
+    message: failure?.message || "Unknown error",
   });
 }
 
@@ -56,14 +59,14 @@ export type CompleteSpotifyOAuthResponse = {
 
 export type DisconnectSpotifyResponse = { connected: false };
 
-export function registerSpotifyImport(router) {
+export function registerSpotifyImport(router: Router) {
   router.get("/import/spotify/status", (req, res) => {
-    const status = spotifyConnectionStore.getPublicStatus(req.user.id);
+    const status = spotifyConnectionStore.getPublicStatus(req.user!.id);
     const hasSyncedPlaylists = flowPlaylistConfig
       .getStaticPlaylists()
       .some(
         (playlist) =>
-          Number(playlist?.ownerUserId) === Number(req.user.id) &&
+          Number(playlist?.ownerUserId) === Number(req.user!.id) &&
           playlist?.importSource?.provider === "spotify-playlist" &&
           playlist.importSource.syncEnabled,
       );
@@ -102,15 +105,21 @@ export function registerSpotifyImport(router) {
       } catch (error) {
         logger.warn(
           "spotify",
-          `Spotify profile lookup failed after OAuth complete: ${error?.message || "Unknown error"}`,
+          `Spotify profile lookup failed after OAuth complete: ${asAppError(error)?.message || "Unknown error"}`,
         );
       }
-      const saved = spotifyConnectionStore.saveConnection(req.user.id, {
+      const saved = spotifyConnectionStore.saveConnection(req.user!.id, {
         accessToken,
         refreshToken,
         expiresAt,
         displayName,
       });
+      if (!saved) {
+        return res.status(500).json({
+          error: "Failed to complete Spotify connection",
+          message: "The saved Spotify connection could not be read back",
+        });
+      }
       res.json({
         connected: true,
         displayName: saved.displayName,
@@ -119,20 +128,20 @@ export function registerSpotifyImport(router) {
     } catch (error) {
       res.status(500).json({
         error: "Failed to complete Spotify connection",
-        message: error?.message || "Unknown error",
+        message: asAppError(error)?.message || "Unknown error",
       });
     }
   });
 
   router.delete("/import/spotify", (req, res) => {
-    spotifyConnectionStore.clearConnection(req.user.id);
-    spotifyClient.clearPlaylistTrackCache(req.user.id);
+    spotifyConnectionStore.clearConnection(req.user!.id);
+    spotifyClient.clearPlaylistTrackCache(req.user!.id);
     res.json({ connected: false });
   });
 
   router.get("/import/spotify/playlists", async (req, res) => {
     try {
-      const payload = await spotifyClient.listPlaylists(req.user.id);
+      const payload = await spotifyClient.listPlaylists(req.user!.id);
       res.json(payload);
     } catch (error) {
       logger.warn("playlist-import", "Spotify playlist listing failed", {
@@ -150,10 +159,11 @@ export function registerSpotifyImport(router) {
       }
       const { tracks, stats } = await fetchImportedPlaylistTracks({
         provider: "spotify-playlist",
-        userId: req.user.id,
+        userId: req.user!.id,
         externalId: playlistId,
       });
-      const skipped = stats.unavailable + stats.podcast + stats.incomplete + stats.duplicate;
+      const skipped =
+        (stats.unavailable ?? 0) + (stats.podcast ?? 0) + stats.incomplete + stats.duplicate;
       res.json({
         trackCount: tracks.length,
         skipped,
@@ -184,12 +194,12 @@ export function registerSpotifyImport(router) {
       }
       const { tracks, stats } = await fetchImportedPlaylistTracks({
         provider: "spotify-playlist",
-        userId: req.user.id,
+        userId: req.user!.id,
         externalId: playlistId,
       });
       stage = "enqueue";
       const result = await enqueueImportedPlaylist({
-        ownerUserId: req.user.id,
+        ownerUserId: req.user!.id,
         name,
         sourceName: "Spotify",
         provider: "spotify-playlist",
@@ -203,22 +213,24 @@ export function registerSpotifyImport(router) {
       });
       res.json({
         success: true,
-        playlist: result?.playlist || null,
+        playlist: null,
         tracksQueued: Number(result?.tracksQueued || 0),
-        tracksReused: Number(result?.tracksReused || 0),
+        tracksReused: 0,
         queued: result?.queued === true,
       });
     } catch (error) {
-      if (error?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
+      const failure = asAppError(error);
+      if (failure?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
         logger.debug("playlist-import", "Spotify playlist import name already exists", {
           playlistName: String(req.body?.name || "").trim() || null,
         });
         return res.status(409).json({
           error: "Playlist name already exists",
-          message: error.message,
+          message: failure?.message,
         });
       }
-      const status = error?.code === SPOTIFY_AUTH_REQUIRED_CODE ? 401 : error?.statusCode || 500;
+      const status =
+        failure?.code === SPOTIFY_AUTH_REQUIRED_CODE ? 401 : failure?.statusCode || 500;
       logger[status >= 500 ? "error" : "warn"](
         "playlist-import",
         "Spotify playlist import request failed",
@@ -232,23 +244,27 @@ export function registerSpotifyImport(router) {
     }
   });
 
-  router.post("/shared-playlists/:playlistId/sync", async (req, res) => {
-    try {
-      const playlist = getAccessibleStaticPlaylist(req.user, req.params.playlistId);
-      if (!playlist) {
-        return res.status(404).json({ error: "Playlist not found" });
+  router.post<"/shared-playlists/:playlistId/sync">(
+    "/shared-playlists/:playlistId/sync",
+    async (req, res) => {
+      try {
+        const playlist = getAccessibleStaticPlaylist(req.user, req.params.playlistId);
+        if (!playlist) {
+          return res.status(404).json({ error: "Playlist not found" });
+        }
+        const result = await syncStaticPlaylistImport({
+          playlistId: playlist.id,
+          user: req.user,
+          force: true,
+        });
+        res.json({ success: true, ...result });
+      } catch (error) {
+        const failure = asAppError(error);
+        res.status(failure?.statusCode || 500).json({
+          error: "Failed to sync playlist",
+          message: failure?.message || "Unknown error",
+        });
       }
-      const result = await syncStaticPlaylistImport({
-        playlistId: playlist.id,
-        user: req.user,
-        force: true,
-      });
-      res.json({ success: true, ...result });
-    } catch (error) {
-      res.status(error?.statusCode || 500).json({
-        error: "Failed to sync playlist",
-        message: error?.message || "Unknown error",
-      });
-    }
-  });
+    },
+  );
 }

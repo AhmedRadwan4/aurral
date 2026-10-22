@@ -2,11 +2,14 @@ import { withPlaylistMutation, withPlaylistMutationLock } from "../downloadJobs/
 import { db } from "../../config/db-sqlite.ts";
 import { dbOps } from "../../db/helpers/index.ts";
 import { listHonkerJobs } from "../honkerDb.ts";
-import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
+import { asAppError } from "../../../lib/errors.ts";
+import type { SettingsRow } from "../../db/rows.ts";
+import { downloadTracker, type DownloadJob } from "../downloadJobs/downloadTracker.ts";
 import {
   flowPlaylistConfig,
   invalidateFlowPlaylistConfigCache,
   tracksShareMembership,
+  type StaticPlaylist,
 } from "./flowPlaylistConfig.ts";
 import { cancelDownloadWorkForJobs } from "../downloadJobs/downloadCancellationService.ts";
 import {
@@ -20,12 +23,43 @@ import {
 import {
   prepareRetainedPlaylistFile,
   commitRetainedPlaylistRelocationInTransaction,
+  type PreparedRetainedPlaylistFile,
 } from "./mediaRelocation.ts";
 import { jobDownloadedItsFile, removePlaylistFileIfUnshared } from "../downloadJobs/fileReuse.ts";
 import { downloadWorker } from "../downloadJobs/downloadWorker.ts";
 import { playlistManager } from "./playlistManager.ts";
 
-export function getSharedDownloadReferences(jobId, excludedPlaylistId) {
+export interface StaticPlaylistSelection {
+  jobId: string;
+  membershipId: string | null;
+  jobPlaylistId: string;
+  jobGeneration: number;
+  jobCreatedAt: number;
+}
+
+export interface StaticPlaylistRemovalOutcome {
+  jobId: string;
+  status: "removed" | "failed" | "alreadyAbsent";
+  message?: string;
+}
+
+type RemovalPlan = {
+  selection: StaticPlaylistSelection;
+  target: StaticPlaylist | undefined;
+  peer: DownloadJob | null;
+  upgrades: DownloadJob[];
+  relocation: PreparedRetainedPlaylistFile | null | undefined;
+} & ({ owned: true; job: DownloadJob } | { owned: false; job: DownloadJob | null });
+
+const payloadIds = (value: unknown) =>
+  Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+
+interface RemovedMediaIntent {
+  playlistId: string;
+  finalPath: string | null;
+}
+
+export function getSharedDownloadReferences(jobId: string | null, excludedPlaylistId: string) {
   return flowPlaylistConfig
     .getStaticPlaylists()
     .filter(
@@ -66,7 +100,10 @@ export async function removePlaylistTracksWithoutDownloads() {
   return repairedIds;
 }
 
-export function captureStaticPlaylistSelection(playlist, jobId) {
+export function captureStaticPlaylistSelection(
+  playlist: StaticPlaylist,
+  jobId: string,
+): StaticPlaylistSelection | null {
   const job = downloadTracker.getJob(jobId);
   if (!job || job.upgradeForJobId) return null;
   const track = playlist.tracks.find(
@@ -86,9 +123,13 @@ export function captureStaticPlaylistSelection(playlist, jobId) {
   };
 }
 
-export function getPlaylistRemovalLockIds(playlistId, jobs, extraIds = []) {
-  const owners = [playlistId, ...extraIds];
-  const related = new Map(jobs.map((job) => [job.id, job]));
+export function getPlaylistRemovalLockIds(
+  playlistId: string,
+  jobs: DownloadJob[],
+  extraIds: (string | null | undefined)[] = [],
+) {
+  const owners: (string | null | undefined)[] = [playlistId, ...extraIds];
+  const related = new Map(jobs.map((job) => [job.id, job] as const));
   const allJobs = downloadTracker.getAll();
   const pipelineRows = listHonkerJobs("slskd-pipeline");
   for (const job of related.values()) {
@@ -108,10 +149,11 @@ export function getPlaylistRemovalLockIds(playlistId, jobs, extraIds = []) {
       }
     }
     for (const row of pipelineRows) {
-      const groupIds = row.payload?.albumGroupJobIds || [];
-      if (row.payload?.jobId !== job.id && !groupIds.includes(job.id)) continue;
-      owners.push(row.payload.playlistId);
-      for (const id of [row.payload.jobId, ...groupIds]) {
+      const payload = row.payload;
+      const groupIds = payloadIds(payload?.albumGroupJobIds);
+      if (!payload || (payload.jobId !== job.id && !groupIds.includes(job.id))) continue;
+      owners.push(typeof payload.playlistId === "string" ? payload.playlistId : null);
+      for (const id of [...payloadIds([payload.jobId]), ...groupIds]) {
         const peer = downloadTracker.getJob(id);
         if (peer) related.set(id, peer);
       }
@@ -121,11 +163,18 @@ export function getPlaylistRemovalLockIds(playlistId, jobs, extraIds = []) {
 }
 
 export async function withStaticPlaylistRemovalMutation(
-  { playlistId, jobIds, extraPlaylistIds = [] },
-  operation,
+  {
+    playlistId,
+    jobIds,
+    extraPlaylistIds = [],
+  }: { playlistId: string; jobIds: string[]; extraPlaylistIds?: (string | null | undefined)[] },
+  operation: () => unknown,
 ) {
   while (true) {
-    const readJobs = () => jobIds.map((id) => downloadTracker.getJob(id)).filter(Boolean);
+    const readJobs = () =>
+      jobIds
+        .map((id) => downloadTracker.getJob(id))
+        .filter((job): job is NonNullable<typeof job> => Boolean(job));
     const lockIds = getPlaylistRemovalLockIds(playlistId, readJobs(), extraPlaylistIds);
     const result = await withPlaylistMutationLock(lockIds, async () => {
       if (
@@ -140,7 +189,11 @@ export async function withStaticPlaylistRemovalMutation(
   }
 }
 
-export function isStaticPlaylistSelectionCurrent(selection, playlist, job) {
+export function isStaticPlaylistSelectionCurrent(
+  selection: StaticPlaylistSelection,
+  playlist: StaticPlaylist,
+  job: DownloadJob | null | undefined,
+) {
   if (selection.membershipId) {
     const track = playlist.tracks.find((entry) => entry.membershipId === selection.membershipId);
     return Boolean(
@@ -161,17 +214,17 @@ export function isStaticPlaylistSelectionCurrent(selection, playlist, job) {
   );
 }
 
-function replacementPeer(job, removingIds) {
+function replacementPeer(job: DownloadJob, removingIds: Set<string>): DownloadJob | null {
   const row = listHonkerJobs("slskd-pipeline").find(
     (entry) => entry.payload?.albumGrab === true && entry.payload.jobId === job.id,
   );
   if (!row) return null;
   return (
-    (row.payload.albumGroupJobIds || [])
+    payloadIds(row.payload?.albumGroupJobIds)
       .map((id) => downloadTracker.getJob(id))
       .filter(
-        (peer) =>
-          peer &&
+        (peer): peer is NonNullable<typeof peer> =>
+          peer !== null &&
           !removingIds.has(peer.id) &&
           peer.requestGroupId === job.requestGroupId &&
           peer.albumMbid === job.albumMbid &&
@@ -188,10 +241,16 @@ export async function removeStaticPlaylistSelectionsLocked({
   deleteFiles = false,
   requireAll = false,
   onCommitted,
+}: {
+  playlistId: string;
+  selections: StaticPlaylistSelection[];
+  deleteFiles?: boolean;
+  requireAll?: boolean;
+  onCommitted?: (outcomes: StaticPlaylistRemovalOutcome[], affectedPlaylistIds: string[]) => void;
 }) {
   const playlist = flowPlaylistConfig.getStaticPlaylist(playlistId);
   if (!playlist) throw new Error("Source playlist no longer exists");
-  const removingIds = new Set(
+  const removingIds = new Set<string>(
     selections
       .filter((selection) =>
         isStaticPlaylistSelectionCurrent(
@@ -202,10 +261,10 @@ export async function removeStaticPlaylistSelectionsLocked({
       )
       .map((selection) => selection.jobId),
   );
-  const plans = [];
-  const preparedFiles = new Map();
-  const affectedPlaylistIds = new Set();
-  const outcomes = [];
+  const plans: RemovalPlan[] = [];
+  const preparedFiles = new Map<string | null, PreparedRetainedPlaylistFile>();
+  const affectedPlaylistIds = new Set<string>();
+  const outcomes: StaticPlaylistRemovalOutcome[] = [];
   for (const selection of selections) {
     const job = downloadTracker.getJob(selection.jobId);
     if (!isStaticPlaylistSelectionCurrent(selection, playlist, job)) {
@@ -221,7 +280,7 @@ export async function removeStaticPlaylistSelectionsLocked({
       const references = owned ? getSharedDownloadReferences(job.id, playlistId) : [];
       const target = references.sort((a, b) => String(a.id).localeCompare(String(b.id)))[0];
       const peer = owned && !target ? replacementPeer(job, removingIds) : null;
-      const upgrades = owned
+      const upgrades: DownloadJob[] = owned
         ? downloadTracker
             .getByPlaylistId(playlistId)
             .filter((entry) => entry.upgradeForJobId === job.id)
@@ -231,7 +290,7 @@ export async function removeStaticPlaylistSelectionsLocked({
       } else if (owned && target) {
         restoreDownloadJobCancellations([job.id, ...upgrades.map((entry) => entry.id)]);
       }
-      let relocation = null;
+      let relocation: PreparedRetainedPlaylistFile | null | undefined = null;
       if (owned && job.status === "done") {
         const otherFileJob = downloadTracker
           .getAll()
@@ -268,7 +327,11 @@ export async function removeStaticPlaylistSelectionsLocked({
             affectedPlaylistIds.add(reference.id);
         }
       }
-      plans.push({ selection, job, owned, target, peer, upgrades, relocation });
+      plans.push(
+        owned
+          ? { selection, job, owned, target, peer, upgrades, relocation }
+          : { selection, job, owned, target, peer, upgrades, relocation },
+      );
       outcomes.push({ jobId: selection.jobId, status: job ? "removed" : "alreadyAbsent" });
     } catch (error) {
       if (job?.playlistType === playlistId && isDownloadJobCancelled(job.id)) {
@@ -287,7 +350,11 @@ export async function removeStaticPlaylistSelectionsLocked({
             );
         }
       }
-      outcomes.push({ jobId: selection.jobId, status: "failed", message: error.message });
+      outcomes.push({
+        jobId: selection.jobId,
+        status: "failed",
+        message: asAppError(error)?.message,
+      });
     }
   }
   const recoverCancelledPlans = () => {
@@ -306,9 +373,9 @@ export async function removeStaticPlaylistSelectionsLocked({
   };
   if (requireAll && outcomes.some((outcome) => outcome.status === "failed")) {
     recoverCancelledPlans();
-    throw new Error(outcomes.find((outcome) => outcome.status === "failed").message);
+    throw new Error(outcomes.find((outcome) => outcome.status === "failed")!.message);
   }
-  const redirects = [];
+  const redirects: ReturnType<typeof transferDownloadOwnershipInTransaction>[] = [];
   try {
     db.transaction(() => {
       for (const relocation of new Set(plans.map((plan) => plan.relocation)))
@@ -333,7 +400,9 @@ export async function removeStaticPlaylistSelectionsLocked({
         }
       }
       if (plans.length) {
-        const detached = new Set(plans.map((plan) => plan.selection.membershipId).filter(Boolean));
+        const detached = new Set<string | null | undefined>(
+          plans.map((plan) => plan.selection.membershipId).filter(Boolean),
+        );
         const updated = flowPlaylistConfig.updateStaticPlaylist(playlistId, {
           tracks: playlist.tracks.filter((track) => !detached.has(track.membershipId)),
         });
@@ -352,12 +421,14 @@ export async function removeStaticPlaylistSelectionsLocked({
   return { outcomes, changed: plans.length > 0, affectedPlaylistIds: [...affectedPlaylistIds] };
 }
 
-export async function cleanupRemovedPlaylistFiles(playlistId) {
+export async function cleanupRemovedPlaylistFiles(playlistId: string) {
   const rows = db
-    .prepare("SELECT key, value FROM settings WHERE key LIKE 'playlistRemovedMedia:%'")
+    .prepare<[], Pick<SettingsRow, "value"> & { key: string }>(
+      "SELECT key, value FROM settings WHERE key LIKE 'playlistRemovedMedia:%'",
+    )
     .all();
   for (const row of rows) {
-    const intent = JSON.parse(row.value);
+    const intent: RemovedMediaIntent = JSON.parse(row.value);
     if (intent.playlistId !== playlistId) continue;
     await removePlaylistFileIfUnshared(intent.finalPath, playlistId, {
       downloadRoot: downloadWorker.downloadRoot,

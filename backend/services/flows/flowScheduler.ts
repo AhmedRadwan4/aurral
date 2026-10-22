@@ -1,4 +1,6 @@
+import { asAppError } from "../../../lib/errors.ts";
 import { flowPlaylistConfig } from "../playlists/flowPlaylistConfig.ts";
+import type { FlowConfig } from "../playlists/flowPlaylistConfig.ts";
 import { isAnyDownloadSourceConfigured } from "../downloadSourceService.ts";
 import { playlistOperationQueue } from "../playlists/playlistOperationQueue.ts";
 import { userOps } from "../../db/helpers/index.ts";
@@ -7,7 +9,7 @@ import {
   markLatestPlaylistOperationToken,
 } from "../playlists/playlistOperations.ts";
 
-function isFlowOwnerActive(flow) {
+function isFlowOwnerActive(flow: FlowConfig) {
   const ownerUserId = Number(flow?.ownerUserId);
   if (!Number.isFinite(ownerUserId)) return true;
   const owner = userOps.getUserById(ownerUserId);
@@ -34,7 +36,7 @@ export async function runScheduledFlowRefresh() {
         token,
       });
     } catch (error) {
-      console.error(`[FlowScheduler] Failed to refresh ${flow.id}:`, error.message);
+      console.error(`[FlowScheduler] Failed to refresh ${flow.id}:`, asAppError(error)?.message);
     }
   }
 }

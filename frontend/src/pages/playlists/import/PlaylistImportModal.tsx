@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { FileJson, Music2, Upload } from "lucide-react";
 import { Link } from "react-router";
@@ -27,6 +27,32 @@ import { getAppBasePath, normalizeBasePathWithTrailingSlash } from "../../../uti
 import { useAuth } from "../../../contexts/AuthContext";
 import { queryClient, queryKeys } from "../../../queryClient.ts";
 import { parseTracklistImportFile, reserveUniqueName, normalizeNameKey } from "../flowPageUtils";
+import { asApiError, type ApiError } from "../../../utils/api/core.ts";
+import { getApiErrorBody, getApiErrorMessage } from "../../onboardingUtils.tsx";
+import type { ImportedPlaylistPreviewResponse } from "../../../../../backend/routes/playlists/handlers/utils.ts";
+import type { PreviewYoutubeMusicPlaylistResponse } from "../../../../../backend/routes/playlists/handlers/youtubeMusicImport.ts";
+
+declare global {
+  interface Window {
+    onCompleteOauth?: (query: string, onComplete?: () => void) => void;
+  }
+}
+
+type ImportSource = "spotify" | "listenbrainz" | "lastfm" | "youtube" | "json";
+type ImportPlaylist = {
+  id: string;
+  name: string;
+  trackCount?: number;
+  sourceType?: string | null;
+};
+type ImportPreviewTrack = ImportedPlaylistPreviewResponse["previewTracks"][number];
+type ImportedFlow = ReturnType<typeof parseTracklistImportFile>[number] & { importName: string };
+type JsonReview = { fileName: string; flows: ImportedFlow[] };
+type SpotifyTokens = {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: string | number | null | undefined;
+};
 
 const SYNC_INTERVAL_OPTIONS = [
   { value: 0, label: "None" },
@@ -39,11 +65,26 @@ const SYNC_INTERVAL_OPTIONS = [
 const SPOTIFY_OAUTH_BROADCAST_CHANNEL = "aurral-spotify-oauth";
 const SPOTIFY_AUTH_REQUIRED_CODE = "SPOTIFY_AUTH_REQUIRED";
 
-function getPlaylistMeta(playlist) {
+function getPlaylistMeta(playlist: ImportPlaylist) {
   const parts = [playlist?.trackCount != null ? `${playlist.trackCount} tracks` : "Playlist"];
   if (playlist?.sourceType === "lastfm-station") parts.push("Updates from Last.fm");
   else if (playlist?.sourceType) parts.push("Updates weekly");
   return parts.join(" · ");
+}
+
+interface PlaylistImportConfigProps {
+  externalSource: string;
+  importing: boolean;
+  keepRemovedTracks: boolean;
+  playlistName: string;
+  previewLoading: boolean;
+  previewSkipped: number;
+  previewTrackCount: number;
+  previewTracks: ImportPreviewTrack[];
+  setKeepRemovedTracks: (value: boolean) => void;
+  setPlaylistName: (value: string) => void;
+  setSyncIntervalHours: (value: number) => void;
+  syncIntervalHours: number;
 }
 
 function PlaylistImportConfig({
@@ -59,7 +100,7 @@ function PlaylistImportConfig({
   setPlaylistName,
   setSyncIntervalHours,
   syncIntervalHours,
-}) {
+}: PlaylistImportConfigProps) {
   return (
     <div className="playlist-import__config">
       <div className="playlist-import__config-fields">
@@ -158,7 +199,15 @@ function PlaylistImportConfig({
   );
 }
 
-function tokensFromHandoffPayload(payload) {
+type HandoffPayload = {
+  access_token?: string | null;
+  refresh_token?: string | null;
+  expires_in?: string | number | null;
+};
+
+function tokensFromHandoffPayload(
+  payload: HandoffPayload | null | undefined,
+): SpotifyTokens | null {
   const accessToken = String(payload?.access_token || "").trim();
   const refreshToken = String(payload?.refresh_token || "").trim();
   if (!accessToken || !refreshToken) return null;
@@ -174,8 +223,8 @@ function getOAuthCallbackUrl() {
   return `${window.location.origin}${base}oauth.html`;
 }
 
-function openSpotifyOAuthPopup(oauthUrl) {
-  return new Promise((resolve, reject) => {
+function openSpotifyOAuthPopup(oauthUrl: string) {
+  return new Promise<SpotifyTokens>((resolve, reject) => {
     const popup = window.open(oauthUrl, "spotify-oauth", "width=480,height=720");
     if (!popup || popup.closed || typeof popup.closed === "undefined") {
       reject(new Error("Allow popups to connect Spotify."));
@@ -183,7 +232,7 @@ function openSpotifyOAuthPopup(oauthUrl) {
     }
 
     let settled = false;
-    let channel;
+    let channel: BroadcastChannel | null | undefined;
     const cleanup = () => {
       delete window.onCompleteOauth;
       if (channel) {
@@ -192,13 +241,13 @@ function openSpotifyOAuthPopup(oauthUrl) {
       }
       clearTimeout(timeout);
     };
-    const finish = (tokens) => {
+    const finish = (tokens: SpotifyTokens) => {
       if (settled) return;
       settled = true;
       cleanup();
       resolve(tokens);
     };
-    const fail = (message) => {
+    const fail = (message: string) => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -241,26 +290,20 @@ function openSpotifyOAuthPopup(oauthUrl) {
   });
 }
 
-const EMPTY_PLAYLISTS = [];
+const EMPTY_PLAYLISTS: ImportPlaylist[] = [];
 
-function errorMessage(error, fallback) {
-  return (
-    error?.response?.data?.message || error?.response?.data?.error || error?.message || fallback
-  );
+function isSpotifyAuthRequired(error: ApiError | null | undefined) {
+  return getApiErrorBody(error)?.code === SPOTIFY_AUTH_REQUIRED_CODE;
 }
 
-function isSpotifyAuthRequired(error) {
-  return error?.response?.data?.code === SPOTIFY_AUTH_REQUIRED_CODE;
-}
-
-function validYoutubePreview(payload) {
+function validYoutubePreview(payload: PreviewYoutubeMusicPlaylistResponse) {
   const playlist = payload?.playlist;
   if (!playlist?.id || !playlist?.name)
     throw new Error("YouTube Music returned an invalid playlist");
   return payload;
 }
 
-async function importTracklists(flows, reservedNameKeys) {
+async function importTracklists(flows: ImportedFlow[], reservedNameKeys: Iterable<string>) {
   const reservedNames = new Set(reservedNameKeys);
   let importedCount = 0;
   const failed = [];
@@ -277,20 +320,37 @@ async function importTracklists(flows, reservedNameKeys) {
       });
       importedCount += 1;
     } catch (error) {
-      failed.push({ name: finalName, message: errorMessage(error, "Failed to import tracklist") });
+      failed.push({
+        name: finalName,
+        message: getApiErrorMessage(error, "Failed to import tracklist"),
+      });
     }
   }
   return { importedCount, failed };
 }
 
-function useErrorToast(error, fallback, showError, onError) {
-  const handledRef = useRef(null);
+function useErrorToast(
+  error: ApiError | null | undefined,
+  fallback: string,
+  showError: ((message: string) => void) | undefined,
+  onError?: (error: ApiError) => void,
+) {
+  const handledRef = useRef<ApiError | null | undefined>(null);
   useEffect(() => {
     if (!error || handledRef.current === error) return;
     handledRef.current = error;
     onError?.(error);
-    showError?.(errorMessage(error, fallback));
+    showError?.(getApiErrorMessage(error, fallback));
   }, [error, fallback, onError, showError]);
+}
+
+interface PlaylistImportModalProps {
+  open: boolean;
+  onClose: () => void;
+  onImported?: () => void;
+  showError?: (message: string) => void;
+  showSuccess?: (message: string) => void;
+  existingPlaylistNames?: string[];
 }
 
 export function PlaylistImportModal({
@@ -300,18 +360,18 @@ export function PlaylistImportModal({
   showError,
   showSuccess,
   existingPlaylistNames = [],
-}) {
+}: PlaylistImportModalProps) {
   const { user } = useAuth();
-  const [source, setSource] = useState("spotify");
-  const [lastfmUsernameDraft, setLastfmUsernameDraft] = useState(null);
-  const [lastfmRequestedUsername, setLastfmRequestedUsername] = useState(null);
+  const [source, setSource] = useState<ImportSource>("spotify");
+  const [lastfmUsernameDraft, setLastfmUsernameDraft] = useState<string | null>(null);
+  const [lastfmRequestedUsername, setLastfmRequestedUsername] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [playlistQuery, setPlaylistQuery] = useState("");
-  const [pickedPlaylist, setPickedPlaylist] = useState(null);
-  const [playlistNameDraft, setPlaylistNameDraft] = useState(null);
+  const [pickedPlaylist, setPickedPlaylist] = useState<ImportPlaylist | null>(null);
+  const [playlistNameDraft, setPlaylistNameDraft] = useState<string | null>(null);
   const [syncIntervalHours, setSyncIntervalHours] = useState(24);
   const [keepRemovedTracks, setKeepRemovedTracks] = useState(true);
-  const [jsonReview, setJsonReview] = useState(null);
+  const [jsonReview, setJsonReview] = useState<JsonReview | null>(null);
 
   const reservedNameKeys = useMemo(
     () => new Set(existingPlaylistNames.map((name) => normalizeNameKey(name)).filter(Boolean)),
@@ -338,7 +398,7 @@ export function PlaylistImportModal({
   }, [resetYoutubePreview]);
 
   const handleSpotifyError = useCallback(
-    (error) => {
+    (error: ApiError) => {
       if (!isSpotifyAuthRequired(error)) return;
       queryClient.removeQueries({ queryKey: queryKeys.playlistImportPrefix("spotify") });
       queryClient.setQueryData(queryKeys.spotifyImportStatus, {
@@ -412,10 +472,10 @@ export function PlaylistImportModal({
     }),
     queryFn: () =>
       source === "spotify"
-        ? previewSpotifyPlaylist(pickedPlaylist.id)
+        ? previewSpotifyPlaylist(pickedPlaylist!.id)
         : source === "listenbrainz"
-          ? previewListenBrainzPlaylist(pickedPlaylist.id, pickedPlaylist.sourceType)
-          : previewLastfmPlaylist(pickedPlaylist.id, lastfmUsername),
+          ? previewListenBrainzPlaylist(pickedPlaylist!.id, pickedPlaylist!.sourceType)
+          : previewLastfmPlaylist(pickedPlaylist!.id, lastfmUsername),
     enabled:
       open && ["spotify", "listenbrainz", "lastfm"].includes(source) && Boolean(pickedPlaylist?.id),
   });
@@ -456,7 +516,7 @@ export function PlaylistImportModal({
     },
     onError: (error) => {
       handleSpotifyError(error);
-      showError?.(errorMessage(error, "Failed to connect Spotify"));
+      showError?.(getApiErrorMessage(error, "Failed to connect Spotify"));
     },
   });
 
@@ -476,10 +536,10 @@ export function PlaylistImportModal({
   });
 
   const externalImport = useMutation({
-    mutationFn: ({ importPlaylist, payload }) => importPlaylist(payload),
+    mutationFn: (runImport: () => ReturnType<typeof importSpotifyPlaylist>) => runImport(),
   });
   const jsonImport = useMutation({
-    mutationFn: (flows) => importTracklists(flows, reservedNameKeys),
+    mutationFn: (flows: ImportedFlow[]) => importTracklists(flows, reservedNameKeys),
   });
 
   const importing = externalImport.isPending || jsonImport.isPending;
@@ -489,16 +549,17 @@ export function PlaylistImportModal({
     spotifyPlaylistsQuery.isLoading;
   const listenBrainzLoading = scrobbleStatusQuery.isLoading || listenBrainzPlaylistsQuery.isLoading;
 
-  const youtubePlaylist = youtubePreview.data
+  const youtubePlaylist: ImportPlaylist | null = youtubePreview.data
     ? {
         ...youtubePreview.data.playlist,
         trackCount: Number(youtubePreview.data.trackCount || 0),
       }
     : null;
   const youtubeError = youtubePreview.error
-    ? errorMessage(youtubePreview.error, "Failed to preview YouTube Music playlist")
+    ? getApiErrorMessage(youtubePreview.error, "Failed to preview YouTube Music playlist")
     : "";
-  const selectedPlaylist = source === "youtube" ? youtubePlaylist : pickedPlaylist;
+  const selectedPlaylist: ImportPlaylist | null =
+    source === "youtube" ? youtubePlaylist : pickedPlaylist;
   const previewPayload = source === "youtube" ? youtubePreview.data : previewQuery.data;
   const previewLoading = source === "youtube" ? youtubePreview.isPending : previewQuery.isLoading;
   const previewTrackCount = Number(previewPayload?.trackCount || 0);
@@ -518,7 +579,7 @@ export function PlaylistImportModal({
         : source === "lastfm"
           ? lastfmPlaylistsQuery.data
           : null;
-  const playlists = Array.isArray(activePlaylistsData?.playlists)
+  const playlists: ImportPlaylist[] = Array.isArray(activePlaylistsData?.playlists)
     ? activePlaylistsData.playlists
     : EMPTY_PLAYLISTS;
 
@@ -528,7 +589,7 @@ export function PlaylistImportModal({
     return playlists.filter((playlist) => playlist.name.toLowerCase().includes(query));
   }, [playlistQuery, playlists]);
 
-  const selectSource = (nextSource) => {
+  const selectSource = (nextSource: ImportSource) => {
     setSource(nextSource);
     setPlaylistQuery("");
     setPickedPlaylist(null);
@@ -537,7 +598,7 @@ export function PlaylistImportModal({
     youtubePreview.reset();
   };
 
-  const loadLastfmPlaylists = (requestedUsername) => {
+  const loadLastfmPlaylists = (requestedUsername: string) => {
     const username = String(requestedUsername || "").trim();
     if (!username) return;
     setLastfmUsernameDraft(username);
@@ -553,7 +614,7 @@ export function PlaylistImportModal({
     setPickedPlaylist(null);
   };
 
-  const handleSelectPlaylist = (playlist) => {
+  const handleSelectPlaylist = (playlist: ImportPlaylist) => {
     setPickedPlaylist(playlist);
     setPlaylistNameDraft(null);
   };
@@ -564,18 +625,18 @@ export function PlaylistImportModal({
     setPlaylistNameDraft(null);
     youtubePreview.mutate(url, {
       onError: (error) => {
-        showError?.(errorMessage(error, "Failed to preview YouTube Music playlist"));
+        showError?.(getApiErrorMessage(error, "Failed to preview YouTube Music playlist"));
       },
     });
   };
 
-  const handleYoutubeUrlChange = (value) => {
+  const handleYoutubeUrlChange = (value: string) => {
     setYoutubeUrl(value);
     setPlaylistNameDraft(null);
     youtubePreview.reset();
   };
 
-  const handleJsonFileChange = async (event) => {
+  const handleJsonFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
@@ -586,7 +647,7 @@ export function PlaylistImportModal({
       }));
       setJsonReview({ fileName: file.name, flows });
     } catch (error) {
-      showError?.(error?.message || "Failed to read tracklist file");
+      showError?.(asApiError(error)?.message || "Failed to read tracklist file");
     } finally {
       event.target.value = "";
     }
@@ -610,41 +671,37 @@ export function PlaylistImportModal({
         : isYoutube
           ? "YouTube Music"
           : "Spotify";
-    const importPlaylist = isListenBrainz
-      ? importListenBrainzPlaylist
-      : isLastfm
-        ? importLastfmPlaylist
-        : isYoutube
-          ? importYoutubeMusicPlaylist
-          : importSpotifyPlaylist;
-    externalImport.mutate(
-      {
-        importPlaylist,
-        payload: {
-          playlistId: selectedPlaylist.id,
-          ...(isListenBrainz && selectedPlaylist.sourceType
-            ? { playlistType: selectedPlaylist.sourceType }
-            : {}),
-          ...(isLastfm ? { username: lastfmUsername } : {}),
-          ...(!isYoutube ? { externalName: selectedPlaylist.name } : {}),
-          name: finalName,
-          syncEnabled: syncIntervalHours > 0,
-          syncIntervalHours,
-          keepRemovedTracks,
-        },
+    const payload = {
+      playlistId: selectedPlaylist.id,
+      name: finalName,
+      syncEnabled: syncIntervalHours > 0,
+      syncIntervalHours,
+      keepRemovedTracks,
+    };
+    const externalName = selectedPlaylist.name;
+    const runImport = () =>
+      isListenBrainz
+        ? importListenBrainzPlaylist({
+            ...payload,
+            externalName,
+            ...(selectedPlaylist.sourceType ? { playlistType: selectedPlaylist.sourceType } : {}),
+          })
+        : isLastfm
+          ? importLastfmPlaylist({ ...payload, externalName, username: lastfmUsername })
+          : isYoutube
+            ? importYoutubeMusicPlaylist(payload)
+            : importSpotifyPlaylist({ ...payload, externalName });
+    externalImport.mutate(runImport, {
+      onSuccess: () => {
+        showSuccess?.(`Queued import of ${finalName} from ${providerLabel}`);
+        onImported?.();
+        onClose?.();
       },
-      {
-        onSuccess: () => {
-          showSuccess?.(`Queued import of ${finalName} from ${providerLabel}`);
-          onImported?.();
-          onClose?.();
-        },
-        onError: (error) => {
-          handleSpotifyError(error);
-          showError?.(errorMessage(error, `Failed to import ${providerLabel} playlist`));
-        },
+      onError: (error) => {
+        handleSpotifyError(error);
+        showError?.(getApiErrorMessage(error, `Failed to import ${providerLabel} playlist`));
       },
-    );
+    });
   };
 
   const handleImportJson = () => {
@@ -742,13 +799,15 @@ export function PlaylistImportModal({
           role="group"
           aria-label="Import source"
         >
-          {[
-            { id: "spotify", label: "Spotify" },
-            { id: "lastfm", label: "Last.fm" },
-            { id: "listenbrainz", label: "ListenBrainz" },
-            { id: "youtube", label: "YouTube Music" },
-            { id: "json", label: "JSON file" },
-          ].map((option) => (
+          {(
+            [
+              { id: "spotify", label: "Spotify" },
+              { id: "lastfm", label: "Last.fm" },
+              { id: "listenbrainz", label: "ListenBrainz" },
+              { id: "youtube", label: "YouTube Music" },
+              { id: "json", label: "JSON file" },
+            ] as const
+          ).map((option) => (
             <button
               key={option.id}
               type="button"
@@ -1001,7 +1060,7 @@ export function PlaylistImportModal({
                             key={playlist.id}
                             type="button"
                             role="option"
-                            aria-selected={selectedPlaylist?.id === playlist.id}
+                            aria-selected={false}
                             className="playlist-import__playlist-option"
                             onClick={() => handleSelectPlaylist(playlist)}
                             disabled={importing}

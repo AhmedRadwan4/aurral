@@ -5,8 +5,11 @@ import {
   downloadedFileEvidence,
   validateDownloadedTrackFile,
 } from "./trackMatching/postDownloadValidator.ts";
-import { mapRequest, trackRequestFor } from "./releaseManifest.ts";
+import { mapRequest, trackRequestFor, type ReleaseManifest } from "./releaseManifest.ts";
 import { judgeRelease } from "./trackMatching/releaseJudge.ts";
+
+type ManifestJob = Parameters<typeof mapRequest>[1][number];
+type AlbumJob = ManifestJob & { upgradeForJobId?: string | null };
 
 export async function assignDownloadedAlbumFiles({
   jobs,
@@ -15,6 +18,13 @@ export async function assignDownloadedAlbumFiles({
   manifest,
   verified = false,
   parseAudio = parseFile,
+}: {
+  jobs: AlbumJob[];
+  filePaths?: string[] | null;
+  source: "deemix" | "soulseek" | "usenet";
+  manifest: ReleaseManifest;
+  verified?: boolean;
+  parseAudio?: typeof parseFile;
 }) {
   const readable = [];
   const seen = new Set();
@@ -35,15 +45,14 @@ export async function assignDownloadedAlbumFiles({
     }
   }
   const unreadableCount = (filePaths || []).length - readable.length;
-  const failedRelease = (reason) => ({
+  const failedRelease = (reason: string) => ({
     accepted: [],
     rejected: jobs.map((job) => ({ jobId: job.id, reason })),
     unreadableCount,
   });
   const verdict = judgeRelease(manifest, { files: readable.map((entry) => entry.evidence) });
-  if (!verified && (unreadableCount || verdict.kind !== "exact")) {
-    return failedRelease(unreadableCount ? "The album contains unreadable audio" : verdict.reason);
-  }
+  if (!verified && unreadableCount) return failedRelease("The album contains unreadable audio");
+  if (!verified && verdict.kind !== "exact") return failedRelease(verdict.reason);
   const { wanted } = mapRequest(manifest, jobs);
   const accepted = [];
   const rejected = [];

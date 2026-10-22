@@ -1,12 +1,12 @@
-import { forwardRef, useEffect, useRef } from "react";
-import { Link, useLocation, useNavigate } from "react-router";
-import { useAuth } from "../contexts/AuthContext";
+import { forwardRef, useEffect, useRef, type MouseEvent, type ReactNode } from "react";
+import { Link, useLocation, useNavigate, type LinkProps, type To } from "react-router";
+import { useOptionalAuth } from "../contexts/AuthContext";
 import { isRouteModuleLoaded, prefetchRoute } from "../navigation/routePrefetch.ts";
 import { markSharedArtwork, routeTransitionsEnabled } from "../navigation/viewTransitions.ts";
 
 const HOVER_INTENT_MS = 100;
 
-const isPlainClick = (event, target) =>
+const isPlainClick = (event: MouseEvent<HTMLAnchorElement>, target: string | undefined) =>
   event.button === 0 &&
   !event.defaultPrevented &&
   !event.metaKey &&
@@ -15,7 +15,7 @@ const isPlainClick = (event, target) =>
   !event.altKey &&
   (!target || target === "_self");
 
-const RouteLink = forwardRef(function RouteLink(
+const RouteLink = forwardRef<HTMLAnchorElement, LinkProps>(function RouteLink(
   {
     to,
     onClick,
@@ -29,13 +29,13 @@ const RouteLink = forwardRef(function RouteLink(
   },
   ref,
 ) {
-  const userId = useAuth()?.user?.id ?? null;
+  const userId = useOptionalAuth()?.user?.id ?? null;
   const navigate = useNavigate();
   const location = useLocation();
-  const timerRef = useRef(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancel = () => {
-    clearTimeout(timerRef.current);
+    if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = null;
   };
   const prefetch = () => {
@@ -47,7 +47,12 @@ const RouteLink = forwardRef(function RouteLink(
     timerRef.current = setTimeout(prefetch, HOVER_INTENT_MS);
   };
 
-  useEffect(() => () => clearTimeout(timerRef.current), []);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
 
   return (
     <Link
@@ -102,7 +107,12 @@ const RouteLink = forwardRef(function RouteLink(
   );
 });
 
-export function OptionalLink({ link, children, ...props }) {
+type OptionalLinkProps = Omit<LinkProps, "to"> & {
+  link?: { to: To; state?: unknown } | null;
+  children?: ReactNode;
+};
+
+export function OptionalLink({ link, children, ...props }: OptionalLinkProps) {
   if (!link?.to) {
     const { className } = props;
     return <span className={className}>{children}</span>;

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Ban, Library, MoreVertical, ThumbsDown, ThumbsUp } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Ban, Library, MoreVertical, ThumbsDown, ThumbsUp, type LucideIcon } from "lucide-react";
 import { getDiscoveryFeedbackLabel } from "../utils/discoveryFeedback";
 import { LibraryItemMenu } from "./LibraryItemMenu";
 import TooltipButton from "./TooltipButton";
@@ -7,6 +7,35 @@ import Tooltip from "./Tooltip";
 import RouteLink from "./RouteLink";
 import { DotLoader } from "./DotLoader";
 
+type FeedbackAction = "more_like_this" | "less_like_this" | "block_artist";
+type ArtistMenuArtist = { name?: string | null; artistName?: string | null };
+type LibraryLink = { to: string; state?: unknown };
+type FeedbackItemDef = { id: FeedbackAction; icon: LucideIcon; danger?: boolean };
+
+interface ArtistContextMenuProps {
+  artist?: ArtistMenuArtist | null;
+  artistName?: string | null;
+  isInLibrary?: boolean;
+  getLibraryLink?: (artist: ArtistMenuArtist | null | undefined) => LibraryLink | null;
+  onFeedback?: (
+    artist: ArtistMenuArtist | null | undefined,
+    action: FeedbackAction,
+    options: { isSelected: boolean },
+  ) => unknown;
+  feedbackUsed?: Partial<Record<FeedbackAction, boolean>>;
+  className?: string;
+  buttonClassName?: string;
+  menuLayout?: "text" | "inline";
+}
+
+export function ArtistContextMenu<A extends ArtistMenuArtist>(
+  props: Omit<ArtistContextMenuProps, "artist" | "getLibraryLink" | "onFeedback"> & {
+    artist: A;
+    getLibraryLink?: (artist: A) => LibraryLink | null;
+    onFeedback?: (artist: A, action: FeedbackAction, options: { isSelected: boolean }) => unknown;
+  },
+): ReactNode;
+export function ArtistContextMenu(props: ArtistContextMenuProps): ReactNode;
 export function ArtistContextMenu({
   artist,
   artistName,
@@ -17,17 +46,19 @@ export function ArtistContextMenu({
   className = "",
   buttonClassName = "btn btn-icon-square artist-context-menu__trigger",
   menuLayout = "text",
-}) {
-  const [pendingAction, setPendingAction] = useState(null);
+}: ArtistContextMenuProps) {
+  const [pendingAction, setPendingAction] = useState<FeedbackAction | null>(null);
   const labelName = artistName || artist?.name || artist?.artistName || "artist";
   const libraryLink = isInLibrary ? getLibraryLink?.(artist) || null : null;
   const hasLibraryItem = Boolean(libraryLink);
   const feedbackItems = onFeedback
-    ? [
-        { id: "more_like_this", icon: ThumbsUp },
-        { id: "less_like_this", icon: ThumbsDown },
-        { id: "block_artist", icon: Ban, danger: true },
-      ].map((item) => ({
+    ? (
+        [
+          { id: "more_like_this", icon: ThumbsUp },
+          { id: "less_like_this", icon: ThumbsDown },
+          { id: "block_artist", icon: Ban, danger: true },
+        ] satisfies FeedbackItemDef[]
+      ).map((item) => ({
         ...item,
         label:
           item.id === "block_artist" && feedbackUsed.block_artist
@@ -44,8 +75,8 @@ export function ArtistContextMenu({
           id: "open-library",
           label: "Open in library",
           icon: Library,
-          to: libraryLink.to,
-          state: libraryLink.state,
+          to: libraryLink!.to,
+          state: libraryLink!.state,
         },
       ]
     : [];
@@ -53,7 +84,7 @@ export function ArtistContextMenu({
   if (!hasLibraryItem && !onFeedback) return null;
 
   if (menuLayout === "inline") {
-    const runFeedback = async (item) => {
+    const runFeedback = async (item: (typeof feedbackItems)[number]) => {
       if (pendingAction) return;
       setPendingAction(item.id);
       try {
@@ -70,8 +101,8 @@ export function ArtistContextMenu({
         {hasLibraryItem ? (
           <Tooltip content="Open in library">
             <RouteLink
-              to={libraryLink.to}
-              state={libraryLink.state}
+              to={libraryLink!.to}
+              state={libraryLink!.state}
               aria-label="Open in library"
               className="btn btn-icon-square artist-context-menu__inline-action is-selected"
             >

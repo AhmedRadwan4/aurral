@@ -5,10 +5,21 @@ import {
   favoriteId,
   favoriteLibraryFromResponse,
   normalizeLibraryPages,
+  type LibraryAlbum,
+  type LibraryArtist,
+  type LibraryTrack,
 } from "../utils/libraryPageData.ts";
-import { DEFAULT_LIBRARY_VIEW, LIBRARY_VIEWS } from "../navigation/libraryNavConfig";
+import {
+  DEFAULT_LIBRARY_VIEW,
+  LIBRARY_VIEWS,
+  type LibraryViewId,
+} from "../navigation/libraryNavConfig";
 import { libraryPreviewData, libraryPreviewFavorites } from "./libraryPreviewData";
 import { queryKeys } from "../queryClient.ts";
+import type {
+  FetchLibraryFavoritesResponse,
+  FetchLibraryPageResponse,
+} from "../../../backend/routes/library/handlers/libraryIndex.ts";
 
 export const LIBRARY_PAGE_SIZE = 100;
 export const LIBRARY_DEFAULT_SORT = "name";
@@ -17,7 +28,7 @@ const NAME_SORT = { value: LIBRARY_DEFAULT_SORT, label: "Name" };
 const ARTIST_SORT = { value: "artist", label: "Artist" };
 const NEWEST_SORT = { value: "newest", label: "Recently added" };
 
-export const LIBRARY_SORT_OPTIONS = {
+export const LIBRARY_SORT_OPTIONS: Partial<Record<LibraryViewId, (typeof NAME_SORT)[]>> = {
   albums: [NAME_SORT, ARTIST_SORT, NEWEST_SORT],
   tracks: [NAME_SORT, ARTIST_SORT, NEWEST_SORT],
   artists: [NAME_SORT, NEWEST_SORT],
@@ -25,31 +36,37 @@ export const LIBRARY_SORT_OPTIONS = {
   genres: [NAME_SORT],
 };
 
-export const libraryListParams = (section, searchParams) => {
+export const libraryListParams = (section: LibraryViewId, searchParams: URLSearchParams) => {
   const requestedSort = searchParams.get("sort");
   const requestedPage = Number(searchParams.get("page"));
   return {
     sort: (LIBRARY_SORT_OPTIONS[section] || []).some((option) => option.value === requestedSort)
-      ? requestedSort
+      ? requestedSort!
       : LIBRARY_DEFAULT_SORT,
     direction: searchParams.get("dir") === "desc" ? "desc" : "asc",
     pageIndex: Number.isSafeInteger(requestedPage) && requestedPage > 1 ? requestedPage : 1,
   };
 };
 
-const LIBRARY_VIEW_IDS = new Set(LIBRARY_VIEWS.map((view) => view.id));
+const LIBRARY_VIEW_IDS = new Set<string | undefined>(LIBRARY_VIEWS.map((view) => view.id));
 
-export const resolveLibrarySection = (routeSection) =>
-  LIBRARY_VIEW_IDS.has(routeSection) ? routeSection : DEFAULT_LIBRARY_VIEW;
+const isLibraryViewId = (value: string | undefined): value is LibraryViewId =>
+  LIBRARY_VIEW_IDS.has(value);
 
-export const libraryTabForSection = (section) =>
+export const resolveLibrarySection = (routeSection: string | undefined): LibraryViewId =>
+  isLibraryViewId(routeSection) ? routeSection : DEFAULT_LIBRARY_VIEW;
+
+export const libraryTabForSection = (section: LibraryViewId | undefined) =>
   section === "home" || section === "album-artists" ? "artists" : section;
 
-const favoriteIdsFromPages = (pages) =>
+type LibraryPage = Parameters<typeof normalizeLibraryPages>[0][number];
+type LibraryEntity = LibraryArtist | LibraryAlbum | LibraryTrack;
+
+const favoriteIdsFromPages = (pages: LibraryPage[]) =>
   new Set(
-    ["artists", "albums", "tracks"].flatMap((kind) =>
+    (["artists", "albums", "tracks"] as const).flatMap((kind) =>
       pages
-        .flatMap((page) => (Array.isArray(page?.[kind]) ? page[kind] : []))
+        .flatMap((page): LibraryEntity[] => (Array.isArray(page?.[kind]) ? page[kind] : []))
         .filter((entity) => entity.userFavorite)
         .map((entity) =>
           favoriteId(kind === "artists" ? "artist" : kind === "albums" ? "album" : "song", entity),
@@ -57,16 +74,27 @@ const favoriteIdsFromPages = (pages) =>
     ),
   );
 
-const favoriteIdsFromFavorites = (favorites) =>
+const favoriteIdsFromFavorites = (favorites: FetchLibraryFavoritesResponse) =>
   new Set(
-    ["artist", "album", "song"].flatMap((kind) =>
+    (["artist", "album", "song"] as const).flatMap((kind) =>
       (Array.isArray(favorites?.[kind]) ? favorites[kind] : []).map((entry) => entry.id),
     ),
   );
 
-const fetchLibraryView = async (
-  { section, albumId, artistId, pageIndex, query, genre, sort, direction },
-  signal,
+type LibraryViewRequest = {
+  section?: LibraryViewId;
+  albumId?: string | null;
+  artistId?: string | null;
+  pageIndex?: number;
+  query?: string;
+  genre?: string;
+  sort?: string;
+  direction?: string;
+};
+
+const fetchLibraryPages = async (
+  { section, albumId, artistId, pageIndex, query, genre, sort, direction }: LibraryViewRequest,
+  signal: AbortSignal,
 ) => {
   const tab = libraryTabForSection(section);
   const pageSize = LIBRARY_PAGE_SIZE;
@@ -93,7 +121,6 @@ const fetchLibraryView = async (
       ),
     ]);
   }
-  if (section === "favorites") return getLibraryFavorites({ signal });
   if (section === "home") {
     return Promise.all([
       fetchLibraryPage(
@@ -134,6 +161,37 @@ const fetchLibraryView = async (
   );
 };
 
+export type LibraryViewLibrary = ReturnType<typeof normalizeLibraryPages>;
+
+export type LibraryViewData = {
+  nextData?: FetchLibraryPageResponse | FetchLibraryPageResponse[] | FetchLibraryFavoritesResponse;
+  pageResults?: (LibraryPage & { total?: number })[];
+  isPreview?: boolean;
+  library?: LibraryViewLibrary;
+  favoriteIds?: Set<string>;
+};
+
+const finishLibraryView = (
+  { query, genre }: Pick<LibraryViewRequest, "query" | "genre">,
+  { nextData, pageResults, library, favoriteIds }: Required<Omit<LibraryViewData, "isPreview">>,
+): LibraryViewData => {
+  const usePreview =
+    import.meta.env.DEV &&
+    pageResults.every((page) => Number(page?.total || 0) === 0) &&
+    !query &&
+    !genre &&
+    library.artists.length === 0 &&
+    library.albums.length === 0 &&
+    library.tracks.length === 0;
+  return {
+    nextData,
+    pageResults,
+    isPreview: usePreview,
+    library: usePreview ? libraryPreviewData : library,
+    favoriteIds: usePreview ? new Set(libraryPreviewFavorites) : favoriteIds,
+  };
+};
+
 export function libraryViewQueryOptions({
   preview = false,
   section = DEFAULT_LIBRARY_VIEW,
@@ -144,6 +202,16 @@ export function libraryViewQueryOptions({
   genre = "",
   sort = "name",
   direction = "asc",
+}: {
+  preview?: boolean;
+  section?: LibraryViewId;
+  albumId?: string | null;
+  artistId?: string | null;
+  pageIndex?: number;
+  query?: string;
+  genre?: string;
+  sort?: string;
+  direction?: string;
 } = {}) {
   const view =
     albumId || artistId
@@ -154,36 +222,23 @@ export function libraryViewQueryOptions({
     enabled: !preview,
     staleTime: 15_000,
     queryFn: async ({ signal }) => {
-      const nextData = await fetchLibraryView(view, signal);
-      const pageResults =
-        view.section === "favorites"
-          ? [nextData?.library || EMPTY_LIBRARY]
-          : Array.isArray(nextData)
-            ? nextData
-            : [nextData];
-      const normalizedLibrary =
-        view.section === "favorites"
-          ? favoriteLibraryFromResponse(nextData)
-          : normalizeLibraryPages(pageResults);
-      const usePreview =
-        import.meta.env.DEV &&
-        pageResults.every((page) => Number(page?.total || 0) === 0) &&
-        !view.query &&
-        !view.genre &&
-        normalizedLibrary.artists.length === 0 &&
-        normalizedLibrary.albums.length === 0 &&
-        normalizedLibrary.tracks.length === 0;
-      return {
+      if (view.section === "favorites") {
+        const favorites = await getLibraryFavorites({ signal });
+        return finishLibraryView(view, {
+          nextData: favorites,
+          pageResults: [favorites?.library || EMPTY_LIBRARY],
+          library: favoriteLibraryFromResponse(favorites),
+          favoriteIds: favoriteIdsFromFavorites(favorites),
+        });
+      }
+      const nextData = await fetchLibraryPages(view, signal);
+      const pageResults = Array.isArray(nextData) ? nextData : [nextData];
+      return finishLibraryView(view, {
         nextData,
         pageResults,
-        isPreview: usePreview,
-        library: usePreview ? libraryPreviewData : normalizedLibrary,
-        favoriteIds: usePreview
-          ? new Set(libraryPreviewFavorites)
-          : view.section === "favorites"
-            ? favoriteIdsFromFavorites(nextData)
-            : favoriteIdsFromPages(pageResults),
-      };
+        library: normalizeLibraryPages(pageResults),
+        favoriteIds: favoriteIdsFromPages(pageResults),
+      });
     },
   });
 }

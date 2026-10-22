@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { clearAuthStorage, getStoredAuth, setStoredAuth } from "../utils/api/core.ts";
+import { asApiError, clearAuthStorage, getStoredAuth, setStoredAuth } from "../utils/api/core.ts";
 import {
   getBootstrapStatus,
   getMe,
@@ -25,7 +25,7 @@ type AuthUser = {
   id?: number;
   username?: string;
   role: string;
-  permissions: Record<string, boolean>;
+  permissions: Record<string, unknown>;
 };
 type LoginResult = { ok: boolean; status?: number };
 type AuthContextValue = {
@@ -153,7 +153,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       } catch {}
       return { ok: true };
     } catch (error) {
-      return { ok: false, status: error?.response?.status };
+      return { ok: false, status: asApiError(error)?.response?.status };
     }
   }, []);
 
@@ -227,4 +227,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   );
 };
 
-export const useAuth = () => useContext(AuthContext);
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+  return context;
+}
+
+export const useOptionalAuth = () => useContext(AuthContext);

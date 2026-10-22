@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { flowPlaylistConfig, orderJobsByPlaylistTracks } from "../playlists/flowPlaylistConfig.ts";
-import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
+import { downloadTracker, type DownloadJob } from "../downloadJobs/downloadTracker.ts";
 import { resolveExistingTrackPath, resolveDownloadRoot } from "../downloadPaths.ts";
 
-async function isFile(filePath) {
+async function isFile(filePath: string) {
   try {
     return (await fs.stat(filePath)).isFile();
   } catch {
@@ -12,12 +12,15 @@ async function isFile(filePath) {
   }
 }
 
-export async function collectPlaybackPlaylistTracks(entityId, options = {}) {
+export async function collectPlaybackPlaylistTracks(
+  entityId: string,
+  options: { downloadRoot?: string | null } = {},
+) {
   const downloadRoot = path.resolve(options.downloadRoot || resolveDownloadRoot());
   const playlist = flowPlaylistConfig.getStaticPlaylist(entityId);
   const referencedJobs = (playlist?.tracks || [])
     .map((track) => (track?.canonicalJobId ? downloadTracker.getJob(track.canonicalJobId) : null))
-    .filter(Boolean);
+    .filter((job): job is DownloadJob => Boolean(job));
   const jobs = [...referencedJobs, ...downloadTracker.getByPlaylistType(entityId)]
     .filter(
       (job, index, values) => values.findIndex((candidate) => candidate.id === job.id) === index,

@@ -1,5 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import type { ArtistDetailsResponse } from "../../../../../backend/routes/artists/handlers/details.ts";
+import type { SimilarArtistsResponse } from "../../../../../backend/routes/artists/handlers/similar.ts";
+import { getApiErrorMessage, type ArtistCoverImage } from "../utils";
+import type { RequestAlbumFromSearchResponse } from "../../../../../backend/routes/library/handlers/albums.ts";
+import type { FetchLibraryArtistResponse } from "../../../../../backend/routes/library/handlers/artists.ts";
 import {
   getArtistDetails,
   getArtistCover,
@@ -18,9 +22,36 @@ import { queryClient, queryKeys } from "../../../queryClient.ts";
 import { useWebSocketChannel } from "../../../hooks/useWebSocket.ts";
 import { allReleaseTypes, emptyArtistShape } from "../constants";
 
-const buildReleaseGroupCoverRequest = (rgId, artist, libraryAlbums, pageArtistName) => {
+export type ArtistDetails = Partial<ArtistDetailsResponse>;
+type ReleaseGroupList = NonNullable<ArtistDetails["appears-on-release-groups"]>;
+type ReleaseGroup = NonNullable<ArtistDetails["release-groups"]>[number];
+export type LibraryAlbumEntry = {
+  id: string | number;
+  canonicalId?: string;
+  mbid?: string | null;
+  foreignAlbumId?: string | null;
+  albumName?: string | null;
+  albumType?: string;
+  releaseDate?: string | null;
+  monitored: boolean;
+  managedBy?: string | null;
+  artistMbid?: string | null;
+  artistName?: string | null;
+  statistics: { trackFileCount?: number; sizeOnDisk: number; percentOfTracks: number };
+};
+export type LibraryAlbums = LibraryAlbumEntry[];
+export type LookupArtist = NonNullable<Awaited<ReturnType<typeof lookupArtistInLibrary>>["artist"]>;
+export type AddedLibraryArtist = NonNullable<RequestAlbumFromSearchResponse["artist"]>;
+export type LibraryArtistRecord = FetchLibraryArtistResponse | LookupArtist | AddedLibraryArtist;
+
+const buildReleaseGroupCoverRequest = (
+  rgId: string,
+  artist: ArtistDetails | null,
+  libraryAlbums: LibraryAlbums | undefined,
+  pageArtistName: string,
+) => {
   const releaseGroup =
-    artist?.["release-groups"]?.find((item) => item?.id === rgId) ||
+    artist?.["release-groups"]?.find((item: ReleaseGroup) => item?.id === rgId) ||
     artist?.["appears-on-release-groups"]?.find((item) => item?.id === rgId);
   const libraryAlbum = libraryAlbums?.find(
     (album) => (album.mbid || album.foreignAlbumId) === rgId,
@@ -39,7 +70,7 @@ const buildReleaseGroupCoverRequest = (rgId, artist, libraryAlbums, pageArtistNa
 const buildInitialArtist = (
   mbid: string | undefined,
   artistNameFromNav: string | undefined,
-): Partial<ArtistDetailsResponse> | null =>
+): ArtistDetails | null =>
   mbid
     ? {
         id: mbid,
@@ -51,20 +82,23 @@ const buildInitialArtist = (
       }
     : null;
 
-const EMPTY_ARRAY = [];
+const EMPTY_ARRAY: never[] = [];
 const RELEASE_TYPES_PARAM = allReleaseTypes.join(",");
 
-const normalizePositiveLimit = (value) => {
-  const parsed = Number.parseInt(value, 10);
+const normalizePositiveLimit = (value: number | null | undefined) => {
+  const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
-const sortAppearsOnReleaseGroups = (items = []) =>
+const sortAppearsOnReleaseGroups = (items: ReleaseGroupList = []) =>
   [...items].sort((a, b) =>
     String(b["first-release-date"] || "").localeCompare(String(a["first-release-date"] || "")),
   );
 
-const getAppearsOnCoverIds = (releaseGroups, limit) => {
+const getAppearsOnCoverIds = (
+  releaseGroups: ReleaseGroupList | undefined,
+  limit: number | null,
+) => {
   if (!limit || !releaseGroups?.length) return [];
   return sortAppearsOnReleaseGroups(releaseGroups)
     .slice(0, limit)
@@ -72,15 +106,25 @@ const getAppearsOnCoverIds = (releaseGroups, limit) => {
     .filter(Boolean);
 };
 
+type ArtistDetailsStreamOptions = {
+  visibleCoverIds?: string[];
+  initialLibraryHint?: {
+    existsInLibrary?: boolean;
+    libraryArtist?: LibraryArtistRecord | null;
+  } | null;
+  appearsOnLimit?: number | null;
+  seedImage?: string | null;
+};
+
 export function useArtistDetailsStream(
-  mbid,
-  artistNameFromNav,
+  mbid: string | undefined,
+  artistNameFromNav: string | undefined,
   {
     visibleCoverIds = EMPTY_ARRAY,
     initialLibraryHint = null,
     appearsOnLimit = null,
     seedImage = null,
-  } = {},
+  }: ArtistDetailsStreamOptions = {},
 ) {
   const initialArtist = buildInitialArtist(mbid, artistNameFromNav);
   const normalizedAppearsOnLimit = normalizePositiveLimit(appearsOnLimit);
@@ -98,7 +142,7 @@ export function useArtistDetailsStream(
     [initialLibraryExists, initialLibraryArtist],
   );
   const cachedLookupMap = mbid ? readLibraryLookupCache([mbid]) : {};
-  const cachedLookup = cachedLookupMap?.[mbid];
+  const cachedLookup = mbid ? cachedLookupMap?.[mbid] : undefined;
   const seededExistsInLibrary =
     stableInitialLibraryHint.existsInLibrary === true || cachedLookup === true ? true : undefined;
   const seededLibraryArtist =
@@ -106,7 +150,7 @@ export function useArtistDetailsStream(
       ? stableInitialLibraryHint.libraryArtist
       : null;
 
-  const [artist, setArtist] = useState(initialArtist);
+  const [artist, setArtist] = useState<ArtistDetails | null>(initialArtist);
   const artistId = artist?.id;
   const artistName = artist?.name;
   const artistReleaseGroups = artist?.["release-groups"];
@@ -114,14 +158,14 @@ export function useArtistDetailsStream(
   const seedCoverImages = seedImage ? [{ image: seedImage, front: true }] : EMPTY_ARRAY;
   const seedCoverImagesRef = useRef(seedCoverImages);
   seedCoverImagesRef.current = seedCoverImages;
-  const [coverImages, setCoverImages] = useState(seedCoverImages);
-  const [libraryArtist, setLibraryArtist] = useState(seededLibraryArtist);
-  const [libraryAlbums, setLibraryAlbums] = useState<Awaited<ReturnType<typeof getLibraryAlbums>>>(
-    [],
+  const [coverImages, setCoverImages] = useState<ArtistCoverImage[]>(seedCoverImages);
+  const [libraryArtist, setLibraryArtist] = useState<LibraryArtistRecord | null>(
+    seededLibraryArtist,
   );
-  const [similarArtists, setSimilarArtists] = useState([]);
+  const [libraryAlbums, setLibraryAlbums] = useState<LibraryAlbums>([]);
+  const [similarArtists, setSimilarArtists] = useState<SimilarArtistsResponse["artists"]>([]);
   const [loading, setLoading] = useState(!mbid);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [existsInLibrary, setExistsInLibrary] = useState(seededExistsInLibrary === true);
   const [loadingCover, setLoadingCover] = useState(true);
   const [loadingSimilar, setLoadingSimilar] = useState(true);
@@ -129,20 +173,20 @@ export function useArtistDetailsStream(
   const [loadingReleases, setLoadingReleases] = useState(!!mbid);
   const [loadingAppearsOn, setLoadingAppearsOn] = useState(!!mbid);
   const [appSettings, setAppSettings] = useState<AppSettingsResponse | null>(null);
-  const [albumCovers, setAlbumCovers] = useState({});
-  const [fulfilledCoverIds, setFulfilledCoverIds] = useState(() => new Set());
+  const [albumCovers, setAlbumCovers] = useState<Record<string, string>>({});
+  const [fulfilledCoverIds, setFulfilledCoverIds] = useState(() => new Set<string>());
   const albumCoversRef = useRef(albumCovers);
   const fulfilledCoverIdsRef = useRef(fulfilledCoverIds);
-  const requestedAlbumCoversRef = useRef(new Set());
-  const pendingCoverIdsRef = useRef(new Set());
-  const coverBatchTimerRef = useRef(null);
+  const requestedAlbumCoversRef = useRef(new Set<string>());
+  const pendingCoverIdsRef = useRef(new Set<string>());
+  const coverBatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const artistMbidRef = useRef(mbid);
   const artistRef = useRef(artist);
   const libraryAlbumsRef = useRef(libraryAlbums);
   const artistNameRef = useRef(artistNameFromNav || "");
   const visibleCoverIdsRef = useRef(visibleCoverIds);
   const streamRequestRef = useRef(0);
-  const libraryRefreshRef = useRef(null);
+  const libraryRefreshRef = useRef<(() => Promise<void>) | null>(null);
   const optimisticLibraryLookupRef = useRef(false);
 
   useWebSocketChannel(
@@ -193,7 +237,7 @@ export function useArtistDetailsStream(
     setArtist(buildInitialArtist(mbid, artistNameFromNav));
     setCoverImages(seedCoverImagesRef.current);
     setAlbumCovers({});
-    const emptyFulfilled = new Set();
+    const emptyFulfilled = new Set<string>();
     setFulfilledCoverIds(emptyFulfilled);
     fulfilledCoverIdsRef.current = emptyFulfilled;
     pendingCoverIdsRef.current = new Set();
@@ -244,7 +288,7 @@ export function useArtistDetailsStream(
     let libraryReceived = false;
     let restFallbackStarted = false;
 
-    const loadCoverAndSimilarFallback = async (nameForCover, refreshCover = false) => {
+    const loadCoverAndSimilarFallback = async (nameForCover: string, refreshCover = false) => {
       const requests = [];
       if (!coverReceived) {
         requests.push(
@@ -345,7 +389,7 @@ export function useArtistDetailsStream(
         const artistData = await getArtistDetails(mbid, artistNameFromNav, {
           mode: detailsMode,
           releaseTypes: allReleaseTypes,
-          appearsOnLimit: normalizedAppearsOnLimit,
+          appearsOnLimit: normalizedAppearsOnLimit ?? undefined,
         });
         if (!artistData || !artistData.id) {
           throw new Error("Invalid artist data received");
@@ -365,12 +409,7 @@ export function useArtistDetailsStream(
       } catch (err) {
         console.error("Error fetching artist data:", err);
         if (!isCurrentRequest()) return;
-        setError(
-          err.response?.data?.message ||
-            err.response?.data?.error ||
-            err.message ||
-            "Failed to fetch artist details",
-        );
+        setError(getApiErrorMessage(err) || "Failed to fetch artist details");
         setLoading(false);
         setLoadingCover(false);
         setLoadingSimilar(false);
@@ -389,7 +428,7 @@ export function useArtistDetailsStream(
 
     eventSource.addEventListener("artist", (event) => {
       try {
-        const artistData = JSON.parse(event.data);
+        const artistData: ArtistDetails = JSON.parse(event.data);
         if (!isCurrentRequest()) return;
         if (!artistData) {
           throw new Error("Invalid artist data received");
@@ -438,7 +477,7 @@ export function useArtistDetailsStream(
 
     eventSource.addEventListener("cover", (event) => {
       try {
-        const coverData = JSON.parse(event.data);
+        const coverData: { images?: ArtistCoverImage[] } = JSON.parse(event.data);
         if (!isCurrentRequest()) return;
         coverReceived = true;
         if (coverData.images && coverData.images.length > 0) {
@@ -455,7 +494,7 @@ export function useArtistDetailsStream(
 
     eventSource.addEventListener("similar", (event) => {
       try {
-        const similarData = JSON.parse(event.data);
+        const similarData: Partial<SimilarArtistsResponse> = JSON.parse(event.data);
         if (!isCurrentRequest()) return;
         similarReceived = true;
         setSimilarArtists(similarData.artists || []);
@@ -470,7 +509,7 @@ export function useArtistDetailsStream(
 
     eventSource.addEventListener("library", (event) => {
       try {
-        const data = JSON.parse(event.data);
+        const data: Awaited<ReturnType<typeof lookupArtistInLibrary>> = JSON.parse(event.data);
         if (!isCurrentRequest()) return;
         libraryReceived = true;
         queryClient.setQueryData(queryKeys.libraryLookupDetails(mbid), data);
@@ -513,7 +552,9 @@ export function useArtistDetailsStream(
 
     eventSource.addEventListener("error", (event) => {
       try {
-        const errorData = JSON.parse(event.data);
+        const errorData: { message?: string; error?: string } = JSON.parse(
+          event instanceof MessageEvent ? event.data : undefined,
+        );
         if (!isCurrentRequest()) return;
         if (!artistReceived) {
           loadRestFallback().catch(() => {});
@@ -551,7 +592,7 @@ export function useArtistDetailsStream(
   useEffect(() => {
     if (!artistId) return;
     const releaseGroups = [...(artistReleaseGroups || []), ...(artistAppearsOnReleaseGroups || [])];
-    const seeded = {};
+    const seeded: Record<string, string> = {};
     for (const releaseGroup of releaseGroups) {
       const coverUrl = releaseGroup?.coverUrl || releaseGroup?._coverUrl;
       if (releaseGroup?.id && coverUrl) {
@@ -619,8 +660,8 @@ export function useArtistDetailsStream(
       try {
         const covers = await getReleaseGroupCoversBatch(items);
         if (artistMbidRef.current !== batchMbid) return;
-        const nextBatch = {};
-        const resolvedIds = [];
+        const nextBatch: Record<string, string> = {};
+        const resolvedIds: string[] = [];
         for (const rgId of toFetch) {
           const entry = covers?.[rgId];
           if (entry?.image) {
@@ -676,7 +717,7 @@ export function useArtistDetailsStream(
       }
       const discographyIds = new Set(
         (artistRef.current?.["release-groups"] || [])
-          .map((releaseGroup) => releaseGroup?.id)
+          .map((releaseGroup: ReleaseGroup) => releaseGroup?.id)
           .filter(Boolean),
       );
       const libraryIds = new Set(
@@ -688,7 +729,7 @@ export function useArtistDetailsStream(
     };
 
     const scheduleCoverBatch = () => {
-      clearTimeout(coverBatchTimerRef.current);
+      if (coverBatchTimerRef.current) clearTimeout(coverBatchTimerRef.current);
       coverBatchTimerRef.current = setTimeout(() => {
         if (scheduleCancelled) return;
 
@@ -710,7 +751,7 @@ export function useArtistDetailsStream(
 
     return () => {
       scheduleCancelled = true;
-      clearTimeout(coverBatchTimerRef.current);
+      if (coverBatchTimerRef.current) clearTimeout(coverBatchTimerRef.current);
     };
   }, [
     mbid,

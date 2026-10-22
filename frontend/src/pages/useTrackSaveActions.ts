@@ -8,6 +8,11 @@ import { reserveUniquePlaylistName } from "./ArtistDetails/utils";
 import { normalizePlaylistTrackEntry } from "./playlists/flowPageUtils";
 import { getApiErrorMessage } from "./onboardingUtils";
 
+type SaveTrack = { id: string; artistName: string; trackName: string };
+type PlaylistSaveTarget =
+  | { mode: "new"; name?: string | null }
+  | { mode?: "existing"; playlistId: string };
+
 export function useTrackSaveActions() {
   const { hasPermission } = useAuth();
   const { showSuccess, showError } = useToast();
@@ -24,13 +29,16 @@ export function useTrackSaveActions() {
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
 
   const getDefaultPlaylistName = useCallback(
-    (track) => reserveUniquePlaylistName(staticPlaylists, `${track?.artistName || "Artist"} Picks`),
+    (track: Pick<SaveTrack, "artistName"> | undefined) =>
+      reserveUniquePlaylistName(staticPlaylists, `${track?.artistName || "Artist"} Picks`),
     [staticPlaylists],
   );
 
   const saveToPlaylist = useCallback(
-    async (tracks, target) => {
-      const payloads = tracks.map(normalizePlaylistTrackEntry).filter(Boolean);
+    async (tracks: SaveTrack[], target: PlaylistSaveTarget) => {
+      const payloads = tracks
+        .map(normalizePlaylistTrackEntry)
+        .filter((payload) => payload !== null);
       if (payloads.length === 0) {
         showError("No valid tracks to add");
         return;
@@ -41,8 +49,8 @@ export function useTrackSaveActions() {
         if (target?.mode === "new") {
           const requested =
             String(target?.name || "").trim() || getDefaultPlaylistName(payloads[0]);
-          const response = await createStaticPlaylist({ name: requested, tracks: payloads });
-          name = response?.playlist?.name || requested;
+          await createStaticPlaylist({ name: requested, tracks: payloads });
+          name = requested;
         } else {
           await addStaticPlaylistTracks(target.playlistId, { tracks: payloads });
           name =
@@ -76,7 +84,7 @@ export function useTrackSaveActions() {
   );
 
   const handleAddTrackToPlaylist = useCallback(
-    async (track, target) => {
+    async (track: SaveTrack, target: PlaylistSaveTarget) => {
       setPlaylistSavingKey(String(track?.id ?? ""));
       try {
         await saveToPlaylist([track], target);
@@ -88,7 +96,7 @@ export function useTrackSaveActions() {
   );
 
   const handleBulkAddToPlaylist = useCallback(
-    async (tracks, target) => {
+    async (tracks: SaveTrack[], target: PlaylistSaveTarget) => {
       setBulkActionLoading(true);
       try {
         await saveToPlaylist(tracks, target);
@@ -100,7 +108,7 @@ export function useTrackSaveActions() {
   );
 
   const handleAddTrackToLibrary = useCallback(
-    async (track) => {
+    async (track: SaveTrack) => {
       if (libraryTrackSavingKey) return;
       const payload = normalizePlaylistTrackEntry(track);
       if (!payload) {
@@ -125,8 +133,10 @@ export function useTrackSaveActions() {
   );
 
   const handleBulkAddToLibrary = useCallback(
-    async (tracks) => {
-      const payloads = tracks.map(normalizePlaylistTrackEntry).filter(Boolean);
+    async (tracks: SaveTrack[]) => {
+      const payloads = tracks
+        .map(normalizePlaylistTrackEntry)
+        .filter((payload) => payload !== null);
       if (payloads.length === 0) return;
       setBulkActionLoading(true);
       let queued = 0;

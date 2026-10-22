@@ -2,7 +2,27 @@ import axios from "../../../lib/axiosFetch.ts";
 import createRateLimiter from "./rateLimiter.ts";
 import createCache from "./simpleCache.ts";
 import { logger } from "../logger.ts";
+import { asAppError } from "../../../lib/errors.ts";
 import { APP_NAME, APP_VERSION, LISTENBRAINZ_API } from "../../config/constants.ts";
+
+interface ListenbrainzSubmitEvent {
+  playedAt: number | string;
+  artist: string;
+  title: string;
+  album?: string | null;
+  durationMs?: number | null;
+  trackMbid?: string | null;
+  albumMbid?: string | null;
+  artistMbid?: string | null;
+}
+
+interface ListenbrainzErrorDetails {
+  path: string;
+  status: number | null;
+  code: string | null;
+  message: string;
+  error: unknown;
+}
 
 const listenbrainzCache = createCache(300);
 const listenbrainzLookupCache = createCache(3600, 200);
@@ -21,14 +41,15 @@ const LISTENBRAINZ_MAX_RATE_LIMIT_WAIT_SECONDS = 15;
 const listenbrainzInflightRequests = new Map();
 const listenbrainzErrorLogAt = new Map();
 
-const getRateLimitWaitMs = (error) => {
-  if (error.response?.status !== 429) return null;
-  const resetIn = Number(error.response.headers?.["x-ratelimit-reset-in"]);
+const getRateLimitWaitMs = (error: unknown) => {
+  const failure = asAppError(error);
+  if (failure?.response?.status !== 429) return null;
+  const resetIn = Number(failure.response.headers?.["x-ratelimit-reset-in"]);
   const seconds = Number.isFinite(resetIn) && resetIn >= 0 ? resetIn : 1;
   return Math.min(seconds, LISTENBRAINZ_MAX_RATE_LIMIT_WAIT_SECONDS) * 1000 + 250;
 };
 
-const normalizeListenbrainzBaseUrl = (baseUrl) => {
+const normalizeListenbrainzBaseUrl = (baseUrl: string | null | undefined) => {
   const candidate =
     String(baseUrl || "")
       .trim()
@@ -43,7 +64,11 @@ const normalizeListenbrainzBaseUrl = (baseUrl) => {
   }
 };
 
-const listenbrainzWrite = async (baseUrl, path, { token, data } = {}) => {
+const listenbrainzWrite = async (
+  baseUrl: string,
+  path: string,
+  { token, data }: { token?: string | null; data?: unknown } = {},
+) => {
   const response = await listenbrainzLimiter.schedule(() =>
     axios.post(`${String(baseUrl).replace(/\/+$/, "")}${path}`, data, {
       headers: {
@@ -57,7 +82,10 @@ const listenbrainzWrite = async (baseUrl, path, { token, data } = {}) => {
   return response.data;
 };
 
-export const listenbrainzValidateToken = async (token, baseUrl = LISTENBRAINZ_API) => {
+export const listenbrainzValidateToken = async (
+  token: string | null | undefined,
+  baseUrl: string | null | undefined = LISTENBRAINZ_API,
+) => {
   const root = normalizeListenbrainzBaseUrl(baseUrl);
   const response = await listenbrainzLimiter.schedule(() =>
     axios.get(`${root}/1/validate-token`, {
@@ -72,7 +100,15 @@ export const listenbrainzValidateToken = async (token, baseUrl = LISTENBRAINZ_AP
   return response.data;
 };
 
-export const listenbrainzSubmit = async ({ token, baseUrl = LISTENBRAINZ_API, event }) => {
+export const listenbrainzSubmit = async ({
+  token,
+  baseUrl = LISTENBRAINZ_API,
+  event,
+}: {
+  token?: string | null;
+  baseUrl?: string | null;
+  event: ListenbrainzSubmitEvent;
+}) => {
   const root = normalizeListenbrainzBaseUrl(baseUrl);
   const listenedAt = Math.floor(Number(event?.playedAt) / 1000);
   if (!Number.isFinite(listenedAt) || listenedAt <= 0) {
@@ -105,7 +141,7 @@ export const listenbrainzSubmit = async ({ token, baseUrl = LISTENBRAINZ_API, ev
 };
 
 export async function listenbrainzRequest(
-  path,
+  path: string,
   params = {},
   {
     token = null,
@@ -127,21 +163,22 @@ export async function listenbrainzRequest(
   }
 
   const requestPromise = (async () => {
-    const isRetryable = (error) => {
-      const status = error.response?.status;
-      const code = error.code;
+    const isRetryable = (error: unknown) => {
+      const failure = asAppError(error);
+      const status = failure?.response?.status;
+      const code = failure?.code;
       return (
         code === "ECONNABORTED" ||
         code === "ETIMEDOUT" ||
         code === "ECONNRESET" ||
         code === "ENOTFOUND" ||
         code === "EAI_AGAIN" ||
-        [408, 425, 500, 502, 503, 504].includes(status)
+        (status !== undefined && [408, 425, 500, 502, 503, 504].includes(status))
       );
     };
-    const getLogKey = (details) =>
+    const getLogKey = (details: ListenbrainzErrorDetails) =>
       `${details.path}:${details.status || "none"}:${details.code || "none"}`;
-    const logError = (message, details) => {
+    const logError = (message: string, details: ListenbrainzErrorDetails) => {
       const key = getLogKey(details);
       const now = Date.now();
       const last = listenbrainzErrorLogAt.get(key) || 0;
@@ -150,7 +187,7 @@ export async function listenbrainzRequest(
       logger.error("api", message, details);
     };
 
-    let lastError = null;
+    let lastError: unknown = null;
     for (let retryCount = 0; retryCount <= LISTENBRAINZ_MAX_RETRIES; retryCount++) {
       try {
         const response = await listenbrainzLimiter.schedule(() => {
@@ -161,7 +198,7 @@ export async function listenbrainzRequest(
               ...(isAuthenticated ? { Authorization: `Token ${String(token).trim()}` } : {}),
             },
             timeout: timeoutMs,
-            validateStatus: (status) => (status >= 200 && status < 300) || status === 204,
+            validateStatus: (status: number) => (status >= 200 && status < 300) || status === 204,
           };
           return data
             ? axios.post(`${root}${path}`, data, config)
@@ -184,12 +221,18 @@ export async function listenbrainzRequest(
       }
     }
 
+    const failure = asAppError(lastError);
+    const responseData = failure?.response?.data;
     const details = {
       path,
-      status: lastError?.response?.status || null,
-      code: lastError?.code || null,
-      message: lastError?.message || "Unknown ListenBrainz error",
-      error: lastError?.response?.data?.error || lastError?.response?.data?.message || null,
+      status: failure?.response?.status || null,
+      code: failure?.code || null,
+      message: failure?.message || "Unknown ListenBrainz error",
+      error:
+        (typeof responseData === "object" &&
+          responseData !== null &&
+          (Reflect.get(responseData, "error") || Reflect.get(responseData, "message"))) ||
+        null,
     };
     logError("ListenBrainz API error:", details);
     throw lastError;
@@ -203,14 +246,18 @@ export async function listenbrainzRequest(
   }
 }
 
-const toBatches = (items, size) =>
+const toBatches = <T>(items: T[], size: number) =>
   Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
     items.slice(index * size, (index + 1) * size),
   );
 
-const toListenCount = (value) => (Number.isInteger(value) && value > 0 ? value : null);
+const toListenCount = (value: number | null | undefined) =>
+  Number.isInteger(value) && value! > 0 ? value! : null;
 
-async function cachedListenbrainzLookup(cacheKey, lookup) {
+async function cachedListenbrainzLookup<V>(
+  cacheKey: string,
+  lookup: () => Promise<Map<string, V>>,
+): Promise<Map<string, V>> {
   const cached = listenbrainzLookupCache.get(cacheKey);
   if (cached) return cached;
   try {
@@ -218,13 +265,13 @@ async function cachedListenbrainzLookup(cacheKey, lookup) {
     listenbrainzLookupCache.set(cacheKey, value);
     return value;
   } catch {
-    const empty = new Map();
+    const empty = new Map<string, V>();
     listenbrainzLookupCache.set(cacheKey, empty, LISTENBRAINZ_LOOKUP_FAILURE_TTL_SECONDS);
     return empty;
   }
 }
 
-export const listenbrainzGetReleaseGroupListens = (releaseGroupMbids) =>
+export const listenbrainzGetReleaseGroupListens = (releaseGroupMbids: string[]) =>
   cachedListenbrainzLookup(`listens:${releaseGroupMbids.join(",")}`, async () => {
     const batches = await Promise.all(
       toBatches(releaseGroupMbids, LISTENBRAINZ_POPULARITY_BATCH_SIZE).map((mbids) =>
@@ -236,7 +283,7 @@ export const listenbrainzGetReleaseGroupListens = (releaseGroupMbids) =>
       ),
     );
     if (!batches.every(Array.isArray)) throw new TypeError("ListenBrainz popularity is not a list");
-    const listens = new Map();
+    const listens = new Map<string, { listenCount: number; listenerCount: number }>();
     for (const row of batches.flat()) {
       const listenCount = toListenCount(row?.total_listen_count);
       const listenerCount = toListenCount(row?.total_user_count);
@@ -247,10 +294,10 @@ export const listenbrainzGetReleaseGroupListens = (releaseGroupMbids) =>
     return listens;
   });
 
-const isReleaseGroupMetadata = (batch) =>
-  Boolean(batch) && typeof batch === "object" && !Array.isArray(batch) && !("error" in batch);
+const isReleaseGroupMetadata = (batch: unknown) =>
+  Boolean(batch) && typeof batch === "object" && !Array.isArray(batch) && !("error" in batch!);
 
-export const listenbrainzGetReleaseGroupDates = (releaseGroupMbids) =>
+export const listenbrainzGetReleaseGroupDates = (releaseGroupMbids: string[]) =>
   cachedListenbrainzLookup(`dates:${releaseGroupMbids.join(",")}`, async () => {
     const batches = await Promise.all(
       toBatches(releaseGroupMbids, LISTENBRAINZ_METADATA_BATCH_SIZE).map((mbids) =>
@@ -260,7 +307,7 @@ export const listenbrainzGetReleaseGroupDates = (releaseGroupMbids) =>
     if (!batches.every(isReleaseGroupMetadata)) {
       throw new TypeError("ListenBrainz release group metadata is not keyed by MBID");
     }
-    const dates = new Map();
+    const dates = new Map<string, string>();
     for (const [mbid, metadata] of batches.flatMap(Object.entries)) {
       const date = metadata?.release_group?.date;
       if (typeof date === "string" && date) dates.set(mbid, date);

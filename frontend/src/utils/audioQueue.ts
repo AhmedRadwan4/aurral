@@ -1,4 +1,6 @@
-const FORMAT_BY_EXTENSION = {
+import type { LibraryTrack } from "./libraryPageData.ts";
+
+const FORMAT_BY_EXTENSION: Partial<Record<string, string[]>> = {
   mp3: ["mp3"],
   mpeg: ["mp3"],
   m4a: ["m4a"],
@@ -41,7 +43,7 @@ export type QueueTrackInput = {
   streamUrl?: string | null;
   preview_url?: string | null;
   streamFormat?: string | null;
-  quality?: string | null;
+  quality?: string | NonNullable<LibraryTrack["files"][number]["quality"]> | null;
   finalPath?: string | null;
   durationMs?: number | null;
   recordHistory?: boolean;
@@ -75,7 +77,7 @@ export function resolveTrackStreamFormat(track: QueueTrackInput | null | undefin
     extensionFromPath(track?.src) ||
     extensionFromPath(track?.streamUrl) ||
     extensionFromPath(track?.preview_url);
-  if (direct && FORMAT_BY_EXTENSION[direct]) return direct;
+  if (direct && Object.hasOwn(FORMAT_BY_EXTENSION, direct)) return direct;
   return qualityToFormat(track?.quality);
 }
 
@@ -89,7 +91,10 @@ export function getFormatLoadAttempts(track: QueueTrackInput | null | undefined)
 }
 
 export function getHowlerFormat(formatKey: string) {
-  return FORMAT_BY_EXTENSION[formatKey] || [formatKey];
+  const known = Object.hasOwn(FORMAT_BY_EXTENSION, formatKey)
+    ? FORMAT_BY_EXTENSION[formatKey]
+    : undefined;
+  return known || [formatKey];
 }
 
 function usesTrackArtwork(track: QueueTrackInput) {
@@ -194,9 +199,9 @@ export function isDownloadedLibraryAlbum(
   if (String(album?.id ?? "").startsWith("pending-")) return false;
   return (
     album?.monitored ||
-    album?.statistics?.percentOfTracks > 0 ||
-    album?.statistics?.sizeOnDisk > 0 ||
-    !!downloadStatuses[album?.id]
+    (album?.statistics?.percentOfTracks ?? 0) > 0 ||
+    (album?.statistics?.sizeOnDisk ?? 0) > 0 ||
+    !!downloadStatuses[String(album?.id)]
   );
 }
 

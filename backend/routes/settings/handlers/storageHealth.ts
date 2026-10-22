@@ -1,7 +1,9 @@
+import type { Router } from "express";
 import { noCache } from "../../../middleware/cache.ts";
 import { logger } from "../../../services/logger.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
-export function registerStorageHealth(router) {
+export function registerStorageHealth(router: Router) {
   router.get("/storage-health", noCache, async (_req, res) => {
     try {
       const { getStorageHealthSnapshot } =
@@ -18,10 +20,10 @@ export function registerStorageHealth(router) {
         ...result,
       });
     } catch (error) {
-      logger.error("settings", "Storage health check error:", error);
+      logger.error("settings", "Storage health check error:", error ?? undefined);
       res.status(500).json({
         error: "Storage health check failed",
-        message: error.message,
+        message: asAppError(error)?.message,
       });
     }
   });
@@ -35,10 +37,10 @@ export function registerStorageHealth(router) {
         ...result,
       });
     } catch (error) {
-      logger.error("settings", "Storage health check error:", error);
+      logger.error("settings", "Storage health check error:", error ?? undefined);
       res.status(500).json({
         error: "Storage health check failed",
-        message: error.message,
+        message: asAppError(error)?.message,
       });
     }
   });

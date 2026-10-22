@@ -6,7 +6,8 @@ import TooltipButton from "../../../components/TooltipButton.tsx";
 import { ModalShell } from "../../../components/PlaylistModals.tsx";
 import { useToast } from "../../../contexts/ToastContext";
 import { useThemeDocument } from "../../../hooks/useThemeDocument.ts";
-import { normalizeHexColor } from "../../../utils/themeColor.ts";
+import { asApiError } from "../../../utils/api/core.ts";
+import { normalizeHexColor, type HexColor } from "../../../utils/themeColor.ts";
 import {
   BUILT_IN_THEMES,
   findTheme,
@@ -31,11 +32,19 @@ import {
 } from "../../../utils/themeImport.ts";
 import "./themeSettings.css";
 
+type Theme = (typeof BUILT_IN_THEMES)[number];
+type ThemeMode = (typeof THEME_MODES)[number];
+type ThemeSeed = ReturnType<typeof getThemeSeed>;
+type ThemePalette = ReturnType<typeof getThemePalette>;
+type RemovedTheme = NonNullable<ReturnType<typeof removeCustomTheme>>;
+type ThemeDraft = { id?: string; name: string; light?: ThemeSeed; dark?: ThemeSeed };
+type ThemeDialog = { type: "import" } | { type: "editor"; title: string; draft: ThemeDraft };
+
 const APPEARANCE_OPTIONS = [
   { id: "system", label: "System", Icon: Monitor },
   { id: "light", label: "Light", Icon: Sun },
   { id: "dark", label: "Dark", Icon: Moon },
-];
+] as const;
 
 const MODE_LABELS = { light: "Light", dark: "Dark" };
 
@@ -43,9 +52,9 @@ const SEED_FIELDS = [
   { role: "background", label: "Background" },
   { role: "text", label: "Text" },
   { role: "accent", label: "Accent" },
-];
+] as const;
 
-function MiniWindow({ palette, className = "" }) {
+function MiniWindow({ palette, className = "" }: { palette: ThemePalette; className?: string }) {
   return (
     <span
       className={`theme-settings__window${className ? ` ${className}` : ""}`}
@@ -73,7 +82,13 @@ function MiniWindow({ palette, className = "" }) {
   );
 }
 
-function ModePreview({ theme, appearance }) {
+function ModePreview({
+  theme,
+  appearance,
+}: {
+  theme: Theme;
+  appearance: (typeof APPEARANCE_OPTIONS)[number]["id"];
+}) {
   const light = getThemePalette(theme, "light");
   const dark = getThemePalette(theme, "dark");
   return (
@@ -84,7 +99,7 @@ function ModePreview({ theme, appearance }) {
   );
 }
 
-function ThemeSwatch({ palette }) {
+function ThemeSwatch({ palette }: { palette: ThemePalette }) {
   return (
     <span
       className="theme-settings__swatch"
@@ -102,7 +117,19 @@ function ThemeSwatch({ palette }) {
   );
 }
 
-function ThemeCard({ theme, mode, active, onSelect, onEdit }) {
+function ThemeCard({
+  theme,
+  mode,
+  active,
+  onSelect,
+  onEdit,
+}: {
+  theme: Theme;
+  mode: ThemeMode;
+  active: boolean;
+  onSelect: () => void;
+  onEdit: () => void;
+}) {
   const custom = isCustomTheme(theme);
   return (
     <div
@@ -135,7 +162,21 @@ function ThemeCard({ theme, mode, active, onSelect, onEdit }) {
   );
 }
 
-function ColorField({ fieldKey, label, value, placeholder, onChange, onInvalidChange }) {
+function ColorField({
+  fieldKey,
+  label,
+  value,
+  placeholder,
+  onChange,
+  onInvalidChange,
+}: {
+  fieldKey: string;
+  label: string;
+  value: HexColor | undefined;
+  placeholder: string;
+  onChange: (color: HexColor | null) => void;
+  onInvalidChange: (fieldKey: string, invalid: boolean) => void;
+}) {
   const id = useId();
   const [text, setText] = useState(value || "");
   const invalid = text.trim() !== "" && !normalizeHexColor(text);
@@ -158,7 +199,7 @@ function ColorField({ fieldKey, label, value, placeholder, onChange, onInvalidCh
           className="theme-settings__color-swatch"
           value={value || placeholder}
           aria-label={`${label} color picker`}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => onChange(event.target.value as HexColor)}
         />
         <input
           id={id}
@@ -181,7 +222,21 @@ function ColorField({ fieldKey, label, value, placeholder, onChange, onInvalidCh
   );
 }
 
-function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
+function ThemeEditor({
+  draft,
+  title,
+  onClose,
+  onSaved,
+  onRemoved,
+  showError,
+}: {
+  draft: ThemeDraft;
+  title: string;
+  onClose: () => void;
+  onSaved: (theme: Theme) => void;
+  onRemoved: (removed: RemovedTheme) => void;
+  showError: (message: string) => void;
+}) {
   const [name, setName] = useState(draft.name);
   const [seeds, setSeeds] = useState({ light: draft.light || null, dark: draft.dark || null });
   const [mode, setMode] = useState(() => {
@@ -189,10 +244,10 @@ function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
     return seeds[current] ? current : seeds.dark ? "dark" : "light";
   });
   const [error, setError] = useState("");
-  const [invalidFields, setInvalidFields] = useState(() => new Set());
+  const [invalidFields, setInvalidFields] = useState(() => new Set<string>());
   const nameId = useId();
 
-  const setFieldInvalid = useCallback((fieldKey, invalid) => {
+  const setFieldInvalid = useCallback((fieldKey: string, invalid: boolean) => {
     setInvalidFields((current) => {
       if (current.has(fieldKey) === invalid) return current;
       const next = new Set(current);
@@ -209,7 +264,7 @@ function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
         theme: normalizeTheme({ id: draft.id || "draft", name: name || "Untitled", ...seeds }),
       };
     } catch (validationError) {
-      return { error: validationError.message };
+      return { error: asApiError(validationError)?.message };
     }
   }, [draft.id, invalidFields, name, seeds]);
 
@@ -223,7 +278,7 @@ function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
   const seed = seeds[mode];
   const generatedSeed = validation.theme ? getThemeSeed(validation.theme, mode) : null;
 
-  const updateSeed = (role, color) => {
+  const updateSeed = (role: (typeof SEED_FIELDS)[number]["role"], color: HexColor | null) => {
     setError("");
     setSeeds((current) => {
       const next = { ...current[mode] };
@@ -238,7 +293,7 @@ function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
       const saved = saveCustomTheme({ id: draft.id, name, ...seeds });
       onSaved(saved);
     } catch (saveError) {
-      setError(saveError.message);
+      setError(asApiError(saveError)?.message ?? "");
     }
   };
 
@@ -263,7 +318,7 @@ function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
   };
 
   const handleRemove = () => {
-    const removed = removeCustomTheme(draft.id);
+    const removed = removeCustomTheme(draft.id!);
     if (removed) onRemoved(removed);
     else showError?.("That theme was already removed.");
   };
@@ -397,10 +452,16 @@ function ThemeEditor({ draft, title, onClose, onSaved, onRemoved, showError }) {
   );
 }
 
-function ThemeImport({ onClose, onParsed }) {
+function ThemeImport({
+  onClose,
+  onParsed,
+}: {
+  onClose: () => void;
+  onParsed: (draft: ThemeDraft) => void;
+}) {
   const [text, setText] = useState("");
   const [error, setError] = useState("");
-  const fileRef = useRef(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
   const textId = useId();
 
@@ -411,11 +472,11 @@ function ThemeImport({ onClose, onParsed }) {
     };
   }, []);
 
-  const parse = (source) => {
+  const parse = (source: string) => {
     try {
       onParsed(parseThemeText(source));
     } catch (parseError) {
-      setError(parseError.message);
+      setError(asApiError(parseError)?.message ?? "");
     }
   };
 
@@ -498,9 +559,15 @@ function ThemeImport({ onClose, onParsed }) {
   );
 }
 
-export function ThemeSettings({ showSuccess, showError }) {
+export function ThemeSettings({
+  showSuccess,
+  showError,
+}: {
+  showSuccess: (message: string) => void;
+  showError: (message: string) => void;
+}) {
   const themeDocument = useThemeDocument();
-  const [dialog, setDialog] = useState(null);
+  const [dialog, setDialog] = useState<ThemeDialog | null>(null);
   const mode = resolveThemeMode(themeDocument.appearance);
   const selected = findTheme(themeDocument.themeId, themeDocument) || BUILT_IN_THEMES[0];
   const { addToast } = useToast();
@@ -521,7 +588,7 @@ export function ThemeSettings({ showSuccess, showError }) {
     });
   };
 
-  const handleRemoved = (removed) => {
+  const handleRemoved = (removed: RemovedTheme) => {
     setDialog(null);
     addToast(
       {
@@ -532,7 +599,7 @@ export function ThemeSettings({ showSuccess, showError }) {
             try {
               restoreCustomTheme(removed);
             } catch (restoreError) {
-              showError?.(restoreError.message);
+              showError?.(asApiError(restoreError)?.message ?? "");
             }
           },
         },

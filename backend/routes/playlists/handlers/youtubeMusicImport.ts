@@ -5,21 +5,26 @@ import {
 } from "../../../services/importLists/youtubeMusicPlaylists.ts";
 import { enqueueImportedPlaylist } from "../../../services/importLists/importPlaylist.ts";
 import { logger, safeLogDiagnostic } from "../../../services/logger.ts";
+import { asAppError } from "../../../../lib/errors.ts";
+import type { Response, Router } from "express";
 
-const getSkippedCount = (stats = {}) =>
-  ["unavailable", "podcast", "incomplete", "duplicate"].reduce(
+type PlaylistStats = Awaited<ReturnType<typeof youtubeMusicPlaylistClient.getPlaylist>>["stats"];
+
+const getSkippedCount = (stats: Partial<PlaylistStats> = {}) =>
+  (["unavailable", "podcast", "incomplete", "duplicate"] as const).reduce(
     (sum, key) => sum + Number(stats[key] || 0),
     0,
   );
 
-const sendProviderError = (res, error, fallback) => {
-  const statusCode = Number(error?.statusCode);
+const sendProviderError = (res: Response, error: unknown, fallback: string) => {
+  const failure = asAppError(error);
+  const statusCode = Number(failure?.statusCode);
   const status =
     Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599 ? statusCode : 500;
   return res.status(status).json({
     error: fallback,
-    message: error?.message || "Unknown error",
-    ...(error?.code ? { code: error.code } : {}),
+    message: failure?.message || "Unknown error",
+    ...(failure?.code ? { code: failure.code } : {}),
   });
 };
 
@@ -30,7 +35,7 @@ export type PreviewYoutubeMusicPlaylistResponse = {
   previewTracks: Awaited<ReturnType<typeof youtubeMusicPlaylistClient.getPlaylist>>["tracks"];
 };
 
-export function registerYoutubeMusicImport(router) {
+export function registerYoutubeMusicImport(router: Router) {
   router.post("/import/youtube-music/preview", async (req, res) => {
     try {
       const playlistId = extractYoutubePlaylistId(req.body?.url);
@@ -42,7 +47,7 @@ export function registerYoutubeMusicImport(router) {
         previewTracks: playlist.tracks.slice(0, 3),
       });
     } catch (error) {
-      const status = Number(error?.statusCode) || 500;
+      const status = Number(asAppError(error)?.statusCode) || 500;
       logger[status >= 500 ? "error" : "warn"](
         "playlist-import",
         "YouTube Music playlist preview failed",
@@ -67,7 +72,7 @@ export function registerYoutubeMusicImport(router) {
       const playlist = await youtubeMusicPlaylistClient.getPlaylist(playlistId);
       stage = "enqueue";
       const result = await enqueueImportedPlaylist({
-        ownerUserId: req.user.id,
+        ownerUserId: req.user!.id,
         name,
         sourceName: "YouTube Music",
         provider: "youtube-music-playlist",
@@ -81,22 +86,23 @@ export function registerYoutubeMusicImport(router) {
       });
       res.json({
         success: true,
-        playlist: result?.playlist || null,
+        playlist: null,
         tracksQueued: Number(result?.tracksQueued || 0),
-        tracksReused: Number(result?.tracksReused || 0),
+        tracksReused: 0,
         queued: result?.queued === true,
       });
     } catch (error) {
-      if (error?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
+      const failure = asAppError(error);
+      if (failure?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
         logger.debug("playlist-import", "YouTube Music playlist import name already exists", {
           playlistName: String(req.body?.name || "").trim() || null,
         });
         return res.status(409).json({
           error: "Playlist name already exists",
-          message: error.message,
+          message: failure?.message,
         });
       }
-      const status = Number(error?.statusCode) || 500;
+      const status = Number(failure?.statusCode) || 500;
       logger[status >= 500 ? "error" : "warn"](
         "playlist-import",
         "YouTube Music playlist import request failed",

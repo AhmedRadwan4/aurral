@@ -1,6 +1,9 @@
 import { Fragment, useMemo } from "react";
 import { ExternalLink } from "lucide-react";
-import { getArtistHeroImage, getArtistType } from "../utils";
+import { getArtistHeroImage, getArtistType, type ArtistCoverImage } from "../utils";
+import type { ArtistDetailsResponse } from "../../../../../backend/routes/artists/handlers/details.ts";
+import type { AppSettingsResponse } from "../../../utils/api/endpoints/settings.ts";
+import type { LibraryArtistRecord } from "../hooks/useArtistDetailsStream.ts";
 import lidarrLogo from "../../../../images/logos/lidarr-color.svg";
 import lastFmLogo from "../../../../images/logos/last-fm-color.svg";
 import musicBrainzLogo from "../../../../images/logos/musicbrainz-color.svg";
@@ -10,7 +13,7 @@ import { UUID_REGEX } from "../../../../../lib/uuid.ts";
 import Tooltip from "../../../components/Tooltip";
 import RouteLink from "../../../components/RouteLink";
 
-const normalizeHref = (value) => {
+const normalizeHref = (value: unknown) => {
   const href = String(value || "").trim();
   if (!href) return null;
   try {
@@ -20,7 +23,7 @@ const normalizeHref = (value) => {
   }
 };
 
-const hostnameLabel = (href) => {
+const hostnameLabel = (href: string) => {
   try {
     return new URL(href).hostname.replace(/^www\./, "");
   } catch {
@@ -28,9 +31,9 @@ const hostnameLabel = (href) => {
   }
 };
 
-const buildTags = (artist) => {
-  const seen = new Set();
-  const out = [];
+const buildTags = (artist: Partial<ArtistDetailsResponse>) => {
+  const seen = new Set<string>();
+  const out: { key: string; name: string }[] = [];
   const source = [
     ...(Array.isArray(artist?.genres) ? artist.genres : []),
     ...(Array.isArray(artist?.tags) ? artist.tags : []),
@@ -46,13 +49,15 @@ const buildTags = (artist) => {
   return out;
 };
 
-const buildRelationLinks = (artist) => {
+type RelationLink = { key: string; label: string; href: string; logo?: string };
+
+const buildRelationLinks = (artist: Partial<ArtistDetailsResponse>): RelationLink[] => {
   const direct = Array.isArray(artist?.links) ? artist.links : [];
   const relationSource =
     direct.length > 0
       ? direct.map((link, index) => ({
           key: `link-${index}`,
-          href: link?.target || link?.url,
+          href: link?.target,
           label: link?.type,
         }))
       : Array.isArray(artist?.relations)
@@ -73,10 +78,10 @@ const buildRelationLinks = (artist) => {
         label: link.label || hostnameLabel(href),
       };
     })
-    .filter(Boolean);
+    .filter((link) => link !== null);
 };
 
-const tagSearchPath = (name) => `/search?q=${encodeURIComponent(`#${name}`)}&type=tag`;
+const tagSearchPath = (name: string) => `/search?q=${encodeURIComponent(`#${name}`)}&type=tag`;
 
 export function ArtistDetailsAbout({
   artist,
@@ -85,16 +90,19 @@ export function ArtistDetailsAbout({
   lidarrConnected,
   existsInLibrary,
   coverImages,
+}: {
+  artist: Partial<ArtistDetailsResponse>;
+  libraryArtist: LibraryArtistRecord | null;
+  appSettings: AppSettingsResponse | null;
+  lidarrConnected: boolean;
+  existsInLibrary: boolean;
+  coverImages: readonly ArtistCoverImage[] | null | undefined;
 }) {
   const tags = useMemo(() => buildTags(artist), [artist]);
   const visibleTags = tags.slice(0, 5);
   const artistTypeLabel = getArtistType(artist?.type);
   const links = useMemo(() => {
-    const lidarrArtistId =
-      artist?.id ||
-      libraryArtist?.foreignArtistId ||
-      libraryArtist?.mbid ||
-      artist?._lidarrData?.foreignArtistId;
+    const lidarrArtistId = artist?.id || libraryArtist?.foreignArtistId || libraryArtist?.mbid;
     const lidarrUrl =
       appSettings?.integrations?.lidarr?.externalUrl || appSettings?.integrations?.lidarr?.url;
     const lidarrHref =
@@ -105,7 +113,7 @@ export function ArtistDetailsAbout({
               : `add/search?term=lidarr:${encodeURIComponent(lidarrArtistId)}`
           }`
         : null;
-    const primary = [
+    const primary: (RelationLink | null)[] = [
       lidarrHref
         ? {
             key: "lidarr",
@@ -138,14 +146,15 @@ export function ArtistDetailsAbout({
             logo: listenBrainzLogo,
           }
         : null,
-    ].filter(Boolean);
-    const seen = new Set(primary.map((link) => link.href));
+    ];
+    const primaryLinks = primary.filter((link) => link !== null);
+    const seen = new Set(primaryLinks.map((link) => link.href));
     const secondary = buildRelationLinks(artist).filter((link) => {
       if (seen.has(link.href)) return false;
       seen.add(link.href);
       return true;
     });
-    return [...primary, ...secondary];
+    return [...primaryLinks, ...secondary];
   }, [appSettings, artist, existsInLibrary, libraryArtist, lidarrConnected]);
   const aboutImage = useMemo(() => {
     return getArtistHeroImage(coverImages);

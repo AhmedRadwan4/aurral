@@ -1,3 +1,5 @@
+import { isOwnKey } from "../../lib/ownKey.ts";
+
 // Download queues share one process because their workers coordinate in-memory state.
 // Other background queues are isolated from the web process and from each other.
 export const ISOLATED_QUEUE_GROUPS = Object.freeze({
@@ -27,16 +29,23 @@ const WORKER_QUEUE_ALIASES = Object.freeze({
   "play-event-outbox": "_outbox:play-events",
 });
 
+export function getIsolatedQueueGroup(queueName: string) {
+  return isOwnKey(ISOLATED_QUEUE_GROUPS, queueName) ? ISOLATED_QUEUE_GROUPS[queueName] : undefined;
+}
+
 export function shouldStartQueueHere(queueName: string) {
   if (process.env.NODE_ENV === "test" && !process.env.AURRAL_BACKGROUND_WORKER_GROUP) {
     return true;
   }
-  const owner = ISOLATED_QUEUE_GROUPS[queueName];
+  const owner = getIsolatedQueueGroup(queueName);
   const group = process.env.AURRAL_BACKGROUND_WORKER_GROUP;
   return group ? owner === group : !owner;
 }
 
 export function isQueueOwnedByGroup(queueName: string, group: string | null = null) {
-  const queue = WORKER_QUEUE_ALIASES[queueName] || queueName;
-  return group ? ISOLATED_QUEUE_GROUPS[queue] === group : !ISOLATED_QUEUE_GROUPS[queue];
+  const queue = isOwnKey(WORKER_QUEUE_ALIASES, queueName)
+    ? WORKER_QUEUE_ALIASES[queueName]
+    : queueName;
+  const owner = getIsolatedQueueGroup(queue);
+  return group ? owner === group : !owner;
 }

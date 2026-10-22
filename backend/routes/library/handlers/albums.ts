@@ -1,5 +1,6 @@
+import type { Router } from "express";
 import { libraryManager } from "../../../services/libraryManager.ts";
-import { playlistManager } from "../../../services/playlists/playlistManager.ts";
+import type { MappedLibraryAlbum } from "../../../services/libraryManager.ts";
 import { dbOps } from "../../../db/helpers/index.ts";
 import { hasPermission } from "../../../middleware/auth.ts";
 import { cacheMiddleware, noCache } from "../../../middleware/cache.ts";
@@ -7,8 +8,22 @@ import { requireAuth, requirePermission } from "../../../middleware/requirePermi
 import { logger } from "../../../services/logger.ts";
 import { invalidateAllDownloadStatusesCache } from "./downloads.ts";
 import { getLibraryReadModelForArtistReferences } from "../../../services/libraryReadModel.ts";
+import { asAppError, type AppError } from "../../../../lib/errors.ts";
 
-export function registerAlbums(router) {
+type AlbumAddFailure = Extract<
+  Awaited<ReturnType<typeof libraryManager.addAlbum>>,
+  { error: string }
+>;
+
+type AlbumRequestFailure = AppError &
+  Partial<
+    Pick<
+      AlbumAddFailure,
+      "managedBy" | "sources" | "canonicalId" | "providerId" | "availability" | "conflict"
+    >
+  >;
+
+export function registerAlbums(router: Router) {
   router.get("/albums", cacheMiddleware(5), async (req, res) => {
     try {
       const { artistId } = req.query;
@@ -45,9 +60,10 @@ export function registerAlbums(router) {
       }));
       res.json(formatted);
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch albums",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -66,9 +82,10 @@ export function registerAlbums(router) {
       try {
         managedBy = await libraryManager.resolveManagedBy(requestedManagedBy);
       } catch (error) {
-        return res.status(error.statusCode || 400).json({
-          error: error.message,
-          code: error.code || null,
+        const failure = asAppError(error);
+        return res.status(failure?.statusCode || 400).json({
+          error: failure?.message,
+          code: failure?.code || null,
         });
       }
 
@@ -100,7 +117,11 @@ export function registerAlbums(router) {
           message: album.error,
         });
         const statusCode =
-          Number.isInteger(album.statusCode) && album.statusCode >= 400 ? album.statusCode : 503;
+          typeof album.statusCode === "number" &&
+          Number.isInteger(album.statusCode) &&
+          album.statusCode >= 400
+            ? album.statusCode
+            : 503;
         return res.status(statusCode).json({
           error: "Failed to add album",
           message: album.error,
@@ -112,11 +133,6 @@ export function registerAlbums(router) {
           availability: album.availability || null,
           conflict: album.conflict || null,
         });
-      }
-      if (album.artistName && album.albumName) {
-        playlistManager
-          .removeDiscoverSymlinksForAlbum(album.artistName, album.albumName)
-          .catch(() => {});
       }
       const { recordAlbumRequested } = await import("../../../services/aurralHistoryService.ts");
       recordAlbumRequested({
@@ -131,9 +147,10 @@ export function registerAlbums(router) {
       });
       return res.status(201).json({ ...album, queued: false });
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to add album",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -173,10 +190,10 @@ export function registerAlbums(router) {
       const { recordAlbumRequested, recordAlbumSearchCompleted } =
         await import("../../../services/aurralHistoryService.ts");
       const historyAlbum = {
-        albumId: result?.album?.id || result?.id,
-        albumName: result?.album?.albumName || result?.albumName || albumName,
-        artistName: result?.artist?.artistName || result?.artistName || artistName,
-        artistMbid: result?.artist?.mbid || result?.mbid || artistMbid,
+        albumId: result?.album?.id,
+        albumName: result?.album?.albumName || albumName,
+        artistName: result?.artist?.artistName || artistName,
+        artistMbid: result?.artist?.mbid || artistMbid,
         managedBy: result?.managedBy || null,
         user: req.user,
       };
@@ -194,38 +211,48 @@ export function registerAlbums(router) {
         queued: result?.managedBy === "aurral" ? (result?.jobIds?.length || 0) > 0 : false,
       });
     } catch (error) {
+      const failure: AlbumRequestFailure | undefined = asAppError(error);
       const statusCode =
-        Number.isInteger(error?.statusCode) && error.statusCode >= 400 ? error.statusCode : 500;
+        typeof failure?.statusCode === "number" &&
+        Number.isInteger(failure.statusCode) &&
+        failure.statusCode >= 400
+          ? failure.statusCode
+          : 500;
       res.status(statusCode).json({
-        error: error.message || "Failed to request album",
-        code: error.code || null,
-        managedBy: error.managedBy || null,
-        sources: error.sources || [],
-        canonicalId: error.canonicalId || null,
-        providerId: error.providerId || null,
-        availability: error.availability || null,
-        conflict: error.conflict || null,
+        error: failure?.message || "Failed to request album",
+        code: failure?.code || null,
+        managedBy: failure?.managedBy || null,
+        sources: failure?.sources || [],
+        canonicalId: failure?.canonicalId || null,
+        providerId: failure?.providerId || null,
+        availability: failure?.availability || null,
+        conflict: failure?.conflict || null,
       });
     }
   });
 
-  router.get("/albums/aurral/:canonicalId/status", noCache, (req, res) => {
-    try {
-      const result = libraryManager.getAurralAlbumStatus(req.params.canonicalId);
-      if (result?.error) {
-        const { error, statusCode, ...details } = result;
-        return res.status(statusCode || 500).json({ ...details, error });
+  router.get<"/albums/aurral/:canonicalId/status">(
+    "/albums/aurral/:canonicalId/status",
+    noCache,
+    (req, res) => {
+      try {
+        const result = libraryManager.getAurralAlbumStatus(req.params.canonicalId);
+        if (result?.error) {
+          const { error, statusCode, ...details } = result;
+          return res.status(statusCode || 500).json({ ...details, error });
+        }
+        return res.json(result);
+      } catch (error) {
+        const failure = asAppError(error);
+        return res.status(500).json({
+          error: "Failed to fetch album status",
+          message: failure?.message,
+        });
       }
-      return res.json(result);
-    } catch (error) {
-      return res.status(500).json({
-        error: "Failed to fetch album status",
-        message: error.message,
-      });
-    }
-  });
+    },
+  );
 
-  router.put(
+  router.put<"/albums/aurral/:canonicalId">(
     "/albums/aurral/:canonicalId",
     requireAuth,
     requirePermission("changeMonitoring"),
@@ -240,15 +267,16 @@ export function registerAlbums(router) {
         }
         return res.json(result);
       } catch (error) {
+        const failure = asAppError(error);
         return res.status(500).json({
           error: "Failed to update album monitoring",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
   );
 
-  router.delete(
+  router.delete<"/albums/aurral/:canonicalId">(
     "/albums/aurral/:canonicalId",
     requireAuth,
     requirePermission("deleteAlbum"),
@@ -264,15 +292,16 @@ export function registerAlbums(router) {
         }
         return res.json(result);
       } catch (error) {
+        const failure = asAppError(error);
         return res.status(500).json({
           error: "Failed to remove album",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
   );
 
-  router.post(
+  router.post<"/albums/aurral/:canonicalId/cancel">(
     "/albums/aurral/:canonicalId/cancel",
     requireAuth,
     requirePermission("addAlbum"),
@@ -285,15 +314,16 @@ export function registerAlbums(router) {
         }
         return res.json(result);
       } catch (error) {
+        const failure = asAppError(error);
         return res.status(500).json({
           error: "Failed to cancel album",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
   );
 
-  router.get("/albums/:id", cacheMiddleware(120), async (req, res) => {
+  router.get<"/albums/:id">("/albums/:id", cacheMiddleware(120), async (req, res) => {
     try {
       const { id } = req.params;
       const album = await libraryManager.getAlbumById(id);
@@ -302,14 +332,15 @@ export function registerAlbums(router) {
       }
       res.json(album);
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch album",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
 
-  router.put(
+  router.put<"/albums/:id">(
     "/albums/:id",
     requireAuth,
     (req, res, next) => {
@@ -330,15 +361,16 @@ export function registerAlbums(router) {
         }
         res.json(album);
       } catch (error) {
+        const failure = asAppError(error);
         res.status(500).json({
           error: "Failed to update album",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
   );
 
-  router.delete(
+  router.delete<"/albums/lidarr/:mbid">(
     "/albums/lidarr/:mbid",
     requireAuth,
     requirePermission("deleteAlbum"),
@@ -355,36 +387,47 @@ export function registerAlbums(router) {
         }
         res.json({ success: true, message: "Album deleted successfully" });
       } catch (error) {
-        res.status(500).json({ error: "Failed to delete album", message: error.message });
+        const failure = asAppError(error);
+        res.status(500).json({ error: "Failed to delete album", message: failure?.message });
       }
     },
   );
 
-  router.delete("/albums/:id", requireAuth, requirePermission("deleteAlbum"), async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { deleteFiles = false } = req.query;
-      const result = await libraryManager.deleteAlbum(id, deleteFiles === "true");
-      if (!result?.success) {
-        return res.status(503).json({ error: result?.error || "Failed to delete album" });
+  router.delete<"/albums/:id">(
+    "/albums/:id",
+    requireAuth,
+    requirePermission("deleteAlbum"),
+    async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { deleteFiles = false } = req.query;
+        const result = await libraryManager.deleteAlbum(id, deleteFiles === "true");
+        if (!result?.success) {
+          return res.status(503).json({ error: result?.error || "Failed to delete album" });
+        }
+        res.json({ success: true, message: "Album deleted successfully" });
+      } catch (error) {
+        const failure = asAppError(error);
+        res.status(500).json({
+          error: "Failed to delete album",
+          message: failure?.message,
+        });
       }
-      res.json({ success: true, message: "Album deleted successfully" });
-    } catch (error) {
-      res.status(500).json({
-        error: "Failed to delete album",
-        message: error.message,
-      });
-    }
-  });
+    },
+  );
 }
 
 type LibraryAlbumRecord = Awaited<ReturnType<typeof libraryManager.getAlbums>>[number];
 
-export type GetLibraryAlbumsResponse = (LibraryAlbumRecord & {
-  foreignAlbumId: string;
-  title: string;
-  statistics: NonNullable<LibraryAlbumRecord["statistics"]>;
-})[];
+type WithNullableForeignAlbumId<Album> = Album extends unknown
+  ? Omit<Album, "foreignAlbumId"> & { foreignAlbumId: string | null }
+  : never;
+
+export type GetLibraryAlbumsResponse = (WithNullableForeignAlbumId<LibraryAlbumRecord> &
+  Partial<Omit<MappedLibraryAlbum, "foreignAlbumId">> & {
+    title: string;
+    statistics: NonNullable<LibraryAlbumRecord["statistics"]>;
+  })[];
 
 type AurralAlbumRecord = Exclude<
   Awaited<ReturnType<typeof libraryManager._finishAurralAlbum>>,

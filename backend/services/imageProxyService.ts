@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import dns from "node:dns";
+import type { LookupFunction } from "node:net";
 import fs from "fs";
 import path from "path";
 import { Agent, fetch as undiciFetch, type Response as UndiciResponse } from "undici";
@@ -7,6 +8,8 @@ import PQueue from "p-queue";
 import getSharp from "./sharpConfig.ts";
 import BoundedMap from "./boundedMap.ts";
 import { resolveAurralDataDir } from "../config/data-dir.ts";
+import { asAppError } from "../../lib/errors.ts";
+import { isOwnKey } from "../../lib/ownKey.ts";
 import { isPrivateAddress, isPrivateHostname } from "../../lib/publicUrl.ts";
 import type { Request, Response as ExpressResponse } from "express";
 
@@ -113,7 +116,7 @@ const imageProxyDispatcher = new Agent({
   keepAliveTimeout: 30_000,
   keepAliveMaxTimeout: 60_000,
   maxResponseSize: MAX_SOURCE_IMAGE_BYTES,
-  connect: { lookup: safeLookup },
+  connect: { lookup: safeLookup as LookupFunction },
 });
 const usesNativeFetch = () =>
   Function.prototype.toString.call(globalThis.fetch).includes("internal/deps/undici");
@@ -296,7 +299,7 @@ const migrateObsoleteImageCache = () => {
     fs.writeFileSync(IMAGE_CACHE_MIGRATION_MARKER, "1\n", { flag: "wx" });
     obsoleteImageCacheMigrationComplete = true;
   } catch (error) {
-    if (error?.code === "EEXIST") obsoleteImageCacheMigrationComplete = true;
+    if (asAppError(error)?.code === "EEXIST") obsoleteImageCacheMigrationComplete = true;
   }
 };
 
@@ -392,7 +395,9 @@ const writeCacheEntry = async (
   await ensureCacheDir();
   const profile = normalizeImageProfile(imageProfile);
   const normalizedSourceUrl = normalizeKnownImageUrl(sourceUrl) || sourceUrl;
-  const extension = MIME_EXTENSION_MAP[contentType] || "img";
+  const extension = isOwnKey(MIME_EXTENSION_MAP, contentType)
+    ? MIME_EXTENSION_MAP[contentType]
+    : "img";
   const { metaPath, baseImagePath } = getCachePaths(cacheKey);
   const imagePath = `${baseImagePath}.${extension}`;
   const fetchedAt = Date.now();
@@ -434,10 +439,10 @@ const shouldNormalizeCachedEntry = (
 };
 
 export const inspectImageBuffer = async (buffer: Uint8Array, contentType: string) => {
-  const expectedFormats = IMAGE_FORMATS_BY_CONTENT_TYPE[contentType];
-  if (!expectedFormats) {
+  if (!isOwnKey(IMAGE_FORMATS_BY_CONTENT_TYPE, contentType)) {
     throw new Error("Unsupported image content type");
   }
+  const expectedFormats = IMAGE_FORMATS_BY_CONTENT_TYPE[contentType];
 
   let metadata;
   try {
@@ -584,7 +589,7 @@ const fetchRemoteImage = async (sourceUrl: string) => {
         .split(";")[0]
         .trim()
         .toLowerCase();
-      if (!IMAGE_FORMATS_BY_CONTENT_TYPE[contentType]) {
+      if (!isOwnKey(IMAGE_FORMATS_BY_CONTENT_TYPE, contentType)) {
         await response.body?.cancel();
         throw new Error("Upstream response is not a supported image");
       }

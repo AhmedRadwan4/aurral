@@ -1,4 +1,7 @@
 import { queryClient, queryKeys } from "../../queryClient.ts";
+import type { useToast } from "../../contexts/ToastContext";
+import { asApiError } from "../../utils/api/core.ts";
+import { getApiErrorText } from "../onboardingUtils.tsx";
 import {
   getStaticPlaylistOperation,
   moveStaticPlaylistTracks,
@@ -8,6 +11,8 @@ import {
 import type { BulkPlaylistOperationResponse } from "../../../../backend/routes/playlists/handlers/staticPlaylists.ts";
 import type { PlaylistStatus } from "./playlistStats.ts";
 import type { PlaylistTrack } from "./trackAvailability.ts";
+
+type ChangedTrack = Pick<PlaylistTrack, "id" | "trackName">;
 
 interface TrackChange {
   key: number;
@@ -36,13 +41,13 @@ export const trackCountLabel = (count: number) => `${count} track${count === 1 ?
 const stayLabel = (count: number) => (count === 1 ? "It stays" : "They stay");
 
 const errorReason = (error: unknown) => {
-  const reason = error?.response?.data?.message || error?.response?.data?.error || "";
+  const reason = getApiErrorText(error, "message") || getApiErrorText(error, "error") || "";
   return reason && !/[.!?]$/.test(reason) ? `${reason}.` : reason;
 };
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const describeTracks = (tracks: PlaylistTrack[], jobIds: string[]) => {
+const describeTracks = (tracks: ChangedTrack[], jobIds: string[]) => {
   const named =
     jobIds.length === 1 ? tracks.find((track) => track?.id === jobIds[0])?.trackName : "";
   return named || trackCountLabel(jobIds.length);
@@ -53,7 +58,7 @@ const playlistName = (playlistId: string | null | undefined) =>
     .getQueryData<PlaylistStatus>(queryKeys.playlistStatus)
     ?.sharedPlaylists?.find((playlist) => playlist.id === playlistId)?.name || "the playlist";
 
-export function createPlaylistTrackChanges(toast) {
+export function createPlaylistTrackChanges(toast: ReturnType<typeof useToast>) {
   let changes: TrackChange[] = [];
   let hidden = new Map<string | undefined, Set<string>>();
   let nextKey = 0;
@@ -126,7 +131,7 @@ export function createPlaylistTrackChanges(toast) {
         });
         errors = 0;
       } catch (error) {
-        if (error?.response?.status === 404 || ++errors >= MAX_POLL_ERRORS) {
+        if (asApiError(error)?.response?.status === 404 || ++errors >= MAX_POLL_ERRORS) {
           return settle(change, {
             error: `Could not confirm the change to ${change.sourceName}. Review the playlist before trying again.`,
           });
@@ -146,7 +151,7 @@ export function createPlaylistTrackChanges(toast) {
       const where =
         change.action === "move" ? `to ${change.targetName}` : `from ${change.sourceName}`;
       return settle(change, {
-        error: error?.response
+        error: asApiError(error)?.response
           ? `Could not ${action} ${change.label} ${where}. Nothing changed. ${errorReason(error) || "Try again."}`
           : `Could not confirm the change to ${change.sourceName}. Check the playlist before trying again.`,
       });
@@ -177,7 +182,7 @@ export function createPlaylistTrackChanges(toast) {
     toast.showSuccess(`Restored ${change.label} to ${change.sourceName}`);
   };
 
-  const pendingIds = (source: { id: string } | null | undefined, tracks: PlaylistTrack[]) => {
+  const pendingIds = (source: { id: string } | null | undefined, tracks: ChangedTrack[]) => {
     const taken = hidden.get(source?.id) || EMPTY_IDS;
     return [...new Set(tracks.map((track) => track?.id).filter(Boolean))].filter(
       (id) => !taken.has(id),
@@ -192,7 +197,7 @@ export function createPlaylistTrackChanges(toast) {
     getHidden: () => hidden,
     remove(
       source: { id: string; name?: string | null } | null | undefined,
-      tracks: PlaylistTrack[],
+      tracks: ChangedTrack[],
     ) {
       const jobIds = pendingIds(source, tracks);
       if (!source?.id || !jobIds.length) return;
@@ -220,7 +225,7 @@ export function createPlaylistTrackChanges(toast) {
     },
     move(
       source: { id: string; name?: string | null } | null | undefined,
-      tracks: PlaylistTrack[],
+      tracks: ChangedTrack[],
       target: MoveTarget | null | undefined,
     ) {
       const jobIds = pendingIds(source, tracks);

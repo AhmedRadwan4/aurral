@@ -26,28 +26,25 @@ import PillToggle from "../../../components/PillToggle";
 import { DotLoader } from "../../../components/DotLoader";
 import { getConfiguredStatus } from "../utils/integrationStatus";
 import type { AppSettings } from "../../../../../backend/db/helpers/settings.ts";
+import type { SettingsState } from "../utils";
+import { readApiError } from "../utils/apiError.ts";
 
-type IntegrationDraft<K extends "gotify" | "lastfm" | "ticketmaster" | "google"> = NonNullable<
-  AppSettings["integrations"][K]
->;
-type Webhook = NonNullable<AppSettings["integrations"]["webhooks"]>[number];
+type IntegrationDraft<K extends "gotify" | "lastfm" | "ticketmaster"> =
+  SettingsState["integrations"][K];
+type GoogleDraft = NonNullable<AppSettings["integrations"]["google"]>;
+type Webhook = SettingsState["integrations"]["webhooks"][number];
 type WebhookHeader = NonNullable<Webhook["headers"]>[number];
-type WebhookEventsDraft = NonNullable<AppSettings["integrations"]["webhookEvents"]>;
+type WebhookEventsDraft = SettingsState["integrations"]["webhookEvents"];
 type TestStatus = { tone: "success" | "error"; message: string };
 type WebhookTestStatus = TestStatus & { index: number };
 
-type SettingsDraft = {
-  integrations?: Partial<AppSettings["integrations"]>;
-  inbox?: Partial<AppSettings["inbox"]>;
-};
-
 type SettingsConnectTabProps = {
-  settings: SettingsDraft;
-  updateSettings: (next: SettingsDraft) => void;
+  settings: SettingsState;
+  updateSettings: (next: SettingsState) => void;
   health?: { lastfmConfigured?: boolean; ticketmasterConfigured?: boolean } | null;
   handleSaveSettings: (
     event?: FormEvent<HTMLFormElement>,
-    settingsOverride?: SettingsDraft,
+    settingsOverride?: SettingsState,
   ) => unknown;
   testingGotify: boolean;
   setTestingGotify: (testing: boolean) => void;
@@ -71,11 +68,11 @@ export function SettingsConnectTab({
   const [testStatus, setTestStatus] = useState<TestStatus | null>(null);
   const [testingWebhookIndex, setTestingWebhookIndex] = useState<number | null>(null);
   const [webhookTestStatus, setWebhookTestStatus] = useState<WebhookTestStatus | null>(null);
-  const gotify: IntegrationDraft<"gotify"> = settings.integrations?.gotify || {};
-  const lastfm: IntegrationDraft<"lastfm"> = settings.integrations?.lastfm || {};
-  const ticketmaster: IntegrationDraft<"ticketmaster"> = settings.integrations?.ticketmaster || {};
-  const google: IntegrationDraft<"google"> = settings.integrations?.google || {};
-  const inbox: Partial<AppSettings["inbox"]> = settings.inbox || {};
+  const gotify = settings.integrations?.gotify || {};
+  const lastfm = settings.integrations?.lastfm || {};
+  const ticketmaster = settings.integrations?.ticketmaster || {};
+  const google: GoogleDraft = settings.integrations?.google || {};
+  const inbox = settings.inbox || {};
   const gotifyConfigured = Boolean(gotify.url && gotify.token);
   const lastfmConfigured = Boolean(health?.lastfmConfigured);
   const ticketmasterConfigured = Boolean(health?.ticketmasterConfigured);
@@ -85,7 +82,7 @@ export function SettingsConnectTab({
 
   const configuredWebhooks = settings.integrations?.webhooks;
   const webhooks: readonly Webhook[] = configuredWebhooks || EMPTY_WEBHOOKS;
-  const webhookEvents: WebhookEventsDraft = settings.integrations?.webhookEvents || {};
+  const webhookEvents = settings.integrations?.webhookEvents || {};
   const webhookRevisionRef = useRef(0);
 
   useEffect(() => {
@@ -142,7 +139,7 @@ export function SettingsConnectTab({
       },
     });
 
-  const updateGoogle = (patch: Partial<IntegrationDraft<"google">>) =>
+  const updateGoogle = (patch: Partial<GoogleDraft>) =>
     updateSettings({
       ...settings,
       integrations: {
@@ -151,7 +148,7 @@ export function SettingsConnectTab({
       },
     });
 
-  const updateInbox = (patch: Partial<AppSettings["inbox"]>) =>
+  const updateInbox = (patch: Partial<SettingsState["inbox"]>) =>
     updateSettings({
       ...settings,
       inbox: { ...inbox, ...patch },
@@ -183,7 +180,8 @@ export function SettingsConnectTab({
         tone: "error",
         message: "Test failed. Check the URL and token, then retry.",
       });
-      const msg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const msg = failure.message || failure.error || failure.text;
       showError(`Gotify test failed: ${msg}`);
     } finally {
       setTestingGotify(false);
@@ -234,7 +232,8 @@ export function SettingsConnectTab({
       showSuccess("Test webhook sent.");
     } catch (err) {
       if (webhookRevisionRef.current !== testRevision) return;
-      const message = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const message = failure.message || failure.error || failure.text;
       setWebhookTestStatus({
         index,
         tone: "error",

@@ -14,18 +14,21 @@ function GitHubIcon({ className = "" }) {
 
 function UserProfileMenu() {
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef(null);
-  const triggerRef = useRef(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const { authRequired, canLogOut, logout } = useAuth();
 
   useEffect(() => {
     if (!menuOpen) return undefined;
-    const handleClickOutside = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(event.target instanceof Node ? event.target : null)
+      ) {
         setMenuOpen(false);
       }
     };
-    const handleEscape = (event) => {
+    const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMenuOpen(false);
         triggerRef.current?.focus();

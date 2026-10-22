@@ -1,15 +1,13 @@
-import type { ArtistIdentity } from "../../../backend/services/discovery/recommendationPipeline.ts";
-import type { ArtistSearchResult } from "../../../backend/services/unifiedSearchService.ts";
-
-type BlocklistArtist = Partial<ArtistSearchResult>;
+import type { ArtistFeedbackSource } from "./artistTaste.ts";
+import type { UnifiedSearchItem } from "../../../backend/services/unifiedSearchService.ts";
 
 type BlocklistSearchResponse = {
-  top?: BlocklistArtist | null;
-  catalog?: { artists?: BlocklistArtist[] | null } | null;
-  library?: { artists?: BlocklistArtist[] | null } | null;
+  top?: UnifiedSearchItem | null;
+  catalog?: { artists?: (ArtistFeedbackSource | null)[] | null } | null;
+  library?: { artists?: (ArtistFeedbackSource | null)[] | null } | null;
 };
 
-function normalizeArtist(artist: ArtistIdentity | null | undefined) {
+function normalizeArtist(artist: ArtistFeedbackSource | null | undefined) {
   return {
     id: artist?.id || artist?.mbid || artist?.foreignArtistId || null,
     name: String(artist?.name || artist?.artistName || "").trim(),

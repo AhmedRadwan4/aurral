@@ -3,10 +3,23 @@ import { Check } from "lucide-react";
 import { ModalShell } from "../components/PlaylistModals";
 import { DotLoader } from "../components/DotLoader";
 import { updateLibraryArtistMbid } from "../utils/api/endpoints/library.ts";
+import { asApiError } from "../utils/api/core.ts";
+import { getApiErrorText } from "./onboardingUtils";
 
 const MBID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-export default function ArtistMbidModal({ artist, onClose, onSaved }) {
+type MbidArtist = { id: number; mbid?: string | null };
+type MbidUpdateResult = Awaited<ReturnType<typeof updateLibraryArtistMbid>>;
+
+export default function ArtistMbidModal({
+  artist,
+  onClose,
+  onSaved,
+}: {
+  artist: MbidArtist | null | undefined;
+  onClose: () => void;
+  onSaved: (result: MbidUpdateResult) => void;
+}) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState("");
@@ -17,16 +30,16 @@ export default function ArtistMbidModal({ artist, onClose, onSaved }) {
     setSaving("");
   }, [artist]);
 
-  const save = async (mbid) => {
+  const save = async (mbid: string | null) => {
     setSaving(mbid ? "save" : "clear");
     setError("");
     try {
-      const result = await updateLibraryArtistMbid(artist.id, mbid);
+      const result = await updateLibraryArtistMbid(artist!.id, mbid);
       onSaved?.(result);
     } catch (requestError) {
       setError(
-        requestError.response?.data?.error ||
-          requestError.message ||
+        getApiErrorText(requestError, "error") ||
+          asApiError(requestError)?.message ||
           "Could not update the MusicBrainz ID",
       );
     } finally {

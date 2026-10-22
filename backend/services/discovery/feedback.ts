@@ -1,11 +1,25 @@
 import { dbOps } from "../../db/helpers/index.ts";
 import { normalizeTextList } from "./helpers.ts";
-import { buildArtistMatchKeySet, matchesArtistKeys } from "./artistKeys.ts";
+import { buildArtistMatchKeySet, matchesArtistKeys, type ArtistMatchFields } from "./artistKeys.ts";
 
-const getDiscoveryFeedbackKey = (userId = "global") =>
+interface RawDiscoveryFeedbackEntry {
+  id?: unknown;
+  action?: unknown;
+  artistId?: unknown;
+  artistName?: unknown;
+  sourceContext?: unknown;
+  tagContext?: unknown;
+  seedContext?: unknown;
+  createdAt?: string | number | null;
+  expiresAt?: string | number | null;
+}
+
+type DiscoveryFeedbackUserId = string | number | null;
+
+const getDiscoveryFeedbackKey = (userId: DiscoveryFeedbackUserId = "global") =>
   `discoveryFeedback:${String(userId || "global").trim()}`;
 
-const normalizeFeedbackAction = (value) => {
+const normalizeFeedbackAction = (value: unknown) => {
   const action = String(value || "")
     .trim()
     .toLowerCase();
@@ -20,11 +34,13 @@ export interface DiscoveryFeedbackEntry {
   sourceContext: string | null;
   tagContext: string[];
   seedContext: string[];
-  createdAt: unknown;
-  expiresAt: unknown;
+  createdAt: string | number | null;
+  expiresAt: string | number | null;
 }
 
-const normalizeFeedbackList = (value): DiscoveryFeedbackEntry[] =>
+const normalizeFeedbackList = (
+  value: RawDiscoveryFeedbackEntry[] | null | undefined,
+): DiscoveryFeedbackEntry[] =>
   (Array.isArray(value) ? value : [])
     .filter((entry) => entry && typeof entry === "object")
     .map((entry) => ({
@@ -45,22 +61,29 @@ const normalizeFeedbackList = (value): DiscoveryFeedbackEntry[] =>
       return Number.isFinite(time) ? time > Date.now() : true;
     });
 
-export const getDiscoveryFeedback = (userId = "global") =>
-  normalizeFeedbackList(dbOps.getJSONSetting(getDiscoveryFeedbackKey(userId)));
+export const getDiscoveryFeedback = (userId: DiscoveryFeedbackUserId = "global") =>
+  normalizeFeedbackList(
+    dbOps.getJSONSetting<RawDiscoveryFeedbackEntry[]>(getDiscoveryFeedbackKey(userId)),
+  );
 
-export const getBlockedArtistKeys = (userId = "global", feedback = getDiscoveryFeedback(userId)) =>
+export const getBlockedArtistKeys = (
+  userId: DiscoveryFeedbackUserId = "global",
+  feedback = getDiscoveryFeedback(userId),
+) =>
   buildArtistMatchKeySet(
     feedback
       .filter((entry) => entry.action === "block_artist")
       .map((entry) => ({ id: entry.artistId, name: entry.artistName })),
   );
 
-export const isArtistBlockedForUser = (userId = "global", artist = {}) =>
-  matchesArtistKeys(artist, getBlockedArtistKeys(userId));
+export const isArtistBlockedForUser = (
+  userId: DiscoveryFeedbackUserId = "global",
+  artist: ArtistMatchFields = {},
+) => matchesArtistKeys(artist, getBlockedArtistKeys(userId));
 
-export const filterBlockedArtistsForUser = (
-  userId = "global",
-  artists = [],
+export const filterBlockedArtistsForUser = <T extends ArtistMatchFields>(
+  userId: DiscoveryFeedbackUserId = "global",
+  artists: T[] = [],
   blockedKeys = getBlockedArtistKeys(userId),
 ) => {
   const list = Array.isArray(artists) ? artists : [];
@@ -71,7 +94,7 @@ export const filterBlockedArtistsForUser = (
 export type DiscoveryFeedbackInput = {
   id?: string | null;
   action: string | null;
-  artistId?: string | null;
+  artistId?: string | number | null;
   artistName?: string | null;
   sourceContext?: string | null;
   tagContext?: string[];
@@ -79,7 +102,7 @@ export type DiscoveryFeedbackInput = {
 };
 
 export const addDiscoveryFeedback = (
-  userId = "global",
+  userId: DiscoveryFeedbackUserId = "global",
   entry: Partial<DiscoveryFeedbackInput> = {},
 ) => {
   const action = normalizeFeedbackAction(entry.action);
@@ -114,23 +137,29 @@ export const addDiscoveryFeedback = (
   return normalizedEntry;
 };
 
-export const removeDiscoveryFeedback = (userId = "global", feedbackId) => {
+export const removeDiscoveryFeedback = (
+  userId: DiscoveryFeedbackUserId = "global",
+  feedbackId: string,
+) => {
   const target = String(feedbackId || "").trim();
   const next = getDiscoveryFeedback(userId).filter((entry) => entry.id !== target);
   dbOps.setJSONSetting(getDiscoveryFeedbackKey(userId), next);
   return next;
 };
 
-const feedbackTime = (entry) => {
+const feedbackTime = (entry: DiscoveryFeedbackEntry | undefined) => {
   const time = new Date(entry?.createdAt || 0).getTime();
   return Number.isFinite(time) ? time : 0;
 };
 
 export const restoreDiscoveryFeedback = (
-  userId = "global",
-  { removeIds = [], entries = [] } = {},
+  userId: DiscoveryFeedbackUserId = "global",
+  {
+    removeIds = [],
+    entries = [],
+  }: { removeIds?: unknown[]; entries?: RawDiscoveryFeedbackEntry[] } = {},
 ) => {
-  const removing = new Set(
+  const removing = new Set<string | null>(
     (Array.isArray(removeIds) ? removeIds : [])
       .map((id) => String(id || "").trim())
       .filter(Boolean),
@@ -146,7 +175,7 @@ export const restoreDiscoveryFeedback = (
   return getDiscoveryFeedback(userId);
 };
 
-export const resetDiscoveryFeedback = (userId = "global") => {
+export const resetDiscoveryFeedback = (userId: DiscoveryFeedbackUserId = "global") => {
   const blockedArtists = getDiscoveryFeedback(userId).filter(
     (entry) => entry.action === "block_artist",
   );

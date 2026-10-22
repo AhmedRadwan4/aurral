@@ -4,10 +4,17 @@ import {
 } from "../../../services/importLists/importPlaylist.ts";
 import { listenbrainzPlaylistClient } from "../../../services/importLists/listenbrainzPlaylists.ts";
 import { logger, safeLogDiagnostic } from "../../../services/logger.ts";
+import { asAppError } from "../../../../lib/errors.ts";
+import type { Router } from "express";
 
-const getErrorStatus = (error) => error?.statusCode || error?.response?.status || 500;
+const getErrorStatus = (error: unknown) => {
+  const failure = asAppError(error);
+  return failure?.statusCode || failure?.response?.status || 500;
+};
 
-const getPlaylistImport = (body) => {
+const getPlaylistImport = (
+  body: { playlistType?: unknown; playlistId?: unknown } | null | undefined,
+) => {
   const playlistType = String(body?.playlistType || "").trim();
   return playlistType
     ? { provider: "listenbrainz-createdfor", externalId: playlistType }
@@ -17,17 +24,17 @@ const getPlaylistImport = (body) => {
       };
 };
 
-export function registerListenBrainzImport(router) {
+export function registerListenBrainzImport(router: Router) {
   router.get("/import/listenbrainz/playlists", async (req, res) => {
     try {
-      res.json(await listenbrainzPlaylistClient.listPlaylists(req.user.id));
+      res.json(await listenbrainzPlaylistClient.listPlaylists(req.user!.id));
     } catch (error) {
       logger.warn("playlist-import", "ListenBrainz playlist listing failed", {
         reason: safeLogDiagnostic(error),
       });
       res.status(getErrorStatus(error)).json({
         error: "Failed to fetch ListenBrainz playlists",
-        message: error?.message || "Unknown error",
+        message: asAppError(error)?.message || "Unknown error",
       });
     }
   });
@@ -39,7 +46,7 @@ export function registerListenBrainzImport(router) {
         return res.status(400).json({ error: "playlistId is required" });
       }
       const { tracks, stats } = await fetchImportedPlaylistTracks({
-        userId: req.user.id,
+        userId: req.user!.id,
         ...playlistImport,
       });
       res.json({
@@ -53,7 +60,7 @@ export function registerListenBrainzImport(router) {
       });
       res.status(getErrorStatus(error)).json({
         error: "Failed to preview ListenBrainz playlist",
-        message: error?.message || "Unknown error",
+        message: asAppError(error)?.message || "Unknown error",
       });
     }
   });
@@ -72,12 +79,12 @@ export function registerListenBrainzImport(router) {
       }
       if (!name) return res.status(400).json({ error: "name is required" });
       const { tracks, stats } = await fetchImportedPlaylistTracks({
-        userId: req.user.id,
+        userId: req.user!.id,
         ...playlistImport,
       });
       stage = "enqueue";
       const result = await enqueueImportedPlaylist({
-        ownerUserId: req.user.id,
+        ownerUserId: req.user!.id,
         name,
         sourceName: "ListenBrainz",
         ...playlistImport,
@@ -90,19 +97,20 @@ export function registerListenBrainzImport(router) {
       });
       res.json({
         success: true,
-        playlist: result?.playlist || null,
+        playlist: null,
         tracksQueued: Number(result?.tracksQueued || 0),
-        tracksReused: Number(result?.tracksReused || 0),
+        tracksReused: 0,
         queued: result?.queued === true,
       });
     } catch (error) {
-      if (error?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
+      const failure = asAppError(error);
+      if (failure?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
         logger.debug("playlist-import", "ListenBrainz playlist import name already exists", {
           playlistName: String(req.body?.name || "").trim() || null,
         });
         return res.status(409).json({
           error: "Playlist name already exists",
-          message: error.message,
+          message: failure?.message,
         });
       }
       const status = getErrorStatus(error);
@@ -117,7 +125,7 @@ export function registerListenBrainzImport(router) {
       );
       res.status(status).json({
         error: "Failed to import ListenBrainz playlist",
-        message: error?.message || "Unknown error",
+        message: failure?.message || "Unknown error",
       });
     }
   });

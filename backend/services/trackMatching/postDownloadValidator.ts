@@ -20,7 +20,7 @@
 
 import path from "node:path";
 import { stat } from "node:fs/promises";
-import { parseFile } from "music-metadata";
+import { parseFile, type IAudioMetadata } from "music-metadata";
 import { buildTrackRequest, recordingRequest } from "./trackIdentity.ts";
 import {
   claimedTitle,
@@ -37,7 +37,7 @@ import {
   verifyDownloadedRecording,
 } from "./nativeMatcher.ts";
 import { judgeRelease } from "./releaseJudge.ts";
-import { manifestIndexFor } from "../releaseManifest.ts";
+import { manifestIndexFor, type ReleaseManifest } from "../releaseManifest.ts";
 import { isRequestedYoutubeAlbum, readYoutubeFile } from "./youtubeEvidence.ts";
 import { scoreTextMatch } from "../providers/brainzmashRanking.ts";
 import { validateParsedQuality } from "../qualityProfileService.ts";
@@ -50,18 +50,41 @@ export const POST_DOWNLOAD_DECISIONS = {
   FAILED: "FAILED",
 };
 
+type ValidationRequest = NonNullable<Parameters<typeof buildTrackRequest>[0]> & {
+  upgradeForJobId?: string | null;
+  manualReplacementSearch?: boolean;
+};
+
+type ValidationOptions = {
+  parseFile?: typeof parseFile;
+  strict?: boolean;
+  manualSelection?: boolean;
+  albumImport?: boolean;
+  release?: ReleaseManifest | null;
+};
+
+type ParsedFile = { filePath: string; parsed: IAudioMetadata };
+type VerificationResult = ReturnType<typeof verifyDownloadedRecording>;
+
 const MANUAL_RELEASE_FILE_TITLE_THRESHOLD = 70;
 const STRICT_DURATION_GAP_MS = 1000;
 // Beyond this, a file with the requested title is a different edit, a
 // hidden-track rip, or a different song, never something worth a review.
 const REVIEW_MAX_DURATION_GAP_MS = 30000;
 
-function readTagText(value) {
+function readTagText(value: unknown) {
   return String(value || "").trim() || null;
 }
 
-function normalizeValidationRequest(request, context) {
-  const source = request || context || {};
+function rawString(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function normalizeValidationRequest(
+  request: ValidationRequest | undefined,
+  context: ValidationRequest | undefined,
+) {
+  const source: ValidationRequest = request || context || {};
   return {
     ...buildTrackRequest(source),
     upgradeForJobId: source.upgradeForJobId || null,
@@ -72,7 +95,7 @@ function normalizeValidationRequest(request, context) {
 // "01 Correct Track" -> "Correct Track"; "07. Song" -> "Song". A bare space
 // separator only counts when the remainder keeps more than one word, so
 // numeric titles such as "99 Problems" survive.
-function stripLeadingTrackNumber(baseName) {
+function stripLeadingTrackNumber(baseName: string) {
   const raw = String(baseName || "").trim();
   const punctuated = /^\s*\d{1,3}\s*[-._)\]]\s*(.+)$/.exec(raw);
   if (punctuated && punctuated[1].trim()) return punctuated[1].trim();
@@ -84,20 +107,24 @@ function stripLeadingTrackNumber(baseName) {
   return raw || null;
 }
 
-export function readDurationMsFromParsed(parsed) {
+export function readDurationMsFromParsed(parsed: IAudioMetadata) {
   const seconds = Number(parsed?.format?.duration || 0);
   return seconds > 0 ? Math.round(seconds * 1000) : null;
 }
 
 // A downloaded file as the release judge reads a listing entry.
-export function downloadedFileEvidence(filePath, parsed, { album = null } = {}) {
+export function downloadedFileEvidence(
+  filePath: string,
+  parsed: IAudioMetadata,
+  { album = null }: { album?: string | null } = {},
+) {
   const listing = parseListingTitle(filePath, { album });
   return {
     title: String(parsed?.common?.title || listing.title || "").trim(),
     artists: [parsed?.common?.artist].filter(Boolean),
     durationMs: readDurationMsFromParsed(parsed),
     trackNumber: parsed?.common?.track?.no || listing.trackNumber || null,
-    discNumber: parsed?.common?.disc?.no || listing.discNumber || null,
+    discNumber: parsed?.common?.disk?.no || listing.discNumber || null,
     recordingMbid: readRecordingMbid(parsed?.common?.musicbrainz_recordingid),
     album: String(parsed?.common?.album || "").trim() || null,
     filename: path.basename(filePath),
@@ -108,13 +135,23 @@ export function downloadedFileEvidence(filePath, parsed, { album = null } = {}) 
 // Builds the canonical candidate representation from what the FILE itself
 // claims (embedded tags first, filename as secondary evidence). This is the
 // evidence that gets validated — never the values Aurral is about to write.
-export function buildActualFileCandidate(parsed, filePath, source, preDownloadCandidate = null) {
+type PreDownloadCandidate = {
+  provider?: { id?: string | null; uploader?: string | null } | null;
+  raw?: Record<string, unknown> | null;
+};
+
+export function buildActualFileCandidate(
+  parsed: IAudioMetadata,
+  filePath: string,
+  source: string | undefined,
+  preDownloadCandidate: PreDownloadCandidate | null = null,
+) {
   const common = parsed?.common || {};
   const artists = [
     ...new Set(
       [common.artist, ...(Array.isArray(common.artists) ? common.artists : []), common.albumartist]
         .map((entry) => readTagText(entry))
-        .filter(Boolean),
+        .filter((entry) => entry !== null),
     ),
   ];
   const fileName = getFileName(filePath);
@@ -124,8 +161,8 @@ export function buildActualFileCandidate(parsed, filePath, source, preDownloadCa
       ? Math.round(Number(common.track.no))
       : null;
   const discNumber =
-    common.disc?.no != null && Number.isFinite(Number(common.disc.no))
-      ? Math.round(Number(common.disc.no))
+    common.disk?.no != null && Number.isFinite(Number(common.disk.no))
+      ? Math.round(Number(common.disk.no))
       : null;
   const taggedTitle = readTagText(common.title);
   const filenameTitle = taggedTitle ? null : stripLeadingTrackNumber(baseName);
@@ -152,8 +189,7 @@ export function buildActualFileCandidate(parsed, filePath, source, preDownloadCa
     filename: fileName,
     path: filePath,
     quality: {
-      format:
-        readTagText(common.format) || String(parsed?.format?.container || "").toLowerCase() || null,
+      format: String(parsed?.format?.container || "").toLowerCase() || null,
       bitrate:
         Number(parsed?.format?.bitrate) > 0 ? Math.round(Number(parsed.format.bitrate)) : null,
       bitDepth:
@@ -177,7 +213,7 @@ export function buildActualFileCandidate(parsed, filePath, source, preDownloadCa
   };
 }
 
-function joinPhrases(phrases) {
+function joinPhrases(phrases: string[]) {
   return phrases.length > 1
     ? `${phrases.slice(0, -1).join(", ")} and ${phrases.at(-1)}`
     : phrases[0];
@@ -190,6 +226,13 @@ function describeReviewReason({
   actualDurationMs,
   requestedDurationMs,
   maxDurationGapMs,
+}: {
+  verification: VerificationResult;
+  titleAgrees: boolean;
+  artists: unknown[];
+  actualDurationMs: number | null;
+  requestedDurationMs: number | null;
+  maxDurationGapMs: number;
 }) {
   const issues = [];
   const gap = verification.durationGapMs;
@@ -198,7 +241,7 @@ function describeReviewReason({
   } else if (gap > maxDurationGapMs) {
     const seconds = (Math.ceil(gap / 100) / 10).toFixed(1);
     issues.push(
-      `is ${seconds}s ${actualDurationMs > requestedDurationMs ? "longer" : "shorter"} than the requested track`,
+      `is ${seconds}s ${(actualDurationMs ?? 0) > (requestedDurationMs ?? 0) ? "longer" : "shorter"} than the requested track`,
     );
   }
   if (!verification.evidence.includes("title") || !titleAgrees) {
@@ -221,7 +264,14 @@ export async function validateDownloadedTrackFile({
   filePath,
   source,
   options = {},
-} = {}) {
+}: {
+  request?: ValidationRequest;
+  context?: ValidationRequest;
+  candidate?: PreDownloadCandidate | null;
+  filePath: string;
+  source?: string;
+  options?: ValidationOptions;
+}) {
   const trackRequest = normalizeValidationRequest(request, context);
   const strict = options.strict === true;
   const parseFn = options.parseFile || parseFile;
@@ -321,7 +371,7 @@ export async function validateDownloadedTrackFile({
   const hasYtdlpIdFilename =
     source === "ytdlp" && getFileBaseName(actual.filename) === readTagText(actual.provider.id);
   const requestedArtists = [trackRequest.artistName, ...(trackRequest.artistAliases || [])].filter(
-    Boolean,
+    (name): name is string => Boolean(name),
   );
   // A YouTube Music song is tagged with its own track, artists, and album, so
   // its tags are read as any other file's.
@@ -331,8 +381,8 @@ export async function validateDownloadedTrackFile({
           {
             tagTitle: actual.title,
             tagArtists: actual.artists,
-            videoTitle: actual.raw?.title,
-            channel: actual.provider.uploader,
+            videoTitle: rawString(actual.raw?.title),
+            channel: rawString(actual.provider.uploader),
           },
           requestedArtists,
           trackRequest.trackName,
@@ -392,7 +442,7 @@ export async function validateDownloadedTrackFile({
     hasOriginalIdentityTags &&
     verification.contradictions.length === 1 &&
     verification.contradictions[0] === "duration" &&
-    verification.durationGapMs <= REVIEW_MAX_DURATION_GAP_MS &&
+    verification.durationGapMs! <= REVIEW_MAX_DURATION_GAP_MS &&
     verification.evidence.includes("title") &&
     verification.evidence.includes("artist");
   const tagsConfirmIdentity =
@@ -407,7 +457,7 @@ export async function validateDownloadedTrackFile({
   const releaseAudio = youtube
     ? youtube.officialAudio
     : source !== "ytdlp" ||
-      isRequestedYoutubeAlbum(trackRequest, actual.album || actual.raw?.album);
+      isRequestedYoutubeAlbum(trackRequest, actual.album || rawString(actual.raw?.album));
   const exactIdentity = tagsConfirmIdentity && verification.titleSimilarity === 1 && releaseAudio;
   const maxDurationGapMs = options.release
     ? MATCH_POLICY.selectedDurationGapMs
@@ -499,6 +549,13 @@ export async function selectVerifiedDownloadedFile({
   candidate = null,
   source,
   options = {},
+}: {
+  request?: Parameters<typeof normalizeValidationRequest>[0];
+  context?: Parameters<typeof normalizeValidationRequest>[1];
+  filePaths?: string[];
+  candidate?: PreDownloadCandidate | null;
+  source?: string;
+  options?: ValidationOptions;
 } = {}) {
   const trackRequest = normalizeValidationRequest(request, context);
   const parseFn = options.parseFile || parseFile;
@@ -506,7 +563,7 @@ export async function selectVerifiedDownloadedFile({
     return { filePath: null, validation: null };
   }
 
-  const parsedFiles = [];
+  const parsedFiles: ParsedFile[] = [];
   for (const filePath of filePaths) {
     try {
       parsedFiles.push({
@@ -524,9 +581,9 @@ export async function selectVerifiedDownloadedFile({
   let pool = parsedFiles;
   let poolOptions = fileOptions;
   if (releaseIndex != null && parsedFiles.length > 0) {
-    const verdict = judgeRelease(release, {
+    const verdict = judgeRelease(release!, {
       files: parsedFiles.map(({ filePath, parsed }) =>
-        downloadedFileEvidence(filePath, parsed, { album: release.title }),
+        downloadedFileEvidence(filePath, parsed, { album: release!.title }),
       ),
     });
     const copies = verdict.copiesForTrack[releaseIndex];
@@ -596,12 +653,9 @@ export async function selectVerifiedDownloadedFile({
       validation.decision !== POST_DOWNLOAD_DECISIONS.VERIFIED &&
       validation.decision !== POST_DOWNLOAD_DECISIONS.AMBIGUOUS
     ) {
-      const hasError = Boolean(validation.error);
       const hasStrongerEvidence =
         !strongestRejected ||
-        (hasError && !strongestRejected.error) ||
-        (hasError === Boolean(strongestRejected.error) &&
-          (validation.distance ?? Infinity) < (strongestRejected.distance ?? Infinity));
+        (validation.distance ?? Infinity) < (strongestRejected.distance ?? Infinity);
       if (hasStrongerEvidence) strongestRejected = validation;
       continue;
     }

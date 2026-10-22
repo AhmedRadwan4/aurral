@@ -8,20 +8,34 @@ import {
 } from "../../../utils/api/endpoints/auth.ts";
 import { isReauthRequiredError, promptReauth } from "../../../utils/reauth.ts";
 import { useAuth } from "../../../contexts/AuthContext";
+import type { useToast } from "../../../contexts/ToastContext";
+import { readApiError } from "../utils/apiError.ts";
 
-const PROVIDER_LABELS = {
+type Toast = ReturnType<typeof useToast>["showSuccess"];
+type Identity = UserIdentitiesResponse["identities"][number];
+type StartLink = typeof startGoogleLink;
+
+const PROVIDER_LABELS: Partial<Record<string, string>> = {
   oidc: "Single sign-on",
   google: "Google",
   plex: "Plex",
 };
 
-export function ConnectedAccountsSection({ showSuccess, showError, className = "" }) {
+export function ConnectedAccountsSection({
+  showSuccess,
+  showError,
+  className = "",
+}: {
+  showSuccess: Toast;
+  showError: Toast;
+  className?: string;
+}) {
   const { bootstrap } = useAuth();
   const [identities, setIdentities] = useState<UserIdentitiesResponse["identities"]>([]);
   const [hasLocalPassword, setHasLocalPassword] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const [unlinkingId, setUnlinkingId] = useState(null);
+  const [unlinkingId, setUnlinkingId] = useState<number | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -39,7 +53,7 @@ export function ConnectedAccountsSection({ showSuccess, showError, className = "
     load();
   }, []);
 
-  const handleUnlink = async (identity) => {
+  const handleUnlink = async (identity: Identity) => {
     setUnlinkingId(identity.id);
     try {
       await unlinkMyIdentity(identity.id);
@@ -58,20 +72,19 @@ export function ConnectedAccountsSection({ showSuccess, showError, className = "
             );
             await load();
           } catch (retryErr) {
-            showError?.(retryErr.response?.data?.message || "Failed to disconnect");
+            showError?.(readApiError(retryErr).message || "Failed to disconnect");
           }
         }
       } else {
-        showError?.(
-          err.response?.data?.message || err.response?.data?.error || "Failed to disconnect",
-        );
+        const failure = readApiError(err);
+        showError?.(failure.message || failure.error || "Failed to disconnect");
       }
     } finally {
       setUnlinkingId(null);
     }
   };
 
-  const connectProvider = async (startLink, label) => {
+  const connectProvider = async (startLink: StartLink, label: string) => {
     const shouldProceed = await promptReauth();
     if (!shouldProceed) return;
     try {
@@ -79,12 +92,8 @@ export function ConnectedAccountsSection({ showSuccess, showError, className = "
       if (!result?.authUrl) throw new Error(`${label} did not return an authorization URL`);
       window.location.assign(result.authUrl);
     } catch (err) {
-      showError?.(
-        err.response?.data?.message ||
-          err.response?.data?.error ||
-          err.message ||
-          `Failed to connect ${label}`,
-      );
+      const failure = readApiError(err);
+      showError?.(failure.message || failure.error || failure.text || `Failed to connect ${label}`);
     }
   };
 

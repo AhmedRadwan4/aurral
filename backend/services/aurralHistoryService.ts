@@ -4,6 +4,42 @@ import { dbOps } from "../db/helpers/index.ts";
 import { resolveBlockedJobReleaseTitle, resolveBlockedJobSourceFilename } from "./downloadUtils.ts";
 import { flowPlaylistConfig } from "./playlists/flowPlaylistConfig.ts";
 import { getLibraryForAlbumReferences } from "./libraryQueryService.ts";
+import type { AurralHistoryEntry, AurralHistoryMetadata } from "../db/helpers/history.ts";
+import type { HonkerLiveRow } from "../db/rows.ts";
+import type { RequestUser } from "../middleware/requestUser.ts";
+import type { DownloadJob, JobFields } from "./downloadJobs/downloadTracker.ts";
+import type { LidarrAlbum, LidarrClient, LidarrCommand, LidarrPage } from "./lidarrClient.ts";
+import { isOwnKey } from "../../lib/ownKey.ts";
+
+type HistoryRequester = { userId: number; username?: string };
+type RequesterUser = Pick<RequestUser, "id" | "username" | "role">;
+
+type HistoryMetadata = AurralHistoryMetadata;
+
+type HistoryEntryInput = Partial<Omit<AurralHistoryEntry, "id" | "metadata">> & {
+  referenceId?: string | number | null;
+  metadata?: HistoryMetadata | null;
+};
+
+export type HistoryJob = Pick<DownloadJob, "id"> &
+  JobFields<
+    | "trackName"
+    | "artistName"
+    | "albumName"
+    | "albumMbid"
+    | "playlistId"
+    | "playlistType"
+    | "requestGroupId"
+    | "downloadSource"
+    | "downloadClient"
+    | "remoteFilename"
+    | "stagingPath"
+    | "releaseTitle"
+    | "status"
+    | "error"
+    | "createdAt"
+    | "startedAt"
+  >;
 
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const STALE_TRACK_JOB_MS = 15 * 60 * 1000;
@@ -28,7 +64,7 @@ const ACTIVITY_HIDDEN_KINDS = new Set([
   "track_reused_aurral",
 ]);
 
-const resolvePlaylistName = (playlistId) => {
+const resolvePlaylistName = (playlistId: string | null | undefined) => {
   const id = String(playlistId || "").trim();
   if (!id) return "Playlist";
   const shared = flowPlaylistConfig.getStaticPlaylist(id);
@@ -38,13 +74,15 @@ const resolvePlaylistName = (playlistId) => {
   return id;
 };
 
-const buildPlaylistHref = (playlistId) => {
+const buildPlaylistHref = (playlistId: string | null | undefined) => {
   const id = String(playlistId || "").trim();
   if (!id) return "/playlists";
   return `/playlists?selected=${encodeURIComponent(id)}`;
 };
 
-const buildTrackJobHref = (job) => {
+const buildTrackJobHref = (
+  job: Pick<HistoryJob, "playlistId" | "playlistType" | "albumMbid"> | null | undefined,
+) => {
   const playlistId = job?.playlistId || job?.playlistType;
   if (playlistId === "library" && job?.albumMbid) {
     const album = getLibraryForAlbumReferences({
@@ -56,7 +94,7 @@ const buildTrackJobHref = (job) => {
   return buildPlaylistHref(playlistId);
 };
 
-const buildArtistHref = (artistMbid) => {
+const buildArtistHref = (artistMbid: string | null | undefined) => {
   const mbid = String(artistMbid || "").trim();
   if (!mbid || mbid === "null" || mbid === "undefined") return null;
   return `/artist/${mbid}`;
@@ -64,9 +102,10 @@ const buildArtistHref = (artistMbid) => {
 
 const createId = () => `aurral-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 
-const stableId = (kind, referenceId) => `aurral-${kind}-${String(referenceId || "").trim()}`;
+const stableId = (kind: string, referenceId: string | number | null | undefined) =>
+  `aurral-${kind}-${String(referenceId || "").trim()}`;
 
-const toIso = (createdAt) => {
+const toIso = (createdAt: number) => {
   const value = Number(createdAt);
   if (!Number.isFinite(value) || value <= 0) {
     return new Date().toISOString();
@@ -74,7 +113,7 @@ const toIso = (createdAt) => {
   return new Date(value).toISOString();
 };
 
-const resolveTrackDownloadHistorySource = (downloadSource, downloadClient) => {
+const resolveTrackDownloadHistorySource = (downloadSource: unknown, downloadClient: unknown) => {
   const normalized = String(downloadSource || "")
     .trim()
     .toLowerCase();
@@ -97,23 +136,34 @@ const CLIENT_LABELS = {
   ytdlp: "yt-dlp",
   deemix: "deemix",
 };
-const resolveDownloadClientLabel = (downloadSource, downloadClient) =>
+const resolveDownloadClientLabel = (downloadSource: unknown, downloadClient: unknown) =>
   CLIENT_LABELS[resolveTrackDownloadHistorySource(downloadSource, downloadClient)] || "slskd";
 
-const resolveHistorySource = (kind, metadata = null) => {
+const resolveHistorySource = (
+  kind: string | null,
+  metadata: Record<string, unknown> | null = null,
+) => {
   if (kind === "track_download") {
     return resolveTrackDownloadHistorySource(metadata?.downloadSource, metadata?.downloadClient);
   }
   if (metadata?.managedBy === "aurral") return "aurral";
-  return KIND_SOURCE_MAP[kind] || "aurral";
+  return kind !== null && isOwnKey(KIND_SOURCE_MAP, kind) ? KIND_SOURCE_MAP[kind] : "aurral";
 };
 
-const serializeHistoryMetadata = (value) => {
+const serializeHistoryMetadata = (value: unknown) => {
   if (!value || typeof value !== "object") return null;
   return JSON.stringify(value);
 };
 
-const hasHistoryRecordChanged = (existing, next) => {
+type HistoryFields = Pick<
+  AurralHistoryEntry,
+  "kind" | "title" | "subtitle" | "status" | "statusLabel" | "href" | "metadata"
+>;
+
+const hasHistoryRecordChanged = (
+  existing: HistoryFields | null | undefined,
+  next: HistoryFields,
+) => {
   if (!existing) return true;
   return (
     existing.kind !== next.kind ||
@@ -126,7 +176,7 @@ const hasHistoryRecordChanged = (existing, next) => {
   );
 };
 
-export const appendAurralHistory = (entry = {}) => {
+export const appendAurralHistory = (entry: HistoryEntryInput = {}) => {
   const title = String(entry.title || "").trim();
   if (!title) return null;
   const kind = String(entry.kind || "activity").trim();
@@ -146,7 +196,7 @@ export const appendAurralHistory = (entry = {}) => {
   return record;
 };
 
-export const upsertAurralHistory = (entry = {}) => {
+export const upsertAurralHistory = (entry: HistoryEntryInput = {}) => {
   const title = String(entry.title || "").trim();
   if (!title) return null;
   const referenceId = entry.referenceId ? String(entry.referenceId).trim() : null;
@@ -223,7 +273,10 @@ export const recordDiscoveryRefreshFailed = (message = "Discovery refresh failed
     href: "/discover",
   });
 
-export const recordArtistAdded = ({ artistName, artistMbid } = {}) => {
+export const recordArtistAdded = ({
+  artistName,
+  artistMbid,
+}: { artistName?: string | null; artistMbid?: string | null } = {}) => {
   const mbid = String(artistMbid || "").trim();
   const name = String(artistName || "").trim();
   if (!mbid || !name) return null;
@@ -241,13 +294,15 @@ export const recordArtistAdded = ({ artistName, artistMbid } = {}) => {
   });
 };
 
-const requesterFromUser = (user) => {
+const requesterFromUser = (user: RequesterUser | null | undefined): HistoryRequester | null => {
   if (user?.id == null) return null;
   const username = String(user.username || "").trim();
   return { userId: user.id, ...(username ? { username } : {}) };
 };
 
-const requesterFromMetadata = (metadata) => {
+const requesterFromMetadata = (
+  metadata: HistoryMetadata | null | undefined,
+): HistoryRequester | null => {
   if (metadata?.userId == null) return null;
   const username = String(metadata.username || "").trim();
   return {
@@ -256,7 +311,14 @@ const requesterFromMetadata = (metadata) => {
   };
 };
 
-const queueRequestNotification = (notifyName, { albumName, artistName, requester }) => {
+const queueRequestNotification = (
+  notifyName: "notifyRequestMade" | "notifyRequestAvailable",
+  {
+    albumName,
+    artistName,
+    requester,
+  }: { albumName: string; artistName: string; requester: HistoryRequester | null },
+) => {
   import("./notificationService.ts")
     .then((notifications) =>
       notifications[notifyName]({
@@ -270,6 +332,13 @@ const queueRequestNotification = (notifyName, { albumName, artistName, requester
     });
 };
 
+type AlbumRef = {
+  albumId?: string | number | null;
+  albumName?: string | null;
+  artistName?: string | null;
+  artistMbid?: string | null;
+};
+
 export const recordAlbumRequested = ({
   albumId,
   albumName,
@@ -279,6 +348,11 @@ export const recordAlbumRequested = ({
   requestGroupId = null,
   searching: requestedSearching = false,
   user = null,
+}: AlbumRef & {
+  managedBy?: string | null;
+  requestGroupId?: string | null;
+  searching?: boolean;
+  user?: RequesterUser | null;
 } = {}) => {
   const searching = requestedSearching && managedBy !== "aurral";
   const name = String(albumName || "").trim() || "Album";
@@ -320,7 +394,7 @@ export const recordAlbumSearchStarted = ({
   artistName,
   artistMbid,
   user = null,
-} = {}) =>
+}: AlbumRef & { user?: RequesterUser | null } = {}) =>
   recordAlbumRequested({
     albumId,
     albumName,
@@ -336,7 +410,7 @@ export const recordMissingTrackSearch = ({
   artistName,
   artistMbid,
   queuedTrackCount = 0,
-} = {}) => {
+}: AlbumRef & { queuedTrackCount?: number | null } = {}) => {
   const count = Number(queuedTrackCount) || 0;
   if (count <= 0) return null;
   const name = String(albumName || "").trim() || "Album";
@@ -370,6 +444,10 @@ export const recordAlbumSearchFailed = ({
   statusLabel = "Not found",
   user = null,
   referenceId = null,
+}: AlbumRef & {
+  statusLabel?: string;
+  user?: RequesterUser | null;
+  referenceId?: string | null;
 } = {}) => {
   const name = String(albumName || "").trim() || "Album";
   const artist = String(artistName || "").trim();
@@ -402,6 +480,9 @@ export const recordAlbumSearchCompleted = ({
   artistMbid,
   user = null,
   referenceId = null,
+}: AlbumRef & {
+  user?: RequesterUser | null;
+  referenceId?: string | null;
 } = {}) => {
   const name = String(albumName || "").trim() || "Album";
   const artist = String(artistName || "").trim();
@@ -436,7 +517,7 @@ export const recordAlbumSearchCompleted = ({
   return entry;
 };
 
-const albumRequestReferenceId = (entry) => {
+const albumRequestReferenceId = (entry: AurralHistoryEntry) => {
   const prefix = "aurral-album_requested-";
   if (typeof entry?.id === "string" && entry.id.startsWith(prefix)) {
     return entry.id.slice(prefix.length);
@@ -444,7 +525,12 @@ const albumRequestReferenceId = (entry) => {
   return String(entry?.metadata?.albumId || entry?.metadata?.artistMbid || "").trim();
 };
 
-export const recordAlbumImportCompleted = ({ albumId, albumName, artistName, artistMbid } = {}) => {
+export const recordAlbumImportCompleted = ({
+  albumId,
+  albumName,
+  artistName,
+  artistMbid,
+}: AlbumRef = {}) => {
   const normalizedAlbumId = String(albumId ?? "").trim();
   if (!normalizedAlbumId) return null;
 
@@ -471,7 +557,7 @@ export const recordAlbumImportCompleted = ({ albumId, albumName, artistName, art
   });
 };
 
-const normalizeAlbumMatchText = (value) =>
+const normalizeAlbumMatchText = (value: unknown) =>
   String(value || "")
     .toLowerCase()
     .normalize("NFKD")
@@ -479,7 +565,9 @@ const normalizeAlbumMatchText = (value) =>
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 
-const parseHonkerPayload = (value) => {
+const parseHonkerPayload = (
+  value: string | Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null => {
   if (value && typeof value === "object") return value;
   if (typeof value !== "string" || !value.trim()) return null;
   try {
@@ -489,7 +577,10 @@ const parseHonkerPayload = (value) => {
   }
 };
 
-const isHonkerQueueActive = async (queueName, predicate) => {
+const isHonkerQueueActive = async (
+  queueName: string,
+  predicate: (payload: Record<string, unknown>) => boolean,
+) => {
   try {
     const { getHonkerDb } = await import("./honkerDb.ts");
     const rows = getHonkerDb().query(
@@ -511,7 +602,11 @@ const isHonkerQueueActive = async (queueName, predicate) => {
   }
 };
 
-const canViewPlaylistActivity = (user, playlistId, ownerUserId = undefined) => {
+const canViewPlaylistActivity = (
+  user: RequesterUser | null | undefined,
+  playlistId: unknown,
+  ownerUserId: unknown = undefined,
+) => {
   if (!user || user.role === "admin") return true;
   if (ownerUserId !== undefined) {
     return ownerUserId != null && Number(ownerUserId) === Number(user.id);
@@ -524,7 +619,7 @@ const canViewPlaylistActivity = (user, playlistId, ownerUserId = undefined) => {
   return playlist ? flowPlaylistConfig.canUserAccessStaticPlaylist(user, playlist) : false;
 };
 
-const loadPendingPlaylistImportHistory = async (user) => {
+const loadPendingPlaylistImportHistory = async (user: RequesterUser | null | undefined) => {
   try {
     const { getHonkerDb } = await import("./honkerDb.ts");
     const rows = getHonkerDb().query(
@@ -536,7 +631,7 @@ const loadPendingPlaylistImportHistory = async (user) => {
         ORDER BY created_at ASC, id ASC
       `,
       ["weekly-flow-operation"],
-    );
+    ) as Pick<HonkerLiveRow, "id" | "payload" | "state" | "created_at">[];
     return rows.flatMap((row) => {
       const payload = parseHonkerPayload(row?.payload);
       if (payload?.kind !== "shared-playlist-create") return [];
@@ -569,7 +664,7 @@ const loadPendingPlaylistImportHistory = async (user) => {
             operationId: row.id,
             playlistId,
             playlistName,
-            ownerUserId: payload.ownerUserId ?? null,
+            ownerUserId: typeof payload.ownerUserId === "number" ? payload.ownerUserId : null,
             trackCount,
           },
           createdAt:
@@ -588,13 +683,15 @@ const loadPendingPlaylistImportHistory = async (user) => {
 
 // A release attempt downloads for every track of its album, so a track it
 // holds is active while the attempt is.
-const isPipelineActiveForJob = async (jobId) =>
+const isPipelineActiveForJob = async (jobId: string) =>
   isHonkerQueueActive(
     "slskd-pipeline",
-    (payload) => payload?.jobId === jobId || payload?.albumGroupJobIds?.includes(jobId) === true,
+    (payload) =>
+      payload?.jobId === jobId ||
+      (Array.isArray(payload?.albumGroupJobIds) && payload.albumGroupJobIds.includes(jobId)),
   );
 
-const buildHistoryJobFromEntry = (entry) => ({
+const buildHistoryJobFromEntry = (entry: AurralHistoryEntry): HistoryJob => ({
   id: entry.metadata?.jobId || entry.id,
   trackName: entry.metadata?.trackName || null,
   artistName: entry.metadata?.artistName || null,
@@ -606,7 +703,9 @@ const buildHistoryJobFromEntry = (entry) => ({
 const loadRecentHistory = () =>
   dbOps.getAurralHistory({ since: Date.now() - MAX_AGE_MS, limit: 300 });
 
-export const syncTrackDownloadHistory = async (historyEntries = null) => {
+export const syncTrackDownloadHistory = async (
+  historyEntries: AurralHistoryEntry[] | null = null,
+) => {
   const { downloadTracker } = await import("./downloadJobs/downloadTracker.ts");
   const trackEntries = (historyEntries || loadRecentHistory()).filter(
     (entry) =>
@@ -640,10 +739,7 @@ export const syncTrackDownloadHistory = async (historyEntries = null) => {
     }
 
     if (job.status === "done") {
-      const isReused =
-        entry.statusLabel === "Queued" ||
-        job.sourceType === "aurral" ||
-        job.sourceType === "lidarr";
+      const isReused = entry.statusLabel === "Queued";
       recordTrackJobCompleted(job, isReused ? "Reused" : "Downloaded");
       continue;
     }
@@ -681,7 +777,7 @@ export const syncTrackDownloadHistory = async (historyEntries = null) => {
   }
 };
 
-const syncDiscoveryRefreshHistory = async (historyEntries = null) => {
+const syncDiscoveryRefreshHistory = async (historyEntries: AurralHistoryEntry[] | null = null) => {
   const pendingEntries = (historyEntries || loadRecentHistory()).filter(
     (entry) => entry.kind === "discovery_refresh" && entry.status === "processing",
   );
@@ -696,7 +792,7 @@ const syncDiscoveryRefreshHistory = async (historyEntries = null) => {
   }
 };
 
-const syncFlowGenerationHistory = async (historyEntries = null) => {
+const syncFlowGenerationHistory = async (historyEntries: AurralHistoryEntry[] | null = null) => {
   const pendingEntries = (historyEntries || loadRecentHistory()).filter(
     (entry) => entry.kind === "flow_generating" && entry.status === "processing",
   );
@@ -724,7 +820,10 @@ const syncFlowGenerationHistory = async (historyEntries = null) => {
   }
 };
 
-export const syncAlbumSearchHistory = async (lidarrClient, historyEntries = null) => {
+export const syncAlbumSearchHistory = async (
+  lidarrClient: LidarrClient | null,
+  historyEntries: AurralHistoryEntry[] | null = null,
+) => {
   if (!lidarrClient?.isConfigured()) return;
 
   const openEntries = (historyEntries || loadRecentHistory()).filter(
@@ -744,19 +843,19 @@ export const syncAlbumSearchHistory = async (lidarrClient, historyEntries = null
   const [queue, history, commands] = await Promise.all([
     lidarrClient.getQueue().catch(() => []),
     lidarrClient.getHistory(1, 200).catch(() => ({ records: [] })),
-    lidarrClient.request("/command").catch(() => []),
+    lidarrClient.request<LidarrCommand[] | LidarrPage<LidarrCommand>>("/command").catch(() => []),
   ]);
   const context = parseLidarrSearchContext({ queue, history, commands });
 
-  let lidarrAlbums = null;
+  let lidarrAlbums: LidarrAlbum[] | null = null;
   const loadLidarrAlbums = async () => {
     if (lidarrAlbums) return lidarrAlbums;
-    lidarrAlbums = await lidarrClient.request("/album").catch(() => []);
+    lidarrAlbums = await lidarrClient.request<LidarrAlbum[]>("/album").catch(() => []);
     if (!Array.isArray(lidarrAlbums)) lidarrAlbums = [];
     return lidarrAlbums;
   };
 
-  const resolveMissingAlbumId = async (entry) => {
+  const resolveMissingAlbumId = async (entry: AurralHistoryEntry) => {
     const albumName = normalizeAlbumMatchText(entry.metadata?.albumName);
     const artistName = normalizeAlbumMatchText(entry.metadata?.artistName);
     if (!albumName || !artistName) return null;
@@ -815,13 +914,13 @@ export const syncAlbumSearchHistory = async (lidarrClient, historyEntries = null
   }
 };
 
-const syncActivityFeedHistory = async (lidarrClient = null) => {
+const syncActivityFeedHistory = async (lidarrClient: LidarrClient | null = null) => {
   const entries = loadRecentHistory();
   await syncTrackDownloadHistory(entries);
   if (lidarrClient) await syncAlbumSearchHistory(lidarrClient, entries);
 };
 
-export const syncProcessingActivityHistory = async (lidarrClient = null) => {
+export const syncProcessingActivityHistory = async (lidarrClient: LidarrClient | null = null) => {
   const entries = loadRecentHistory();
   await syncTrackDownloadHistory(entries);
   await syncDiscoveryRefreshHistory(entries);
@@ -829,7 +928,7 @@ export const syncProcessingActivityHistory = async (lidarrClient = null) => {
   if (lidarrClient) await syncAlbumSearchHistory(lidarrClient, entries);
 };
 
-export const recordFlowGenerationStarted = ({ flowId } = {}) => {
+export const recordFlowGenerationStarted = ({ flowId }: { flowId?: string | null } = {}) => {
   const id = String(flowId || "").trim();
   if (!id) return null;
   const flowName = resolvePlaylistName(id);
@@ -845,7 +944,11 @@ export const recordFlowGenerationStarted = ({ flowId } = {}) => {
   });
 };
 
-export const recordFlowTracksGenerated = ({ flowId, tracksQueued = 0, reserveTracks = 0 } = {}) => {
+export const recordFlowTracksGenerated = ({
+  flowId,
+  tracksQueued = 0,
+  reserveTracks = 0,
+}: { flowId?: string | null; tracksQueued?: number; reserveTracks?: number } = {}) => {
   const id = String(flowId || "").trim();
   if (!id) return null;
   const total = tracksQueued + reserveTracks;
@@ -872,7 +975,7 @@ export const recordPlaylistTracksAdded = ({
   playlistId,
   tracksQueued = 0,
   tracksReused = 0,
-} = {}) => {
+}: { playlistId?: string | null; tracksQueued?: number; tracksReused?: number } = {}) => {
   const total = tracksQueued + tracksReused;
   if (total <= 0) return null;
   const playlistName = resolvePlaylistName(playlistId);
@@ -896,7 +999,20 @@ export const recordPlaylistTracksAdded = ({
   });
 };
 
-export const recordTrackReused = ({ track = {}, playlistId, sourceType = "library" } = {}) => {
+export const recordTrackReused = ({
+  track = {},
+  playlistId,
+  sourceType = "library",
+}: {
+  track?: {
+    trackName?: string | null;
+    title?: string | null;
+    artistName?: string | null;
+    artist?: string | null;
+  };
+  playlistId?: string | null;
+  sourceType?: string;
+} = {}) => {
   const playlistName = resolvePlaylistName(playlistId);
   const trackName = String(track.trackName || track.title || "Track").trim();
   const artistName = String(track.artistName || track.artist || "Artist").trim();
@@ -922,6 +1038,26 @@ export const recordTrackReused = ({ track = {}, playlistId, sourceType = "librar
   });
 };
 
+type TrackJobActivityInput = {
+  jobId?: string | null;
+  trackName?: string | null;
+  artistName?: string | null;
+  albumName?: string | null;
+  albumMbid?: string | null;
+  requestGroupId?: string | null;
+  playlistId?: string | null;
+  downloadSource?: string | null;
+  downloadClient?: string | null;
+  status?: string;
+  statusLabel?: string;
+  title?: string | null;
+  subtitle?: string | null;
+  sourceFilename?: string | null;
+  releaseTitle?: string | null;
+  user?: RequesterUser | null;
+  href?: string | null;
+};
+
 export const recordTrackJobActivity = ({
   jobId,
   trackName,
@@ -940,7 +1076,7 @@ export const recordTrackJobActivity = ({
   requestGroupId = null,
   user = null,
   href = null,
-} = {}) => {
+}: TrackJobActivityInput = {}) => {
   const id = String(jobId || "").trim();
   if (!id) return null;
   const playlistName = resolvePlaylistName(playlistId);
@@ -978,7 +1114,7 @@ export const recordTrackJobActivity = ({
   });
 };
 
-const trackJobFields = (job) => ({
+const trackJobFields = (job: HistoryJob | null | undefined) => ({
   jobId: job?.id,
   trackName: job?.trackName,
   artistName: job?.artistName,
@@ -991,20 +1127,24 @@ const trackJobFields = (job) => ({
   href: buildTrackJobHref(job),
 });
 
-const recordTrackJob = (job, patch) => recordTrackJobActivity({ ...trackJobFields(job), ...patch });
+const recordTrackJob = (job: HistoryJob | null | undefined, patch: TrackJobActivityInput) =>
+  recordTrackJobActivity({ ...trackJobFields(job), ...patch });
 
-export const recordTrackJobSearching = (job) =>
+export const recordTrackJobSearching = (job: HistoryJob | null | undefined) =>
   recordTrackJob(job, {
     status: "processing",
     statusLabel: "Searching",
     title: `Searching ${resolveDownloadClientLabel(job?.downloadSource, job?.downloadClient)} for ${job?.trackName || "track"}`,
   });
 
-export const getTrackJobRequesterId = (jobId) =>
+export const getTrackJobRequesterId = (jobId: string) =>
   requesterFromMetadata(dbOps.getAurralHistoryById(stableId("track_download", jobId))?.metadata)
     ?.userId ?? null;
 
-export const recordTrackJobQueued = (job, user = null) => {
+export const recordTrackJobQueued = (
+  job: HistoryJob | null | undefined,
+  user: RequesterUser | null = null,
+) => {
   const jobId = String(job?.id || "").trim();
   if (!jobId) return null;
   const existing = dbOps.getAurralHistoryById(stableId("track_download", jobId));
@@ -1025,14 +1165,14 @@ export const recordTrackJobQueued = (job, user = null) => {
   });
 };
 
-export const recordTrackJobDownloading = (job) =>
+export const recordTrackJobDownloading = (job: HistoryJob | null | undefined) =>
   recordTrackJob(job, {
     status: "processing",
     statusLabel: "Downloading",
     title: `Downloading ${job?.trackName || "track"} via ${resolveDownloadClientLabel(job?.downloadSource, job?.downloadClient)}`,
   });
 
-export const recordTrackJobWaiting = (job, reason) =>
+export const recordTrackJobWaiting = (job: HistoryJob | null | undefined, reason: string) =>
   recordTrackJob(job, {
     status: "processing",
     statusLabel: "Waiting",
@@ -1040,14 +1180,17 @@ export const recordTrackJobWaiting = (job, reason) =>
     subtitle: reason,
   });
 
-export const recordTrackJobMoving = (job) =>
+export const recordTrackJobMoving = (job: HistoryJob | null | undefined) =>
   recordTrackJob(job, {
     status: "processing",
     statusLabel: "Moving",
     title: `Moving ${job?.trackName || "track"} into playlist library`,
   });
 
-export const recordTrackJobCompleted = (job, statusLabel = "Downloaded") =>
+export const recordTrackJobCompleted = (
+  job: HistoryJob | null | undefined,
+  statusLabel = "Downloaded",
+) =>
   recordTrackJob(job, {
     status: "completed",
     statusLabel,
@@ -1055,7 +1198,10 @@ export const recordTrackJobCompleted = (job, statusLabel = "Downloaded") =>
     subtitle: `${job?.artistName || "Artist"} · ${resolvePlaylistName(job?.playlistId || job?.playlistType)}`,
   });
 
-export const recordTrackJobFailed = (job, message = "Download failed") =>
+export const recordTrackJobFailed = (
+  job: HistoryJob | null | undefined,
+  message = "Download failed",
+) =>
   recordTrackJob(job, {
     status: "failed",
     statusLabel: "Failed",
@@ -1063,14 +1209,14 @@ export const recordTrackJobFailed = (job, message = "Download failed") =>
     subtitle: String(message || "").trim() || `${job?.artistName || "Artist"}`,
   });
 
-export const recordTrackJobCancelled = (job) =>
+export const recordTrackJobCancelled = (job: HistoryJob | null | undefined) =>
   recordTrackJob(job, {
     status: "cancelled",
     statusLabel: "Cancelled",
     title: `Cancelled ${job?.trackName || "track"}`,
   });
 
-export const recordTrackJobBlocked = (job, message = "Blocked for review") =>
+export const recordTrackJobBlocked = (job: HistoryJob, message = "Blocked for review") =>
   recordTrackJob(job, {
     status: "blocked",
     statusLabel: "Review",
@@ -1088,6 +1234,7 @@ export interface AurralAlbumGrab {
   fallbackReason: string | null;
   requestedAt: string;
   completedAt?: string | null;
+  canonicalAlbumId?: string | null;
 }
 
 export interface AurralRequestItem {
@@ -1125,7 +1272,20 @@ export interface AurralRequestItem {
   canReSearch: boolean;
 }
 
-export const toHistoryRequestItem = (entry, options = {}): AurralRequestItem => {
+type HistoryRequestOptions = {
+  sourceFilename?: string | null;
+  trackName?: string | null;
+  releaseTitle?: string | null;
+  albumName?: string | null;
+  albumGrab?: AurralAlbumGrab | null;
+  canonicalAlbumId?: string | null;
+  requestGroupId?: string | null;
+};
+
+export const toHistoryRequestItem = (
+  entry: AurralHistoryEntry,
+  options: HistoryRequestOptions = {},
+): AurralRequestItem => {
   const kind = entry.kind || null;
   const source = resolveHistorySource(kind, entry.metadata);
   const sourceFilename =
@@ -1181,7 +1341,7 @@ export const toHistoryRequestItem = (entry, options = {}): AurralRequestItem => 
 
 const FAILED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-const buildActiveTrackHistory = (job) => {
+const buildActiveTrackHistory = (job: HistoryJob | null | undefined): AurralHistoryEntry => {
   const playlistId = job?.playlistId || job?.playlistType;
   const status =
     job?.status === "blocked"
@@ -1226,13 +1386,19 @@ const buildActiveTrackHistory = (job) => {
   };
 };
 
-export const getAurralHistoryRequests = async (lidarrClient = null, user = null) => {
+export const getAurralHistoryRequests = async (
+  lidarrClient: LidarrClient | null = null,
+  user: RequesterUser | null = null,
+) => {
   await syncActivityFeedHistory(lidarrClient);
-  const entries = [...(await loadPendingPlaylistImportHistory(user)), ...loadRecentHistory()];
+  const entries: AurralHistoryEntry[] = [
+    ...(await loadPendingPlaylistImportHistory(user)),
+    ...loadRecentHistory(),
+  ];
   const entryIds = new Set(entries.map((e) => e.id));
 
   const { downloadTracker } = await import("./downloadJobs/downloadTracker.ts");
-  const jobs = downloadTracker.getAll();
+  const jobs: HistoryJob[] = downloadTracker.getAll();
   for (const job of jobs) {
     if (
       job.status !== "blocked" &&
@@ -1257,8 +1423,8 @@ export const getAurralHistoryRequests = async (lidarrClient = null, user = null)
 
   const now = Date.now();
   const jobsById = new Map(jobs.map((job) => [job.id, job]));
-  const canonicalAlbumIds = new Map();
-  const resolveCanonicalAlbumId = (albumMbid) => {
+  const canonicalAlbumIds = new Map<unknown, string | null>();
+  const resolveCanonicalAlbumId = (albumMbid: unknown) => {
     if (!albumMbid) return null;
     if (!canonicalAlbumIds.has(albumMbid)) {
       const album = getLibraryForAlbumReferences({ source: "all", references: [albumMbid] })
@@ -1267,7 +1433,7 @@ export const getAurralHistoryRequests = async (lidarrClient = null, user = null)
     }
     return canonicalAlbumIds.get(albumMbid);
   };
-  const canViewEntry = (entry) =>
+  const canViewEntry = (entry: AurralHistoryEntry) =>
     canViewPlaylistActivity(
       user,
       entry.metadata?.playlistId || entry.metadata?.playlistType,
@@ -1284,7 +1450,8 @@ export const getAurralHistoryRequests = async (lidarrClient = null, user = null)
     .map((entry) => {
       const jobId = String(entry.metadata?.jobId || "").trim();
       const job = jobId ? jobsById.get(jobId) : null;
-      const manifest = expanded.manifests.get(entry.metadata?.albumGrabId);
+      const albumGrabId = entry.metadata?.albumGrabId;
+      const manifest = albumGrabId ? expanded.manifests.get(albumGrabId) : undefined;
       const canonicalAlbumId =
         entry.metadata?.canonicalAlbumId ||
         resolveCanonicalAlbumId(job?.albumMbid || entry.metadata?.albumMbid || manifest?.albumMbid);
@@ -1309,10 +1476,7 @@ export const getAurralHistoryRequests = async (lidarrClient = null, user = null)
         job?.status === "done" &&
         (entry.status === "pending" || entry.status === "processing")
       ) {
-        const isReused =
-          entry.statusLabel === "Queued" ||
-          job.sourceType === "aurral" ||
-          job.sourceType === "lidarr";
+        const isReused = entry.statusLabel === "Queued";
         entry.status = "completed";
         entry.statusLabel = isReused ? "Reused" : "Downloaded";
       }

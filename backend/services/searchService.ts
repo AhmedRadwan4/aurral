@@ -7,20 +7,33 @@ import {
   searchArtists as providerSearchArtists,
 } from "./providers/brainzmashProvider.ts";
 import { normalizePercentOfTracks } from "./lidarrAlbumStats.ts";
+import { asAppError } from "../../lib/errors.ts";
 import { logger } from "./logger.ts";
 import {
   PRIMARY_RELEASE_TYPES as PRIMARY_RELEASE_TYPE_LIST,
   SECONDARY_RELEASE_TYPES as SECONDARY_RELEASE_TYPE_LIST,
 } from "./apiClients/musicbrainz.ts";
 
-export function parsePositiveInt(value, fallback) {
-  const parsed = Number.parseInt(value, 10);
+export function parsePositiveInt(value: unknown, fallback: number) {
+  const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+type TagArtist = Awaited<ReturnType<typeof getTagArtists>>["artists"][number];
+type ProviderArtist = Awaited<ReturnType<typeof providerSearchArtists>>["items"][number];
+type ProviderAlbum = Awaited<ReturnType<typeof providerSearchAlbums>>["items"][number];
+
+interface AlbumLibraryLookupEntry {
+  inLibrary: true;
+  monitored: boolean;
+  libraryAlbumId: string | null;
+  libraryArtistId: string | null;
+  status: "available" | "monitored" | "unmonitored";
+}
+
 const ALL_RELEASE_TYPES = new Set([...PRIMARY_RELEASE_TYPE_LIST, ...SECONDARY_RELEASE_TYPE_LIST]);
-async function getAlbumLibraryLookup(albumMbids) {
-  const lookup = new Map();
+async function getAlbumLibraryLookup(albumMbids: string[]) {
+  const lookup = new Map<string, AlbumLibraryLookupEntry>();
   if (!lidarrClient.isConfigured() || albumMbids.length === 0) {
     return lookup;
   }
@@ -54,30 +67,37 @@ async function getAlbumLibraryLookup(albumMbids) {
       });
     }
   } catch (error) {
-    logger.warn("library", "Album search enrichment failed", { message: error.message });
+    const failure = asAppError(error);
+    logger.warn("library", "Album search enrichment failed", { message: failure?.message });
   }
 
   return lookup;
 }
 
-export function normalizeAlbumReleaseTypesFilter(releaseTypes) {
-  const values = Array.isArray(releaseTypes)
+export function normalizeAlbumReleaseTypesFilter(releaseTypes: unknown) {
+  const values: unknown[] = Array.isArray(releaseTypes)
     ? releaseTypes
     : String(releaseTypes || "")
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean);
-  return [...new Set(values.filter((value) => ALL_RELEASE_TYPES.has(value)))];
+  return [
+    ...new Set(
+      values.filter(
+        (value): value is string => typeof value === "string" && ALL_RELEASE_TYPES.has(value),
+      ),
+    ),
+  ];
 }
 
-export function normalizeAlbumSearchSort(value) {
+export function normalizeAlbumSearchSort(value: unknown) {
   const normalized = String(value || "").trim();
   return ["relevance", "dateDesc", "artistAsc", "titleAsc"].includes(normalized)
     ? normalized
     : "relevance";
 }
 
-function normalizeArtistItem(item) {
+function normalizeArtistItem(item: ProviderArtist) {
   const image = selectBestArtistImage(item.images);
   return {
     type: "artist",
@@ -95,11 +115,11 @@ function normalizeArtistItem(item) {
     tags: Array.isArray(item.genres) ? item.genres : [],
     genres: Array.isArray(item.genres) ? item.genres : [],
     inLibrary: false,
-    score: item.score || 0,
+    score: 0,
   };
 }
 
-function normalizeAlbumItem(item, lookup = null) {
+function normalizeAlbumItem(item: ProviderAlbum, lookup: AlbumLibraryLookupEntry | null = null) {
   return {
     type: "album",
     id: item.id,
@@ -119,9 +139,9 @@ function normalizeAlbumItem(item, lookup = null) {
   };
 }
 
-export async function searchArtists(query, limit = 24, offset = 0) {
+export async function searchArtists(query: unknown, limit: unknown = 24, offset: unknown = 0) {
   const limitInt = parsePositiveInt(limit, 24);
-  const offsetInt = Math.max(0, Number.parseInt(offset, 10) || 0);
+  const offsetInt = Math.max(0, Number.parseInt(String(offset), 10) || 0);
   const result = await providerSearchArtists(String(query || "").trim(), {
     limit: limitInt,
     offset: offsetInt,
@@ -136,14 +156,14 @@ export async function searchArtists(query, limit = 24, offset = 0) {
 }
 
 export async function searchAlbums(
-  query,
-  limit = 24,
-  offset = 0,
-  releaseTypes = [],
-  sort = "relevance",
+  query: unknown,
+  limit: unknown = 24,
+  offset: unknown = 0,
+  releaseTypes: unknown = [],
+  sort: unknown = "relevance",
 ) {
   const limitInt = parsePositiveInt(limit, 24);
-  const offsetInt = Math.max(0, Number.parseInt(offset, 10) || 0);
+  const offsetInt = Math.max(0, Number.parseInt(String(offset), 10) || 0);
   const normalizedSort = normalizeAlbumSearchSort(sort);
   const selectedReleaseTypes = normalizeAlbumReleaseTypesFilter(releaseTypes);
   const result = await providerSearchAlbums(String(query || "").trim(), {
@@ -152,7 +172,9 @@ export async function searchAlbums(
     releaseTypes: selectedReleaseTypes,
     sort: normalizedSort,
   });
-  const albumLookup = await getAlbumLibraryLookup(result.items.map((item) => item.id));
+  const albumLookup = await getAlbumLibraryLookup(
+    result.items.map((item) => item.id).filter((id): id is string => id !== undefined),
+  );
   return {
     scope: "album",
     query,
@@ -160,11 +182,13 @@ export async function searchAlbums(
     count: result.count,
     offset: result.offset,
     hasMore: result.offset + result.items.length < result.count,
-    items: result.items.map((item) => normalizeAlbumItem(item, albumLookup.get(item.id))),
+    items: result.items.map((item) =>
+      normalizeAlbumItem(item, item.id === undefined ? undefined : albumLookup.get(item.id)),
+    ),
   };
 }
 
-function toTagArtistItem(artist, tag) {
+function toTagArtistItem(artist: TagArtist, tag: string) {
   const image = buildImageProxyUrl(artist.image);
   return {
     type: "artist",
@@ -186,12 +210,12 @@ function toTagArtistItem(artist, tag) {
   };
 }
 
-export async function searchTags(query, limit = 24, offset = 0) {
+export async function searchTags(query: unknown, limit: unknown = 24, offset: unknown = 0) {
   const tag = String(query || "")
     .trim()
     .replace(/^#/, "");
   const limitInt = parsePositiveInt(limit, 24);
-  const offsetInt = Math.max(0, Number.parseInt(offset, 10) || 0);
+  const offsetInt = Math.max(0, Number.parseInt(String(offset), 10) || 0);
 
   if (!tag) {
     return {

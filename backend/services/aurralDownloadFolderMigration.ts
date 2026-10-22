@@ -1,4 +1,5 @@
 import { createReadStream, constants as fsConstants } from "fs";
+import type { Stats } from "fs";
 import { createHash } from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -6,7 +7,7 @@ import { parseFile } from "music-metadata";
 import { dbOps, userOps } from "../db/helpers/index.ts";
 import { AUDIO_EXTENSIONS, buildMetadataRecord, scanMusicRoot } from "./libraryFileScanner.ts";
 import { getLibraryMediaFile } from "./libraryMediaStore.ts";
-import { downloadTracker } from "./downloadJobs/downloadTracker.ts";
+import { downloadTracker, type DownloadJob } from "./downloadJobs/downloadTracker.ts";
 import { flowPlaylistConfig } from "./playlists/flowPlaylistConfig.ts";
 import {
   PLAYLIST_FILES_DIR,
@@ -16,6 +17,8 @@ import {
   resolveDownloadRoot,
 } from "./downloadPaths.ts";
 import { sanitizePathPart } from "./downloadUtils.ts";
+import { asAppError } from "../../lib/errors.ts";
+import type { createPlaybackDeletionGuard } from "./playback/playbackFileRetention.ts";
 
 export const AURRAL_DOWNLOAD_FOLDER_MIGRATION_VERSION = 1;
 export const AURRAL_DOWNLOAD_FOLDER_MIGRATION_SETTING = "aurralDownloadFolderMigration";
@@ -30,9 +33,54 @@ const UNKNOWN_IDENTITY_VALUES = new Set([
   "unknown track",
 ]);
 
-const text = (value) => String(value || "").trim();
+type MetadataReader = NonNullable<
+  NonNullable<Parameters<typeof scanMusicRoot>[0]>["metadataReader"]
+>;
+type DeletionGuard = ReturnType<typeof createPlaybackDeletionGuard>;
+type MigrationLogger = Pick<Console, "info" | "warn" | "error">;
+type MigrationIdentity = NonNullable<Awaited<ReturnType<typeof resolveIdentity>>>;
+type MigrationFailure = { sourcePath: string; reason: string | undefined };
+type MigrationRun = {
+  status: string;
+  rootPath: string;
+  scanned: number;
+  migrated: number;
+  flowMigrated: number;
+  removed: number;
+  retained: number;
+  failed: number;
+  failures: MigrationFailure[];
+};
+type PendingPermanentEntry = {
+  playlistId: string;
+  sourcePath: string;
+  targetPath: string;
+  jobs: DownloadJob[];
+  identity: MigrationIdentity;
+};
+type IndexDestinationInput = {
+  rootPath: string;
+  targetPath: string;
+  identity: MigrationIdentity;
+  jobs: DownloadJob[];
+  metadataReader: MetadataReader;
+};
+type MigrationOptions = {
+  root?: string;
+  logger?: MigrationLogger;
+  lidarrRoots?: string[];
+  metadataReader?: MetadataReader;
+  indexDestination?: (input: IndexDestinationInput) => Promise<unknown>;
+};
 
-function log(logger, method, message, details = null) {
+const text = (value: unknown) => String(value || "").trim();
+
+function log(
+  logger: MigrationLogger | null | undefined,
+  method: keyof MigrationLogger,
+  message: string,
+  details: unknown = null,
+) {
   const fn = logger?.[method];
   if (typeof fn !== "function") return;
   fn.call(logger, message, ...(details ? [details] : []));
@@ -81,52 +129,53 @@ function loadMigrationState(rootPath: string) {
   };
 }
 
-function saveMigrationState(state) {
+function saveMigrationState(state: MigrationState) {
   state.updatedAt = Date.now();
   dbOps.setJSONSetting(AURRAL_DOWNLOAD_FOLDER_MIGRATION_SETTING, state);
 }
 
-function pathMatches(candidate, expected, rootPath) {
+function pathMatches(candidate: string | null | undefined, expected: string, rootPath: string) {
   const resolved = path.resolve(String(candidate || ""));
   const remapped = remapLegacyPath(resolved, rootPath);
   const expectedPath = path.resolve(expected);
   return resolved === expectedPath || remapped === expectedPath;
 }
 
-function pathsOverlap(left, right) {
+function pathsOverlap(left: string, right: string) {
   const a = path.resolve(left);
   const b = path.resolve(right);
   return a === b || a.startsWith(`${b}${path.sep}`) || b.startsWith(`${a}${path.sep}`);
 }
 
-function configuredLidarrRoots(options) {
-  if (Array.isArray(options.lidarrRoots)) return options.lidarrRoots.filter(Boolean);
+function configuredLidarrRoots(options: MigrationOptions) {
+  if (Array.isArray(options.lidarrRoots))
+    return options.lidarrRoots.filter((root): root is string => Boolean(root));
   const settings = dbOps.getSettings();
   const users = typeof userOps.getAllUsers === "function" ? userOps.getAllUsers() : [];
   return [
     settings.rootFolderPath,
     settings.integrations?.lidarr?.rootFolderPath,
     ...users.map((user) => user.lidarrRootFolderPath),
-  ].filter(Boolean);
+  ].filter((root): root is string => Boolean(root));
 }
 
-function isPartialFile(filePath, stat) {
+function isPartialFile(filePath: string, stat: Stats) {
   const extension = path.extname(filePath).toLowerCase();
   return (
     stat.size <= 0 || PARTIAL_EXTENSIONS.has(extension) || path.basename(filePath).startsWith(".")
   );
 }
 
-function isCandidateFile(filePath) {
+function isCandidateFile(filePath: string) {
   const extension = path.extname(filePath).toLowerCase();
   return AUDIO_EXTENSIONS.has(extension) || PARTIAL_EXTENSIONS.has(extension);
 }
 
-function jobPlaylistId(job) {
+function jobPlaylistId(job: DownloadJob) {
   return text(job?.playlistId || job?.playlistType);
 }
 
-async function walkFiles(rootPath, output = []) {
+async function walkFiles(rootPath: string, output: string[] = []) {
   let entries;
   try {
     entries = await fs.readdir(rootPath, { withFileTypes: true });
@@ -145,24 +194,29 @@ async function walkFiles(rootPath, output = []) {
   return output;
 }
 
-function safePathPart(value) {
+function safePathPart(value: string) {
   const result = sanitizePathPart(value, "");
   return result && result !== "." && result !== ".." ? result : null;
 }
 
-function legacyPlaylistId(sourcePath, rootPath, knownIds) {
+function legacyPlaylistId(sourcePath: string, rootPath: string, knownIds: Set<string>) {
   const relative = path.relative(rootPath, sourcePath).split(path.sep).filter(Boolean);
   if (!relative.length) return null;
   if (LEGACY_PLAYLIST_ROOTS.includes(relative[0])) return relative[1] || null;
   return knownIds.has(relative[0]) ? relative[0] : null;
 }
 
-function pathIdentity(sourcePath, rootPath, playlistId, isLegacyRoot) {
+function pathIdentity(
+  sourcePath: string,
+  rootPath: string,
+  playlistId: string,
+  isLegacyRoot: boolean,
+) {
   const relative = path.relative(rootPath, sourcePath).split(path.sep).filter(Boolean);
   const start = isLegacyRoot ? 2 : 1;
   const parts = relative.slice(start);
   if (parts.length !== 3) return null;
-  const fileName = parts.at(-1);
+  const fileName = parts.at(-1)!;
   const title = path
     .basename(fileName, path.extname(fileName))
     .replace(/^\d+(?:[. _-]+|$)/, "")
@@ -175,12 +229,12 @@ function pathIdentity(sourcePath, rootPath, playlistId, isLegacyRoot) {
   };
 }
 
-function isLegacyRootPath(sourcePath, rootPath) {
+function isLegacyRootPath(sourcePath: string, rootPath: string) {
   const relative = path.relative(rootPath, sourcePath).split(path.sep).filter(Boolean);
   return LEGACY_PLAYLIST_ROOTS.includes(relative[0]);
 }
 
-async function resolveJobSourcePath(finalPath, rootPath) {
+async function resolveJobSourcePath(finalPath: string | null | undefined, rootPath: string) {
   const raw = path.resolve(String(finalPath || ""));
   const candidates = [...new Set([raw, remapLegacyPath(raw, rootPath)])];
   for (const candidate of candidates) {
@@ -192,11 +246,11 @@ async function resolveJobSourcePath(finalPath, rootPath) {
   return null;
 }
 
-async function collectLegacyFiles(rootPath, knownIds) {
+async function collectLegacyFiles(rootPath: string, knownIds: Set<string>) {
   const roots = LEGACY_PLAYLIST_ROOTS.map((name) => path.join(rootPath, name));
   for (const id of knownIds) roots.push(path.join(rootPath, id));
   const resolvedRoot = path.resolve(rootPath);
-  const files = [];
+  const files: string[] = [];
   for (const candidateRoot of [...new Set(roots)]) {
     const resolvedCandidate = path.resolve(candidateRoot);
     if (resolvedCandidate === resolvedRoot || !isPathInsideRoot(resolvedCandidate, resolvedRoot)) {
@@ -207,13 +261,13 @@ async function collectLegacyFiles(rootPath, knownIds) {
   return [...new Set(files.map((filePath) => path.resolve(filePath)))].sort();
 }
 
-async function fileDigest(filePath) {
+async function fileDigest(filePath: string) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(filePath)) hash.update(chunk);
   return hash.digest("hex");
 }
 
-async function filesMatch(leftPath, rightPath) {
+async function filesMatch(leftPath: string, rightPath: string) {
   const [leftStat, rightStat] = await Promise.all([fs.stat(leftPath), fs.stat(rightPath)]);
   if (!leftStat.isFile() || !rightStat.isFile() || leftStat.size !== rightStat.size) return false;
   const [leftDigest, rightDigest] = await Promise.all([
@@ -223,7 +277,7 @@ async function filesMatch(leftPath, rightPath) {
   return leftDigest === rightDigest;
 }
 
-async function findExistingDestination(targetPath, sourcePath) {
+async function findExistingDestination(targetPath: string, sourcePath: string) {
   const directory = path.dirname(targetPath);
   const baseName = path.basename(targetPath, path.extname(targetPath)).toLowerCase();
   const targetExtension = path.extname(targetPath).toLowerCase();
@@ -254,7 +308,7 @@ async function findExistingDestination(targetPath, sourcePath) {
   return null;
 }
 
-async function copyWithoutRemovingSource(sourcePath, targetPath) {
+async function copyWithoutRemovingSource(sourcePath: string, targetPath: string) {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   const targetStat = await fs.stat(targetPath).catch(() => null);
   if (targetStat?.isFile()) {
@@ -287,7 +341,7 @@ async function copyWithoutRemovingSource(sourcePath, targetPath) {
   }
 }
 
-async function removeSource(sourcePath, rootPath) {
+async function removeSource(sourcePath: string, rootPath: string) {
   if (!isPathInsideRoot(sourcePath, rootPath)) {
     throw new Error("Migration source is outside the Aurral root");
   }
@@ -303,7 +357,7 @@ async function removeSource(sourcePath, rootPath) {
   }
 }
 
-function updateJobPaths(jobs, destination) {
+function updateJobPaths(jobs: DownloadJob[], destination: string) {
   for (const job of jobs) {
     if (!downloadTracker.updateFinalPath(job.id, destination)) {
       throw new Error(`Could not update tracker path for job ${job.id}`);
@@ -319,8 +373,17 @@ function updateJobPaths(jobs, destination) {
   }
 }
 
-async function repairCompletedMigrationState(state, rootPath, jobs, logger) {
-  const result = { repaired: 0, failed: 0, failures: [] };
+async function repairCompletedMigrationState(
+  state: MigrationState,
+  rootPath: string,
+  jobs: DownloadJob[],
+  logger: MigrationLogger,
+) {
+  const result: { repaired: number; failed: number; failures: MigrationFailure[] } = {
+    repaired: 0,
+    failed: 0,
+    failures: [],
+  };
   for (const [sourcePath, item] of Object.entries(state.items)) {
     if (item?.status !== "complete" || !item.destination) continue;
     const destination = path.resolve(String(item.destination));
@@ -340,15 +403,22 @@ async function repairCompletedMigrationState(state, rootPath, jobs, logger) {
       updateJobPaths(staleJobs, destination);
       result.repaired += staleJobs.length;
     } catch (error) {
-      retainItem(state, sourcePath, error.message, logger);
+      const failure = asAppError(error);
+      retainItem(state, sourcePath, failure?.message, logger);
       result.failed += 1;
-      result.failures.push({ sourcePath, reason: error.message });
+      result.failures.push({ sourcePath, reason: failure?.message });
     }
   }
   return result;
 }
 
-async function resolveIdentity(sourcePath, rootPath, playlistId, jobs, metadataReader) {
+async function resolveIdentity(
+  sourcePath: string,
+  rootPath: string,
+  playlistId: string,
+  jobs: DownloadJob[],
+  metadataReader: MetadataReader,
+) {
   const pathValues = pathIdentity(
     sourcePath,
     rootPath,
@@ -391,7 +461,11 @@ async function resolveIdentity(sourcePath, rootPath, playlistId, jobs, metadataR
   };
 }
 
-async function defaultIndexDestination({ rootPath, targetPath, metadataReader }) {
+async function defaultIndexDestination({
+  rootPath,
+  targetPath,
+  metadataReader,
+}: IndexDestinationInput) {
   await scanMusicRoot({ rootPath, source: "aurral", filePaths: [targetPath], metadataReader });
   const media = getLibraryMediaFile({ source: "aurral", path: targetPath });
   if (!media?.available) {
@@ -400,14 +474,22 @@ async function defaultIndexDestination({ rootPath, targetPath, metadataReader })
   return media;
 }
 
-async function defaultIndexDestinations({ rootPath, entries, metadataReader }) {
+async function defaultIndexDestinations({
+  rootPath,
+  entries,
+  metadataReader,
+}: {
+  rootPath: string;
+  entries: PendingPermanentEntry[];
+  metadataReader: MetadataReader;
+}) {
   await scanMusicRoot({
     rootPath,
     source: "aurral",
     filePaths: entries.map((entry) => entry.targetPath),
     metadataReader,
   });
-  const indexed = new Map();
+  const indexed = new Map<string, NonNullable<ReturnType<typeof getLibraryMediaFile>>>();
   for (const entry of entries) {
     const media = getLibraryMediaFile({ source: "aurral", path: entry.targetPath });
     if (media?.available) indexed.set(entry.targetPath, media);
@@ -415,11 +497,16 @@ async function defaultIndexDestinations({ rootPath, entries, metadataReader }) {
   return indexed;
 }
 
-function itemState(state, sourcePath) {
+function itemState(state: MigrationState, sourcePath: string) {
   return state.items[sourcePath] || {};
 }
 
-function retainItem(state, sourcePath, reason, logger) {
+function retainItem(
+  state: MigrationState,
+  sourcePath: string,
+  reason: string | undefined,
+  logger: MigrationLogger,
+) {
   state.items[sourcePath] = {
     ...itemState(state, sourcePath),
     status: "retained",
@@ -439,6 +526,15 @@ async function commitIndexedMigrationItem({
   rootPath,
   deletionGuard,
   logger,
+}: {
+  state: MigrationState;
+  sourcePath: string;
+  committedPath: string;
+  jobs: DownloadJob[];
+  identity: MigrationIdentity;
+  rootPath: string;
+  deletionGuard: DeletionGuard;
+  logger: MigrationLogger;
 }) {
   state.items[sourcePath] = {
     ...itemState(state, sourcePath),
@@ -471,10 +567,17 @@ async function commitIndexedMigrationItem({
   return true;
 }
 
-function resolveOwnership(sourcePath, rootPath, jobs, knownIds) {
+function resolveOwnership(
+  sourcePath: string,
+  rootPath: string,
+  jobs: DownloadJob[],
+  knownIds: Set<string>,
+) {
   const pathPlaylistId = legacyPlaylistId(sourcePath, rootPath, knownIds);
   const candidates = jobs.map((job) => jobPlaylistId(job)).filter(Boolean);
-  const playlistIds = [...new Set([...candidates, pathPlaylistId].filter(Boolean))];
+  const playlistIds = [
+    ...new Set([...candidates, pathPlaylistId].filter((id): id is string => Boolean(id))),
+  ];
   const sharedId = playlistIds.find((id) => flowPlaylistConfig.getStaticPlaylist(id)) || null;
   const flowId = playlistIds.find((id) => flowPlaylistConfig.getFlow(id)) || null;
   const playlistId = sharedId || flowId || pathPlaylistId;
@@ -485,7 +588,7 @@ function resolveOwnership(sourcePath, rootPath, jobs, knownIds) {
   };
 }
 
-export async function migrateAurralDownloadFolder(options = {}) {
+export async function migrateAurralDownloadFolder(options: MigrationOptions = {}) {
   const rootPath = path.resolve(options.root || resolveDownloadRoot());
   const logger = options.logger || console;
   const lidarrRoots = configuredLidarrRoots(options);
@@ -529,7 +632,7 @@ export async function migrateAurralDownloadFolder(options = {}) {
   ]);
   const files = await collectLegacyFiles(rootPath, knownIds);
   const fileSet = new Set(files);
-  const jobsByPath = new Map();
+  const jobsByPath = new Map<string, DownloadJob[]>();
   for (const job of jobs) {
     const sourcePath = await resolveJobSourcePath(job.finalPath, rootPath);
     if (!sourcePath || !fileSet.has(sourcePath)) continue;
@@ -541,8 +644,8 @@ export async function migrateAurralDownloadFolder(options = {}) {
   const metadataReader = options.metadataReader || parseFile;
   const useBatchIndex = !options.indexDestination;
   const indexDestination = options.indexDestination || defaultIndexDestination;
-  const pendingPermanent = [];
-  const result = {
+  const pendingPermanent: PendingPermanentEntry[] = [];
+  const result: MigrationRun = {
     status: "complete",
     rootPath,
     scanned: files.length,
@@ -556,8 +659,8 @@ export async function migrateAurralDownloadFolder(options = {}) {
 
   const { isPlaybackRetainedFile, createPlaybackDeletionGuard } =
     await import("./playback/playbackFileRetention.ts");
-  const deletionGuards = new Map();
-  const getDeletionGuard = (playlistId) => {
+  const deletionGuards = new Map<string, DeletionGuard>();
+  const getDeletionGuard = (playlistId: string) => {
     if (!deletionGuards.has(playlistId)) {
       deletionGuards.set(
         playlistId,
@@ -567,7 +670,7 @@ export async function migrateAurralDownloadFolder(options = {}) {
         }),
       );
     }
-    return deletionGuards.get(playlistId);
+    return deletionGuards.get(playlistId)!;
   };
   for (const sourcePath of files) {
     if (isPlaybackRetainedFile(sourcePath)) {
@@ -615,14 +718,15 @@ export async function migrateAurralDownloadFolder(options = {}) {
         saveMigrationState(state);
         result.removed += 1;
       } catch (error) {
+        const failure = asAppError(error);
         retainItem(
           state,
           sourcePath,
-          `could not remove unkept flow media: ${error.message}`,
+          `could not remove unkept flow media: ${failure?.message}`,
           logger,
         );
         result.failed += 1;
-        result.failures.push({ sourcePath, reason: error.message });
+        result.failures.push({ sourcePath, reason: failure?.message });
       }
       continue;
     }
@@ -637,7 +741,12 @@ export async function migrateAurralDownloadFolder(options = {}) {
         metadataReader,
       );
     } catch (error) {
-      retainItem(state, sourcePath, `could not resolve media identity: ${error.message}`, logger);
+      retainItem(
+        state,
+        sourcePath,
+        `could not resolve media identity: ${asAppError(error)?.message}`,
+        logger,
+      );
       result.retained += 1;
       continue;
     }
@@ -739,15 +848,16 @@ export async function migrateAurralDownloadFolder(options = {}) {
         result.retained += 1;
       }
     } catch (error) {
-      retainItem(state, sourcePath, `migration verification failed: ${error.message}`, logger);
+      const failure = asAppError(error);
+      retainItem(state, sourcePath, `migration verification failed: ${failure?.message}`, logger);
       result.failed += 1;
-      result.failures.push({ sourcePath, reason: error.message });
+      result.failures.push({ sourcePath, reason: failure?.message });
     }
   }
 
   if (pendingPermanent.length) {
-    let indexed = new Map();
-    let batchError = null;
+    let indexed: Awaited<ReturnType<typeof defaultIndexDestinations>> = new Map();
+    let batchError: unknown = null;
     try {
       indexed = await defaultIndexDestinations({
         rootPath,
@@ -776,14 +886,15 @@ export async function migrateAurralDownloadFolder(options = {}) {
         if (completed) result.migrated += 1;
         else result.retained += 1;
       } catch (error) {
+        const failure = asAppError(error);
         retainItem(
           state,
           entry.sourcePath,
-          `migration verification failed: ${error.message}`,
+          `migration verification failed: ${failure?.message}`,
           logger,
         );
         result.failed += 1;
-        result.failures.push({ sourcePath: entry.sourcePath, reason: error.message });
+        result.failures.push({ sourcePath: entry.sourcePath, reason: failure?.message });
       }
     }
   }
@@ -805,7 +916,7 @@ export async function migrateAurralDownloadFolder(options = {}) {
     // A later retention retry can finish removing an already-indexed source.
     // Only finish that migration if its destination is still available.
     if (retainedIndexedSource) {
-      const destination = path.resolve(item.destination);
+      const destination = path.resolve(item.destination!);
       if (
         !isPathInsideRoot(destination, rootPath) ||
         !(await fs.stat(destination).catch(() => null))?.isFile()

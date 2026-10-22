@@ -1,6 +1,8 @@
 import type { DiscoveryFeedbackEntry as BackendDiscoveryFeedbackEntry } from "../../../backend/services/discovery/feedback.ts";
 
-export type DiscoveryFeedbackEntry = Partial<BackendDiscoveryFeedbackEntry>;
+export type DiscoveryFeedbackEntry = Partial<Omit<BackendDiscoveryFeedbackEntry, "artistId">> & {
+  artistId?: string | number | null;
+};
 
 interface DiscoveryFeedbackGetResponse {
   feedback: DiscoveryFeedbackEntry[];
@@ -42,7 +44,7 @@ interface DiscoveryArtistRef {
 
 const ARTIST_FEEDBACK_ACTIONS = new Set(["more_like_this", "less_like_this", "block_artist"]);
 
-export const DISCOVERY_FEEDBACK_LABELS = {
+export const DISCOVERY_FEEDBACK_LABELS: Partial<Record<string, string>> = {
   more_like_this: "More like this",
   less_like_this: "Less like this",
   block_artist: "Block artist",

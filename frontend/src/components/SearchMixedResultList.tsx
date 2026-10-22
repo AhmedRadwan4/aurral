@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import ArtworkImage from "./ArtworkImage";
 import { Music } from "lucide-react";
 import ArtistImage from "./ArtistImage";
@@ -7,14 +8,27 @@ import { getArtistRecordId } from "../utils/artistTaste";
 import RouteLink from "./RouteLink";
 import Tooltip from "./Tooltip";
 
-function getSearchPlaylistArtworkUrl(playlist) {
+export type SearchItem = NonNullable<Parameters<typeof getSearchResultKey>[0]> & {
+  status?: string;
+};
+export type SearchImageMap = Record<string, string | null | undefined>;
+
+interface SearchMixedResultListProps {
+  items: SearchItem[];
+  query?: string;
+  artistImages?: SearchImageMap;
+  albumCovers?: SearchImageMap;
+  renderAction?: ((item: SearchItem) => ReactNode) | null;
+}
+
+function getSearchPlaylistArtworkUrl(playlist: SearchItem) {
   if (!playlist) return null;
   if (playlist.coverUrl) return playlist.coverUrl;
   const playlistId = String(playlist.id || "").trim();
   return playlistId ? getPlaylistArtworkUrl(playlistId) : null;
 }
 
-function getTypeLabel(item) {
+function getTypeLabel(item: SearchItem) {
   if (item.type === "artist") return "Artist";
   if (item.type === "album") return "Album";
   if (item.type === "track") return "Song";
@@ -22,7 +36,7 @@ function getTypeLabel(item) {
   return null;
 }
 
-function getPrimaryLabel(item) {
+function getPrimaryLabel(item: SearchItem) {
   if (item.type === "artist") return item.name || "";
   if (item.type === "playlist") return item.name || "";
   if (item.type === "album") return item.title || "";
@@ -30,7 +44,7 @@ function getPrimaryLabel(item) {
   return "";
 }
 
-function getSecondaryLabel(item) {
+function getSecondaryLabel(item: SearchItem) {
   if (item.type === "artist") {
     return String(item.disambiguation || "").trim() || null;
   }
@@ -46,13 +60,21 @@ function getSecondaryLabel(item) {
   return null;
 }
 
-function ResultThumbnail({ item, artistImages, albumCovers }) {
+function ResultThumbnail({
+  item,
+  artistImages,
+  albumCovers,
+}: {
+  item: SearchItem;
+  artistImages: SearchImageMap;
+  albumCovers: SearchImageMap;
+}) {
   if (item.type === "artist") {
     const artistId = getArtistRecordId(item);
     return (
       <span className="search-mixed-results__thumb search-mixed-results__thumb--round">
         <ArtistImage
-          src={artistImages[artistId] || item.image || item.imageUrl}
+          src={artistImages[String(artistId)] || item.image || item.imageUrl}
           mbid={artistId}
           artistName={item.name}
           alt={item.name}
@@ -70,9 +92,9 @@ function ResultThumbnail({ item, artistImages, albumCovers }) {
     item.type === "playlist"
       ? getSearchPlaylistArtworkUrl(item)
       : item.type === "album"
-        ? albumCovers[item.id] || item.coverUrl
+        ? albumCovers[String(item.id)] || item.coverUrl
         : item.type === "track"
-          ? albumCovers[item.albumMbid] || item.coverUrl
+          ? albumCovers[String(item.albumMbid)] || item.coverUrl
           : null;
 
   return (
@@ -103,7 +125,7 @@ function SearchMixedResultList({
   artistImages = {},
   albumCovers = {},
   renderAction = null,
-}) {
+}: SearchMixedResultListProps) {
   if (!items.length) return null;
 
   return (

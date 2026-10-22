@@ -7,6 +7,8 @@ import {
 } from "../../../utils/api/endpoints/settings.ts";
 import { queryClient, queryKeys } from "../../../queryClient.ts";
 import type { AppSettings } from "../../../../../backend/db/helpers/settings.ts";
+import type { SettingsState } from "../utils";
+import { readApiError } from "../utils/apiError.ts";
 import type { prowlarrClient } from "../../../../../backend/services/prowlarrClient.ts";
 
 import { RefreshCw } from "lucide-react";
@@ -27,12 +29,12 @@ type ProwlarrIndexer = Awaited<ReturnType<typeof prowlarrClient.listUsenetIndexe
 type TestStatus = { tone: "success" | "error"; message: string };
 
 type SettingsIndexersSectionProps = {
-  settings: { integrations?: Partial<AppSettings["integrations"]> };
-  updateSettings: (next: { integrations?: Partial<AppSettings["integrations"]> }) => void;
+  settings: SettingsState;
+  updateSettings: (next: SettingsState) => void;
   health?: { prowlarrConfigured?: boolean } | null;
   handleSaveSettings: (
     event?: FormEvent<HTMLFormElement>,
-    settingsOverride?: { integrations?: Partial<AppSettings["integrations"]> },
+    settingsOverride?: SettingsState,
   ) => unknown;
   showSuccess: (message: string) => void;
   showError: (message: string) => void;
@@ -103,11 +105,9 @@ export function SettingsIndexersSection({
       }
     } catch (error) {
       if (!quiet) {
+        const failure = readApiError(error);
         showError(
-          error.response?.data?.message ||
-            error.response?.data?.error ||
-            error.message ||
-            "Failed to load Prowlarr indexers",
+          failure.message || failure.error || failure.text || "Failed to load Prowlarr indexers",
         );
       }
     }
@@ -159,12 +159,8 @@ export function SettingsIndexersSection({
         tone: "error",
         message: "Connection failed. Check the URL and API key, then retry.",
       });
-      showError(
-        error.response?.data?.message ||
-          error.response?.data?.error ||
-          error.message ||
-          "Prowlarr connection failed",
-      );
+      const failure = readApiError(error);
+      showError(failure.message || failure.error || failure.text || "Prowlarr connection failed");
     } finally {
       setTestingProwlarr(false);
     }

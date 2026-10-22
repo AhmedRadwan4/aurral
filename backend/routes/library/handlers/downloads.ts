@@ -1,3 +1,4 @@
+import type { Router } from "express";
 import { libraryManager } from "../../../services/libraryManager.ts";
 import { dbOps } from "../../../db/helpers/index.ts";
 import { noCache } from "../../../middleware/cache.ts";
@@ -9,6 +10,12 @@ import {
   readLidarrQueueItemStatus,
   resolveAlbumSearchOutcome,
 } from "../../../services/albumSearchState.ts";
+import type {
+  LidarrCommand,
+  LidarrHistoryItem,
+  LidarrPage,
+  LidarrQueueItem,
+} from "../../../services/lidarrClient.ts";
 import { UUID_REGEX } from "../../../../lib/uuid.ts";
 import { logger } from "../../../services/logger.ts";
 import { requestLibraryTrack } from "../../../services/libraryTrackRequests.ts";
@@ -19,12 +26,39 @@ import {
   getDownloadSourceNotConfiguredMessage,
   isAnyDownloadSourceConfigured,
 } from "../../../services/downloadSourceService.ts";
+import { asAppError } from "../../../../lib/errors.ts";
+
+type LidarrProviderSnapshot = {
+  queue: LidarrQueueItem[] | LidarrPage<LidarrQueueItem>;
+  history: LidarrHistoryItem[] | LidarrPage<LidarrHistoryItem>;
+  commands: LidarrCommand[] | LidarrPage<LidarrCommand>;
+};
+
+type AlbumDownloadStatus = { status: string; updatedAt: string };
+
+type LidarrStatusSnapshot = {
+  provider: LidarrProviderSnapshot;
+  statuses: Record<string, AlbumDownloadStatus>;
+  updatedAt: string | null;
+  active: boolean;
+  stale: boolean;
+  error: string | null;
+};
+
+type LidarrStatusCache = {
+  snapshot: LidarrStatusSnapshot | null;
+  pending: Promise<LidarrStatusSnapshot> | null;
+  failures: number;
+  checkedAt: number;
+  nextRefreshAt: number;
+  revision: number;
+};
 
 const STALE_GRABBED_MS = 15 * 60 * 1000;
 const ACTIVE_STATUS_CACHE_MS = 10 * 1000;
 const IDLE_STATUS_CACHE_MS = 60 * 1000;
 const MAX_STATUS_RETRY_MS = 2 * 60 * 1000;
-let allDownloadStatusesCache = {
+let allDownloadStatusesCache: LidarrStatusCache = {
   snapshot: null,
   pending: null,
   failures: 0,
@@ -35,7 +69,7 @@ let allDownloadStatusesCache = {
 
 const activeDownloadStatuses = new Set(["searching", "downloading", "processing"]);
 
-const snapshotHasActiveWork = (statuses) =>
+const snapshotHasActiveWork = (statuses: Record<string, AlbumDownloadStatus>) =>
   Object.values(statuses || {}).some((status) => activeDownloadStatuses.has(status?.status));
 
 const invalidateActivityRequestsCache = () =>
@@ -43,9 +77,12 @@ const invalidateActivityRequestsCache = () =>
     .then(({ invalidateRequestsCache }) => invalidateRequestsCache())
     .catch(() => {});
 
-export const getDownloadStatusesForAlbumIds = async (albumIdArrayInput, snapshot = null) => {
+export const getDownloadStatusesForAlbumIds = async (
+  albumIdArrayInput: unknown,
+  snapshot: LidarrProviderSnapshot | null = null,
+) => {
   const albumIdArray = Array.isArray(albumIdArrayInput) ? albumIdArrayInput : [];
-  const statuses = {};
+  const statuses: Record<string, AlbumDownloadStatus> = {};
   const { lidarrClient } = await import("../../../services/lidarrClient.ts");
 
   if (lidarrClient.isConfigured()) {
@@ -65,7 +102,7 @@ export const getDownloadStatusesForAlbumIds = async (albumIdArrayInput, snapshot
         if (h?.albumId == null) continue;
         const event = classifyLidarrDownloadEvent(h?.eventType);
         if (!event) continue;
-        const historyTime = new Date(h?.date || h?.eventDate || 0).getTime();
+        const historyTime = new Date(h?.date || 0).getTime();
         const existing = latestHistoryByAlbumId.get(h.albumId);
         if (!existing || historyTime > existing.historyTime) {
           latestHistoryByAlbumId.set(h.albumId, { event, historyTime });
@@ -136,7 +173,8 @@ export const getDownloadStatusesForAlbumIds = async (albumIdArrayInput, snapshot
         }
       }
     } catch (error) {
-      logger.warn("downloads", "Failed to fetch Lidarr status:", { message: error.message });
+      const failure = asAppError(error);
+      logger.warn("downloads", "Failed to fetch Lidarr status:", { message: failure?.message });
     }
   }
 
@@ -153,10 +191,16 @@ const computeLidarrStatusSnapshot = async () => {
   const [queue, history, commands] = await Promise.all([
     lidarrClient.getQueue({ forceRefresh: true }),
     lidarrClient.getHistory(1, 200, "date", "descending", { forceRefresh: true }),
-    lidarrClient.request("/command", "GET", null, false, { forceRefresh: true }),
+    lidarrClient.request<LidarrCommand[] | LidarrPage<LidarrCommand>>(
+      "/command",
+      "GET",
+      null,
+      false,
+      { forceRefresh: true },
+    ),
   ]);
-  const provider = { queue, history, commands };
-  const queueItems = Array.isArray(queue) ? queue : queue.records || [];
+  const provider: LidarrProviderSnapshot = { queue, history, commands };
+  const queueItems = Array.isArray(provider.queue) ? provider.queue : provider.queue.records || [];
   const historyItems = Array.isArray(history) ? history : history.records || [];
   const oneHourAgo = Date.now() - 60 * 60 * 1000;
   const albumIds = new Set();
@@ -187,7 +231,7 @@ export const invalidateAllDownloadStatusesCache = () => {
 export const hasActiveLidarrStatusSnapshot = () =>
   allDownloadStatusesCache.snapshot?.active === true;
 
-const staleSnapshot = (error) => ({
+const staleSnapshot = (error: unknown): LidarrStatusSnapshot => ({
   ...(allDownloadStatusesCache.snapshot || {
     provider: { queue: [], history: { records: [] }, commands: [] },
     statuses: {},
@@ -195,10 +239,12 @@ const staleSnapshot = (error) => ({
     active: false,
   }),
   stale: true,
-  error: error?.message || String(error),
+  error: asAppError(error)?.message || String(error),
 });
 
-export const getLidarrStatusSnapshot = async ({ refresh = false } = {}) => {
+export const getLidarrStatusSnapshot = async ({
+  refresh = false,
+}: { refresh?: boolean } = {}): Promise<LidarrStatusSnapshot> => {
   const { lidarrClient } = await import("../../../services/lidarrClient.ts");
   if (lidarrClient.isCircuitOpen()) {
     return staleSnapshot("Lidarr circuit is open");
@@ -250,7 +296,9 @@ export const getLidarrStatusSnapshot = async ({ refresh = false } = {}) => {
         );
       allDownloadStatusesCache.nextRefreshAt =
         refreshRevision === allDownloadStatusesCache.revision ? retryAt : 0;
-      logger.warn("downloads", "Failed to refresh Lidarr status:", { message: error.message });
+      logger.warn("downloads", "Failed to refresh Lidarr status:", {
+        message: asAppError(error)?.message,
+      });
       const snapshot = staleSnapshot(error);
       allDownloadStatusesCache.snapshot = snapshot;
       return snapshot;
@@ -306,13 +354,16 @@ export const getActiveLibraryDownloads = async () => {
       if (album.artist?.foreignArtistId) artists.add(album.artist.foreignArtistId);
     }
   } catch (error) {
-    logger.warn("downloads", "Failed to read active Lidarr downloads", { message: error.message });
+    const failure = asAppError(error);
+    logger.warn("downloads", "Failed to read active Lidarr downloads", {
+      message: failure?.message,
+    });
   }
   return { albums: [...albums], artists: [...artists], tracks };
 };
 
-export function registerDownloads(router) {
-  router.post(
+export function registerDownloads(router: Router) {
+  router.post<"/downloads/tracks/:trackId/research">(
     "/downloads/tracks/:trackId/research",
     requireAuth,
     requirePermission("addAlbum"),
@@ -346,10 +397,11 @@ export function registerDownloads(router) {
           operationId: result.operationId,
         });
       } catch (error) {
-        logger.error("library", "Failed to queue track replacement search", error.message);
+        const failure = asAppError(error);
+        logger.error("library", "Failed to queue track replacement search", failure?.message);
         return res.status(500).json({
           error: "Failed to queue track replacement search",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
@@ -387,10 +439,11 @@ export function registerDownloads(router) {
       if (!result.reused) await invalidateActivityRequestsCache();
       return res.status(202).json({ success: true, ...result });
     } catch (error) {
-      logger.error("library", "Failed to queue track acquisition", error.message);
+      const failure = asAppError(error);
+      logger.error("library", "Failed to queue track acquisition", failure?.message);
       return res.status(500).json({
         error: "Failed to queue track acquisition",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -431,8 +484,10 @@ export function registerDownloads(router) {
           name: "AlbumSearch",
           albumIds: [parseInt(albumId, 10)],
         });
-        await libraryManager.ensureRequestedAlbumMonitoring(artist.id, albumId);
-        libraryManager.scheduleRequestedAlbumMonitoringRepair(artist.id, albumId);
+        if (artist?.id) {
+          await libraryManager.ensureRequestedAlbumMonitoring(artist.id, albumId);
+          libraryManager.scheduleRequestedAlbumMonitoringRepair(artist.id, albumId);
+        }
       }
       invalidateAllDownloadStatusesCache();
 
@@ -451,10 +506,11 @@ export function registerDownloads(router) {
         message: searchOnAdd ? "Album search triggered" : "Album added to library",
       });
     } catch (error) {
-      logger.error("library", "Error initiating album download:", error.message);
+      const failure = asAppError(error);
+      logger.error("library", "Error initiating album download:", failure?.message);
       res.status(500).json({
         error: "Failed to initiate album download",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -517,12 +573,13 @@ export function registerDownloads(router) {
           message: "Album search triggered",
         });
       } catch (error) {
+        const failure = asAppError(error);
         logger.error("downloads", `Failed to trigger album search ${req.body?.albumId}:`, {
-          message: error.message,
+          message: failure?.message,
         });
         res.status(500).json({
           error: "Failed to trigger album search",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
@@ -544,14 +601,18 @@ export function registerDownloads(router) {
           title: item.title,
           artistName: item.artist?.artistName,
           albumTitle: item.album?.title,
-          progress: item.size ? Math.round((1 - item.sizeleft / item.size) * 100) : 0,
+          progress:
+            item.size && item.sizeleft !== undefined
+              ? Math.round((1 - item.sizeleft / item.size) * 100)
+              : 0,
           source: "lidarr",
         })),
       );
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch downloads",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -559,26 +620,30 @@ export function registerDownloads(router) {
   router.get("/downloads/status", noCache, async (req, res) => {
     try {
       const { albumIds } = req.query;
-      if (!albumIds) {
+      if (!albumIds || (typeof albumIds !== "string" && !Array.isArray(albumIds))) {
         return res.status(400).json({ error: "albumIds query parameter is required" });
       }
-      const albumIdArray = Array.isArray(albumIds) ? albumIds : albumIds.split(",");
+      const albumIdArray = Array.isArray(albumIds)
+        ? albumIds.filter((id): id is string => typeof id === "string")
+        : albumIds.split(",");
       const aurralPrefix = "aurral:";
       const aurralIds = albumIdArray.filter((id) => String(id).startsWith(aurralPrefix));
-      const statuses = await getDownloadStatusesForAlbumIds(
+      const statuses: GetDownloadStatusResponse = await getDownloadStatusesForAlbumIds(
         albumIdArray.filter((id) => !String(id).startsWith(aurralPrefix)),
       );
       const aurralStatuses = libraryManager.getAurralAlbumStatuses(
         aurralIds.map((key) => key.slice(aurralPrefix.length)),
       );
       aurralIds.forEach((key, index) => {
-        if (!aurralStatuses[index]?.error) statuses[key] = aurralStatuses[index];
+        const status = aurralStatuses[index];
+        if (status?.error === undefined) statuses[key] = status;
       });
       res.json(statuses);
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch download status",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -587,9 +652,10 @@ export function registerDownloads(router) {
     try {
       res.json(await getActiveLibraryDownloads());
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch active downloads",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -599,9 +665,10 @@ export function registerDownloads(router) {
       const statuses = await getAllDownloadStatuses();
       res.json(statuses);
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch download status",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -623,4 +690,8 @@ export type TriggerAlbumSearchResponse = { success: true; message: string };
 
 export type GetActiveDownloadsResponse = Awaited<ReturnType<typeof getActiveLibraryDownloads>>;
 
-export type GetDownloadStatusResponse = Awaited<ReturnType<typeof getDownloadStatusesForAlbumIds>>;
+export type GetDownloadStatusResponse = Record<
+  string,
+  | AlbumDownloadStatus
+  | Extract<ReturnType<typeof libraryManager.getAurralAlbumStatuses>[number], { error?: undefined }>
+>;

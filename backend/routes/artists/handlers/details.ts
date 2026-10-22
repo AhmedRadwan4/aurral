@@ -1,3 +1,4 @@
+import type { Request, Router } from "express";
 import { UUID_REGEX } from "../../../../lib/uuid.ts";
 import { logger } from "../../../services/logger.ts";
 import {
@@ -8,7 +9,7 @@ import {
 import { dbOps } from "../../../db/helpers/index.ts";
 import { cacheMiddleware } from "../../../middleware/cache.ts";
 import { requireAuth } from "../../../middleware/requirePermission.ts";
-import { buildArtistRequestKey, pendingArtistRequests } from "../utils.ts";
+import { buildArtistRequestKey, pendingArtistRequests, queryText } from "../utils.ts";
 import { getArtistByMbid } from "../../../services/providers/brainzmashProvider.ts";
 import { invalidateArtistImage } from "../../../services/imageService.ts";
 import {
@@ -17,8 +18,11 @@ import {
   withListenBrainzStats,
 } from "../shared/transform.ts";
 import { getLibraryArtistProjection } from "../../../services/libraryQueryService.ts";
+import { asAppError, errorResponseText } from "../../../../lib/errors.ts";
 
-export function getLibraryLidarrArtist(reference) {
+type MbidRequest = Request<{ mbid: string }>;
+
+export function getLibraryLidarrArtist(reference: string) {
   const artist = getLibraryArtistProjection({ reference })[0] || null;
   if (!artist?.lidarrManaged) return null;
   return {
@@ -54,6 +58,8 @@ type ArtistDetailsFallback = {
   "release-groups": never[];
   "appears-on-release-groups": never[];
   relations: never[];
+  rating?: undefined;
+  bio?: undefined;
   "release-group-count": number;
   "release-count": number;
 };
@@ -68,8 +74,8 @@ export type ArtistDetailsResponse =
   | ArtistDetailsCore
   | ArtistDetailsFallback;
 
-export function registerDetails(router) {
-  const parseSelectedReleaseTypes = (value) =>
+export function registerDetails(router: Router) {
+  const parseSelectedReleaseTypes = (value: unknown) =>
     typeof value === "string" && value.trim()
       ? value
           .split(",")
@@ -77,8 +83,8 @@ export function registerDetails(router) {
           .filter(Boolean)
       : null;
 
-  const parseAppearsOnLimit = (value) => {
-    const parsed = Number.parseInt(value, 10);
+  const parseAppearsOnLimit = (value: unknown) => {
+    const parsed = Number.parseInt(String(value), 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   };
 
@@ -89,7 +95,7 @@ export function registerDetails(router) {
     });
   });
 
-  router.get("/:mbid/overrides", requireAuth, async (req, res) => {
+  router.get("/:mbid/overrides", requireAuth, async (req: MbidRequest, res) => {
     const { mbid } = req.params;
     if (!UUID_REGEX.test(mbid)) {
       return res.status(400).json({
@@ -105,7 +111,7 @@ export function registerDetails(router) {
     });
   });
 
-  router.put("/:mbid/overrides", requireAuth, async (req, res) => {
+  router.put("/:mbid/overrides", requireAuth, async (req: MbidRequest, res) => {
     const { mbid } = req.params;
     if (!UUID_REGEX.test(mbid)) {
       return res.status(400).json({
@@ -154,7 +160,7 @@ export function registerDetails(router) {
     return res.json(saved);
   });
 
-  router.get("/:mbid", cacheMiddleware(300), async (req, res) => {
+  router.get("/:mbid", cacheMiddleware(300), async (req: MbidRequest, res) => {
     try {
       const { mbid } = req.params;
       const responseMode =
@@ -186,9 +192,10 @@ export function registerDetails(router) {
           res.setHeader("Content-Type", "application/json");
           return res.json(data);
         } catch (error) {
-          return res.status(error.response?.status || 500).json({
+          const failure = asAppError(error);
+          return res.status(failure?.response?.status || 500).json({
             error: "Failed to fetch artist details",
-            message: error.response?.data?.error || error.message,
+            message: errorResponseText(failure, "error") || failure?.message,
           });
         }
       }
@@ -254,7 +261,7 @@ export function registerDetails(router) {
           ? null
           : await getArtistByMbid(resolvedMbid).catch(() => null);
         const name =
-          (req.query.artistName || "").trim() ||
+          queryText(req.query.artistName) ||
           metadataArtist?.name ||
           (await musicbrainzGetArtistNameByMbid(resolvedMbid)) ||
           "Unknown Artist";
@@ -289,7 +296,7 @@ export function registerDetails(router) {
         res.setHeader("Content-Type", "application/json");
         res.json(data);
       } catch (error) {
-        const artistNameParam = (req.query.artistName || "").trim();
+        const artistNameParam = queryText(req.query.artistName);
         const fallback = {
           id: resolvedMbid,
           name: artistNameParam || "Unknown Artist",
@@ -314,11 +321,12 @@ export function registerDetails(router) {
         pendingArtistRequests.delete(requestKey);
       }
     } catch (error) {
-      logger.error("api", "Unexpected error in artist details route", { error: error.message });
-      logger.error("api", "Error stack", { stack: error.stack });
+      const failure = asAppError(error);
+      logger.error("api", "Unexpected error in artist details route", { error: failure?.message });
+      logger.error("api", "Error stack", { stack: failure?.stack });
       res.status(500).json({
         error: "Failed to fetch artist details",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });

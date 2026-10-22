@@ -1,4 +1,5 @@
-import { useEffect, useRef, useMemo, useState, useCallback } from "react";
+import { useEffect, useRef, useMemo, useState, useCallback, type MouseEvent } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
   Download,
   Info,
@@ -26,6 +27,7 @@ import { normalizePlaylistQueueTrack } from "../../../utils/audioQueue";
 import {
   TrackPlaylistMenu,
   TrackPlaylistSubmenu,
+  type TrackPlaylistMenuHandle,
 } from "../../ArtistDetails/components/TrackPlaylistMenu";
 import { LibraryItemMenu } from "../../../components/LibraryItemMenu";
 import { TrackList } from "../../../components/TrackList";
@@ -37,8 +39,40 @@ import {
   shouldShowAddToLibrary,
 } from "../trackAvailability.ts";
 import Tooltip from "../../../components/Tooltip";
+import type { LibraryMenuItem } from "../../../components/LibraryItemMenu";
+import type { PlaybackSource } from "../../../hooks/useAlbumTrackListToolbar";
+import type { PlaylistTrackRow } from "../playlistPageUtils.ts";
+import type { PlaylistTrackStatus } from "../trackAvailability.ts";
+import type { StaticPlaylist } from "../playlistStats.ts";
 
-function getTrackStatusMeta(status) {
+export type PlaylistPanelTrack = Pick<
+  PlaylistTrackRow,
+  "id" | "artistName" | "trackName" | "status" | "streamUrl"
+> &
+  Partial<PlaylistTrackRow> & { resolvesLinks?: boolean };
+
+export type PlaylistTrackTarget =
+  | { mode: "new"; name: string }
+  | { mode: "existing"; playlistId: string };
+
+type PlaylistPlaybackSource = PlaybackSource & { recordHistory?: boolean };
+
+interface PlaylistTrackMenuProps<T extends PlaylistPanelTrack> {
+  track: T | null;
+  playlists: StaticPlaylist[];
+  loading: boolean;
+  saving: boolean;
+  error: string;
+  defaultNewPlaylistName: string;
+  excludedPlaylistIds: string[];
+  onLoadPlaylists?: () => void;
+  onAddTrackToPlaylist: ((target: PlaylistTrackTarget) => void | Promise<void>) | null;
+  onMoveTrackToPlaylist: ((target: PlaylistTrackTarget) => void | Promise<void>) | null;
+}
+
+type PlaylistTrackLink = { to: string | null; state?: unknown };
+
+function getTrackStatusMeta(status: string | null | undefined) {
   switch (String(status || "").toLowerCase()) {
     case "done":
       return { label: "Downloaded", className: "flow-page__track-status-dot--done" };
@@ -57,13 +91,27 @@ function getTrackStatusMeta(status) {
   }
 }
 
-function formatTrackDuration(durationMs) {
+function formatTrackDuration(durationMs: number | null | undefined) {
   const seconds = Math.max(0, Math.floor(Number(durationMs || 0) / 1000));
   if (!seconds) return "—";
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function BulkPlaylistAction({
+interface BulkPlaylistActionProps<T extends PlaylistPanelTrack> {
+  icon: LucideIcon;
+  label: string;
+  track: T | undefined;
+  playlists: StaticPlaylist[];
+  loading: boolean;
+  saving: boolean;
+  disabled: boolean;
+  error: string;
+  defaultNewPlaylistName: string;
+  excludedPlaylistIds: string[];
+  onSelect: (target: PlaylistTrackTarget) => void;
+}
+
+function BulkPlaylistAction<T extends PlaylistPanelTrack>({
   icon: Icon,
   label,
   track,
@@ -75,10 +123,10 @@ function BulkPlaylistAction({
   defaultNewPlaylistName,
   excludedPlaylistIds,
   onSelect,
-}) {
-  const buttonRef = useRef(null);
-  const menuRef = useRef(null);
-  const handleOpen = useCallback((e) => {
+}: BulkPlaylistActionProps<T>) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<TrackPlaylistMenuHandle>(null);
+  const handleOpen = useCallback((e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     menuRef.current?.open(buttonRef.current);
   }, []);
@@ -112,7 +160,29 @@ function BulkPlaylistAction({
   );
 }
 
-function PlaylistTrackKebabMenu({
+interface PlaylistTrackKebabMenuProps<T extends PlaylistPanelTrack> {
+  track: T;
+  canPlay?: boolean;
+  isPlaying?: boolean;
+  onPlay: ((track: T) => void) | null;
+  onViewInfo: ((track: T) => void) | undefined;
+  onEditArtwork: ((track: T) => void) | undefined;
+  onAddToLibrary: ((track: T) => void) | undefined;
+  isAddingToLibrary?: boolean;
+  canReSearch: boolean;
+  canManualReSearch: boolean;
+  searchAction: "research" | "replacement" | "upgrade" | null;
+  isReSearching: boolean;
+  canDelete: boolean;
+  isDeleting: boolean;
+  onReSearch: ((track: T, forceReplacementSearch?: boolean) => void) | undefined;
+  onManualReSearch: ((track: T) => void) | undefined;
+  onDelete: ((track: T) => void) | undefined;
+  playlistMenuProps?: PlaylistTrackMenuProps<T> | null;
+  queueItems?: LibraryMenuItem[];
+}
+
+function PlaylistTrackKebabMenu<T extends PlaylistPanelTrack>({
   track,
   canPlay = false,
   isPlaying = false,
@@ -132,8 +202,8 @@ function PlaylistTrackKebabMenu({
   onDelete,
   playlistMenuProps = null,
   queueItems = [],
-}) {
-  const [openSubmenu, setOpenSubmenu] = useState(null);
+}: PlaylistTrackKebabMenuProps<T>) {
+  const [openSubmenu, setOpenSubmenu] = useState<string | null>(null);
   const trackLabel = track?.trackName || "track";
   const canAddToLibrary = shouldShowAddToLibrary(track, onAddToLibrary);
   const { isTrackDownloading } = useActiveDownloads();
@@ -171,7 +241,7 @@ function PlaylistTrackKebabMenu({
           label: downloading ? "Downloading…" : "Add to library",
           icon: downloading ? DownloadingIcon : Plus,
           disabled: isAddingToLibrary || downloading,
-          onSelect: () => onAddToLibrary(track),
+          onSelect: () => onAddToLibrary!(track),
         }
       : null,
     canReSearch
@@ -218,7 +288,7 @@ function PlaylistTrackKebabMenu({
           onSelect: () => onDelete?.(track),
         }
       : null,
-  ].filter(Boolean);
+  ].filter((item): item is LibraryMenuItem => Boolean(item));
   const additionalItemsAfter = canAddToLibrary
     ? "add-library"
     : canReSearch
@@ -282,7 +352,7 @@ function PlaylistTrackKebabMenu({
   );
 }
 
-function TrackStatusDot({ status }) {
+function TrackStatusDot({ status }: { status: PlaylistTrackStatus }) {
   const meta = getTrackStatusMeta(status);
   const normalized = String(status || "").toLowerCase();
   const isLinkable = normalized !== "done";
@@ -308,7 +378,13 @@ function TrackStatusDot({ status }) {
   );
 }
 
-export function usePlaylistTrackPlayback({ tracks, playbackSource }) {
+export function usePlaylistTrackPlayback<T extends PlaylistPanelTrack>({
+  tracks,
+  playbackSource,
+}: {
+  tracks: T[];
+  playbackSource: PlaylistPlaybackSource | null;
+}) {
   const recordHistory = playbackSource?.recordHistory !== false;
   const getQueueTracks = useCallback(
     () =>
@@ -320,7 +396,54 @@ export function usePlaylistTrackPlayback({ tracks, playbackSource }) {
   return useAlbumTrackListToolbar({ getQueueTracks, playbackSource });
 }
 
-export function PlaylistTracksPanel({
+export interface PlaylistTracksPanelProps<T extends PlaylistPanelTrack> {
+  label?: string;
+  tracks: T[];
+  loading: boolean;
+  error?: string;
+  activityHint?: string | null;
+  emptyMessage?: string;
+  deletingTrackId?: string | null;
+  reSearchingTrackIds?: Record<string, boolean>;
+  playlists?: StaticPlaylist[];
+  playlistsLoading?: boolean;
+  playlistSavingKey?: string;
+  playlistMenuError?: string;
+  excludedPlaylistIds?: string[];
+  getDefaultPlaylistName?: (track: T | undefined) => string;
+  onLoadPlaylists?: () => void;
+  onDeleteTrack?: (track: T) => unknown;
+  onAddTrackToPlaylist?: (track: T, target: PlaylistTrackTarget) => void | Promise<void>;
+  onMoveTrackToPlaylist?: (track: T, target: PlaylistTrackTarget) => void | Promise<void>;
+  onAddTrackToLibrary?: (track: T) => unknown;
+  onViewTrackInfo?: (track: T) => void;
+  onEditTrackArtwork?: (track: T) => void;
+  libraryTrackSavingKey?: string;
+  getTrackFavoriteId?: (track: T) => string;
+  favoriteTrackIds?: Set<string>;
+  favoriteTrackSavingKey?: string;
+  onToggleFavorite?: (track: T) => unknown;
+  onNavigateArtist?: (track: T) => void;
+  onNavigateAlbum?: (track: T) => void;
+  getArtistLink?: (track: T) => PlaylistTrackLink | null;
+  getAlbumLink?: (track: T) => PlaylistTrackLink | null;
+  onReSearchTrack?: (track: T, forceReplacementSearch?: boolean) => unknown;
+  onManualReSearchTrack?: (track: T) => void;
+  playbackSource?: PlaylistPlaybackSource | null;
+  showPlaybackControls?: boolean;
+  showTrackStatus?: boolean;
+  showTrackAvailability?: boolean;
+  artworkByAlbumMbid?: Record<string, string>;
+  allowBulkEdit?: boolean;
+  onBulkDelete?: (tracks: T[]) => unknown;
+  onBulkAddToPlaylist?: (tracks: T[], target: PlaylistTrackTarget) => unknown;
+  bulkAddLabel?: string;
+  onBulkAddToLibrary?: (tracks: T[]) => unknown;
+  onBulkMoveToPlaylist?: (tracks: T[], target: PlaylistTrackTarget) => unknown;
+  bulkActionLoading?: boolean;
+}
+
+export function PlaylistTracksPanel<T extends PlaylistPanelTrack>({
   label = "Tracks",
   tracks,
   loading,
@@ -365,11 +488,11 @@ export function PlaylistTracksPanel({
   onBulkAddToLibrary,
   onBulkMoveToPlaylist,
   bulkActionLoading = false,
-}) {
+}: PlaylistTracksPanelProps<T>) {
   const [sortKey, setSortKey] = useState("index");
-  const [sortDirection, setSortDirection] = useState("asc");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [editMode, setEditMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const trackOrderKey = useMemo(() => tracks.map((track) => track.id).join("\n"), [tracks]);
 
   useEffect(() => {
@@ -420,7 +543,7 @@ export function PlaylistTracksPanel({
   const isSourceActive = matchesSource(playbackSource);
   const currentTrackId = isSourceActive && currentTrack?.id ? currentTrack.id : null;
 
-  const handleSort = (nextSortKey) => {
+  const handleSort = (nextSortKey: string) => {
     if (sortKey === nextSortKey) {
       setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
       return;
@@ -434,12 +557,12 @@ export function PlaylistTracksPanel({
     setSelectedIds(new Set());
   };
 
-  const trackCover = (track) =>
-    track.artworkUrl || track.coverUrl || artworkByAlbumMbid[String(track.albumMbid || "")] || "";
-  const toQueueTrack = (track) =>
+  const trackCover = (track: T) =>
+    track.artworkUrl || artworkByAlbumMbid[String(track.albumMbid || "")] || "";
+  const toQueueTrack = (track: T) =>
     normalizePlaylistQueueTrack({ ...track, artworkUrl: trackCover(track) }, { recordHistory });
 
-  const handlePlayTrack = (track) => {
+  const handlePlayTrack = (track: T) => {
     if (!track?.streamUrl) return;
     if (currentTrackId === track.id) {
       togglePlayPause();
@@ -494,10 +617,10 @@ export function PlaylistTracksPanel({
           excludedPlaylistIds,
           onLoadPlaylists,
           onAddTrackToPlaylist: onAddTrackToPlaylist
-            ? (target) => onAddTrackToPlaylist(track, target)
+            ? (target: PlaylistTrackTarget) => onAddTrackToPlaylist(track, target)
             : null,
           onMoveTrackToPlaylist: onMoveTrackToPlaylist
-            ? (target) => onMoveTrackToPlaylist(track, target)
+            ? (target: PlaylistTrackTarget) => onMoveTrackToPlaylist(track, target)
             : null,
         }
       : null;
@@ -515,18 +638,18 @@ export function PlaylistTracksPanel({
       artist: {
         label: track.artistName,
         ...artistLink,
-        onOpen: canOpenArtist ? () => onNavigateArtist(track) : null,
+        onOpen: canOpenArtist ? () => onNavigateArtist!(track) : null,
       },
       album: {
         label: track.albumName || "",
         ...albumLink,
-        onOpen: canOpenAlbum ? () => onNavigateAlbum(track) : null,
+        onOpen: canOpenAlbum ? () => onNavigateAlbum!(track) : null,
       },
       cover: {
         src: trackCover(track),
         label: track.albumName || track.trackName,
         ...albumLink,
-        onOpen: canOpenAlbum ? () => onNavigateAlbum(track) : null,
+        onOpen: canOpenAlbum ? () => onNavigateAlbum!(track) : null,
       },
       time: formatTrackDuration(track.durationMs),
       active: isCurrent,

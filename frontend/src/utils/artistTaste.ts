@@ -3,8 +3,9 @@ import type {
   DiscoveryRecommendation,
 } from "../../../backend/services/discovery/recommendationPipeline.ts";
 
-type ArtistFeedbackSource = ArtistIdentity &
-  Pick<
+export type ArtistFeedbackSource = Omit<ArtistIdentity, "id"> & {
+  id?: string | number | null;
+} & Pick<
     DiscoveryRecommendation,
     "tags" | "matchedTags" | "supportingSeeds" | "sourceArtist" | "sourceArtists"
   > & {
@@ -13,9 +14,23 @@ type ArtistFeedbackSource = ArtistIdentity &
     discoveryTier?: string | null;
   };
 
-type ArtistFeedbackAction = "more_like_this" | "less_like_this" | "block_artist";
+export type ArtistFeedbackAction = "more_like_this" | "less_like_this" | "block_artist";
 
-export const getArtistRecordId = (artist) => artist?.id || artist?.mbid || artist?.foreignArtistId;
+type ArtistRecordFields<Id> = {
+  id?: Id | null;
+  mbid?: string | null;
+  foreignArtistId?: string | null;
+};
+
+export function getArtistRecordId(
+  artist: ArtistRecordFields<string> | null | undefined,
+): string | null | undefined;
+export function getArtistRecordId(
+  artist: ArtistRecordFields<string | number> | null | undefined,
+): string | number | null | undefined;
+export function getArtistRecordId(artist: ArtistRecordFields<string | number> | null | undefined) {
+  return artist?.id || artist?.mbid || artist?.foreignArtistId;
+}
 
 const uniqueTextList = (values: (string | null | undefined)[]) => {
   const seen = new Set();

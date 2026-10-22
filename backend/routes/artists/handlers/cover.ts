@@ -1,7 +1,9 @@
+import type { Router } from "express";
 import { UUID_REGEX } from "../../../../lib/uuid.ts";
 import { logger } from "../../../services/logger.ts";
 import { dbOps } from "../../../db/helpers/index.ts";
 import { getArtistImage } from "../../../services/imageService.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
 const NEGATIVE_COVER_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -9,10 +11,11 @@ export type ArtistCoverImage = { image: string; front: boolean; types: string[] 
 
 export type ArtistCoverResponse = { images: ArtistCoverImage[]; error?: string };
 
-export const getCachedCoverCacheControl = (images) =>
-  images.length > 0 ? "public, max-age=31536000, immutable" : "no-store";
+export const getCachedCoverCacheControl = (
+  images: Awaited<ReturnType<typeof getArtistImage>>["images"],
+) => (images.length > 0 ? "public, max-age=31536000, immutable" : "no-store");
 
-export function registerCover(router) {
+export function registerCover(router: Router) {
   router.get("/:mbid/cover", async (req, res) => {
     const { mbid } = req.params;
     const { refresh = false, artistName: queryArtistName } = req.query;
@@ -71,7 +74,8 @@ export function registerCover(router) {
 
       res.json({ images });
     } catch (error) {
-      logger.error("api", "Error in cover route", { mbid, error: error.message });
+      const failure = asAppError(error);
+      logger.error("api", "Error in cover route", { mbid, error: failure?.message });
       res.set("Cache-Control", "public, max-age=60");
       res.json({ images: [] });
     }

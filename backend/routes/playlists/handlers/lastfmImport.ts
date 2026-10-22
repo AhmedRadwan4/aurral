@@ -4,29 +4,36 @@ import {
 } from "../../../services/importLists/importPlaylist.ts";
 import { lastfmStationClient } from "../../../services/importLists/lastfmStations.ts";
 import { logger, safeLogDiagnostic } from "../../../services/logger.ts";
+import { asAppError } from "../../../../lib/errors.ts";
+import type { Router } from "express";
 
-const getErrorStatus = (error) => error?.statusCode || error?.response?.status || 500;
+const getErrorStatus = (error: unknown) => {
+  const failure = asAppError(error);
+  return failure?.statusCode || failure?.response?.status || 500;
+};
 
-const getPlaylistImport = (body) => ({
+const getPlaylistImport = (
+  body: { playlistId?: unknown; username?: unknown } | null | undefined,
+) => ({
   provider: "lastfm-station",
   externalId: String(body?.playlistId || "").trim(),
   externalUsername: String(body?.username || "").trim(),
 });
 
-export function registerLastfmImport(router) {
+export function registerLastfmImport(router: Router) {
   router.get("/import/lastfm/playlists", async (req, res) => {
     try {
       const requestedUsername = Array.isArray(req.query?.username)
         ? req.query.username[0]
         : req.query?.username;
-      res.json(await lastfmStationClient.listPlaylists(req.user.id, requestedUsername));
+      res.json(await lastfmStationClient.listPlaylists(req.user!.id, requestedUsername));
     } catch (error) {
       logger.warn("playlist-import", "Last.fm station listing failed", {
         reason: safeLogDiagnostic(error),
       });
       res.status(getErrorStatus(error)).json({
         error: "Failed to fetch Last.fm stations",
-        message: error?.message || "Unknown error",
+        message: asAppError(error)?.message || "Unknown error",
       });
     }
   });
@@ -35,7 +42,7 @@ export function registerLastfmImport(router) {
     try {
       const playlistImport = getPlaylistImport(req.body);
       const { tracks, stats } = await fetchImportedPlaylistTracks({
-        userId: req.user.id,
+        userId: req.user!.id,
         ...playlistImport,
       });
       res.json({
@@ -49,7 +56,7 @@ export function registerLastfmImport(router) {
       });
       res.status(getErrorStatus(error)).json({
         error: "Failed to preview Last.fm station",
-        message: error?.message || "Unknown error",
+        message: asAppError(error)?.message || "Unknown error",
       });
     }
   });
@@ -68,12 +75,12 @@ export function registerLastfmImport(router) {
       }
       if (!name) return res.status(400).json({ error: "name is required" });
       const { tracks, stats, user } = await fetchImportedPlaylistTracks({
-        userId: req.user.id,
+        userId: req.user!.id,
         ...playlistImport,
       });
       stage = "enqueue";
       const result = await enqueueImportedPlaylist({
-        ownerUserId: req.user.id,
+        ownerUserId: req.user!.id,
         name,
         sourceName: "Last.fm",
         ...playlistImport,
@@ -87,19 +94,20 @@ export function registerLastfmImport(router) {
       });
       res.json({
         success: true,
-        playlist: result?.playlist || null,
+        playlist: null,
         tracksQueued: Number(result?.tracksQueued || 0),
-        tracksReused: Number(result?.tracksReused || 0),
+        tracksReused: 0,
         queued: result?.queued === true,
       });
     } catch (error) {
-      if (error?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
+      const failure = asAppError(error);
+      if (failure?.code === "STATIC_PLAYLIST_NAME_CONFLICT") {
         logger.debug("playlist-import", "Last.fm station import name already exists", {
           playlistName: String(req.body?.name || "").trim() || null,
         });
         return res.status(409).json({
           error: "Playlist name already exists",
-          message: error.message,
+          message: failure?.message,
         });
       }
       const status = getErrorStatus(error);
@@ -114,7 +122,7 @@ export function registerLastfmImport(router) {
       );
       res.status(status).json({
         error: "Failed to import Last.fm station",
-        message: error?.message || "Unknown error",
+        message: failure?.message || "Unknown error",
       });
     }
   });

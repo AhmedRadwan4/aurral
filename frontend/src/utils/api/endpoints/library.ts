@@ -25,6 +25,7 @@ import type {
   RestoreLibraryFavoritesResponse,
   UpdateLibraryFavoritesResponse,
 } from "../../../../../backend/routes/library/handlers/libraryIndex.ts";
+import type { describeReadOnlyFolders } from "../../../../../backend/services/libraryFiles/readOnlyFolders.ts";
 import type {
   CheckLibraryIngestSourceResponse,
   LibraryFileOperationItemsResponse,
@@ -58,6 +59,7 @@ import type {
   DownloadAlbumResponse,
   DownloadTrackToLibraryResponse,
   GetActiveDownloadsResponse,
+  GetDownloadStatusResponse,
   ResearchLibraryTrackResponse,
   TriggerAlbumSearchResponse,
 } from "../../../../../backend/routes/library/handlers/downloads.ts";
@@ -86,31 +88,31 @@ import type { ActivityRequest } from "../../../pages/activity/activityListUtils.
 type SignalOptions = { signal?: AbortSignal };
 
 type LibraryPageOptions = {
-  kind?: "artists" | "albums" | "tracks" | "genres";
+  kind?: string;
   page?: number | string;
   pageSize?: number;
   query?: string;
   genre?: string;
   sort?: string;
   direction?: string;
-  artistId?: string;
-  albumId?: string;
+  artistId?: string | number;
+  albumId?: string | number;
   source?: string;
   availableOnly?: boolean | null;
 };
 
 type ArtworkEntity = {
-  coverUrl?: string;
-  defaultCoverUrl?: string;
-  artworkUrl?: string;
-  customArtworkUrl?: string;
+  coverUrl?: string | null;
+  defaultCoverUrl?: string | null;
+  artworkUrl?: string | null;
+  customArtworkUrl?: string | null;
 };
 
 type MonitoringRulesInput = Parameters<typeof libraryManager.previewMonitoringDefaults>[0];
 
 type ArtistMonitoringInput = {
   monitored: boolean;
-  useDefault: boolean;
+  useDefault?: boolean;
   rules?: MonitoringRulesInput;
 };
 
@@ -127,7 +129,7 @@ type LibraryTrackContext = {
 type ActiveDownloadStart = {
   albumMbid?: string | null;
   artistMbid?: string | null;
-  track?: { mbid: string | null; artistName?: string; trackName?: string };
+  track?: { mbid: string | null; artistName?: string | null; trackName?: string | null };
 };
 
 export type { PreviewArtistMonitoringResponse };
@@ -180,12 +182,7 @@ const libraryPageParams = (options: LibraryPageOptions = {}) =>
     }).filter(([, value]) => value !== undefined && value !== null && value !== ""),
   );
 
-type WithAuthenticatedArtwork<T extends ArtworkEntity> = Omit<T, keyof ArtworkEntity> &
-  Partial<Record<keyof ArtworkEntity, string>>;
-
-const withAuthenticatedArtwork = <T extends ArtworkEntity>(
-  entity: T,
-): WithAuthenticatedArtwork<T> =>
+const withAuthenticatedArtwork = <T extends object>(entity: T & ArtworkEntity): T =>
   entity && typeof entity === "object"
     ? {
         ...entity,
@@ -202,32 +199,95 @@ const withAuthenticatedArtwork = <T extends ArtworkEntity>(
       }
     : entity;
 
-const withAuthenticatedLibraryArtwork = (library: FetchLibraryPageResponse) => {
+const withAuthenticatedArtworkList = <T extends object>(entities: T[]) =>
+  entities.map(withAuthenticatedArtwork);
+
+const withAuthenticatedLibraryArtwork = (
+  library: FetchLibraryPageResponse,
+): FetchLibraryPageResponse => {
   if (!library || typeof library !== "object") return library;
-  return {
-    ...library,
+  const collections = {
     ...(Array.isArray(library.albums)
-      ? { albums: library.albums.map(withAuthenticatedArtwork) }
+      ? { albums: withAuthenticatedArtworkList(library.albums) }
       : {}),
     ...(Array.isArray(library.tracks)
-      ? { tracks: library.tracks.map(withAuthenticatedArtwork) }
+      ? { tracks: withAuthenticatedArtworkList(library.tracks) }
       : {}),
-    ...(Array.isArray(library.items) ? { items: library.items.map(withAuthenticatedArtwork) } : {}),
   };
+  switch (library.kind) {
+    case "artists":
+      return {
+        ...library,
+        ...collections,
+        ...(Array.isArray(library.items)
+          ? { items: withAuthenticatedArtworkList(library.items) }
+          : {}),
+      };
+    case "albums":
+      return {
+        ...library,
+        ...collections,
+        ...(Array.isArray(library.items)
+          ? { items: withAuthenticatedArtworkList(library.items) }
+          : {}),
+      };
+    case "tracks":
+      return {
+        ...library,
+        ...collections,
+        ...(Array.isArray(library.items)
+          ? { items: withAuthenticatedArtworkList(library.items) }
+          : {}),
+      };
+    case "genres":
+      return {
+        ...library,
+        ...collections,
+        ...(Array.isArray(library.items)
+          ? { items: withAuthenticatedArtworkList(library.items) }
+          : {}),
+      };
+    default:
+      return library;
+  }
 };
 
-export const fetchLibraryPage = (
-  options: LibraryPageOptions = {},
-  { signal }: SignalOptions = {},
-): Promise<FetchLibraryPageResponse> =>
-  getData("/library/canonical", { params: libraryPageParams(options), signal }).then(
-    withAuthenticatedLibraryArtwork,
-  );
+type LibraryPageKind = FetchLibraryPageResponse["kind"];
+type LibraryPageOf<Kind extends LibraryPageKind> = Extract<
+  FetchLibraryPageResponse,
+  { kind: Kind }
+>;
 
-export const getLibraryPage = (
+export function fetchLibraryPage<Kind extends LibraryPageKind>(
+  options: LibraryPageOptions & { kind: Kind },
+  io?: SignalOptions,
+): Promise<LibraryPageOf<Kind>>;
+export function fetchLibraryPage(
+  options?: LibraryPageOptions,
+  io?: SignalOptions,
+): Promise<FetchLibraryPageResponse>;
+export function fetchLibraryPage(
   options: LibraryPageOptions = {},
   { signal }: SignalOptions = {},
-) => {
+): Promise<FetchLibraryPageResponse> {
+  return getData<FetchLibraryPageResponse>("/library/canonical", {
+    params: libraryPageParams(options),
+    signal,
+  }).then(withAuthenticatedLibraryArtwork);
+}
+
+export function getLibraryPage<Kind extends LibraryPageKind>(
+  options: LibraryPageOptions & { kind: Kind },
+  io?: SignalOptions,
+): Promise<LibraryPageOf<Kind>>;
+export function getLibraryPage(
+  options?: LibraryPageOptions,
+  io?: SignalOptions,
+): Promise<FetchLibraryPageResponse>;
+export function getLibraryPage(
+  options: LibraryPageOptions = {},
+  { signal }: SignalOptions = {},
+): Promise<FetchLibraryPageResponse> {
   const params = libraryPageParams(options);
   return queryClient.fetchQuery({
     queryKey: queryKeys.libraryPage(params),
@@ -235,7 +295,7 @@ export const getLibraryPage = (
       fetchLibraryPage(options, { signal: mergeSignals(signal, querySignal) }),
     staleTime: 15_000,
   });
-};
+}
 
 export const clearLibraryPageCache = () => {
   bumpLibraryPageGeneration();
@@ -261,9 +321,10 @@ export const updateLibraryArtistMbid = async (
   artistId: number,
   mbid: string | null,
 ): Promise<UpdateLibraryArtistMbidResponse> => {
-  const result = await putData(`/library/canonical/artists/${encodeURIComponent(artistId)}/mbid`, {
-    mbid,
-  });
+  const result = await putData<UpdateLibraryArtistMbidResponse>(
+    `/library/canonical/artists/${encodeURIComponent(artistId)}/mbid`,
+    { mbid },
+  );
   clearLibraryPageCache();
   void queryClient.invalidateQueries({ queryKey: queryKeys.libraryPrefix });
   return result;
@@ -272,12 +333,14 @@ export const updateLibraryArtistMbid = async (
 export const getLibraryFiles = (): Promise<LibraryFileOperationResponse> =>
   getData("/library/files");
 
-export const getReadOnlyFolders = () => getData("/library/files/read-only-folders");
+export const getReadOnlyFolders = (): Promise<
+  Awaited<ReturnType<typeof describeReadOnlyFolders>>
+> => getData("/library/files/read-only-folders");
 
-export const addReadOnlyFolder = (folderPath) =>
+export const addReadOnlyFolder = (folderPath: string) =>
   postData("/library/files/read-only-folders", { path: folderPath });
 
-export const removeReadOnlyFolder = (folderPath) =>
+export const removeReadOnlyFolder = (folderPath: string | null) =>
   deleteData("/library/files/read-only-folders", { data: { path: folderPath } });
 
 export const checkLibraryIngestSource = (
@@ -331,7 +394,7 @@ export const getLibraryTrackFiles = (
 export const getLibraryCustomArtworkUrl = (
   kind: "album" | "track",
   id: string | number,
-  version = "current",
+  version: string | number = "current",
 ) =>
   buildAuthenticatedApiUrl(
     `/library/artwork/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`,
@@ -453,13 +516,13 @@ const normalizeLibraryArtist = (artist: FetchLibraryArtistResponse) =>
   artist && !artist.foreignArtistId ? { ...artist, foreignArtistId: artist.mbid } : artist;
 
 const fetchLibraryArtist = async (
-  mbid: string,
+  mbid: string | null,
   { signal }: SignalOptions = {},
 ): Promise<FetchLibraryArtistResponse> =>
   normalizeLibraryArtist(await getData(`/library/artists/${mbid}`, { signal }));
 
 export const getLibraryArtist = (
-  mbid: string,
+  mbid: string | null,
   { signal, bypassCache = false }: SignalOptions & { bypassCache?: boolean } = {},
 ) => {
   if (signal && !bypassCache) return fetchLibraryArtist(mbid, { signal });
@@ -471,12 +534,12 @@ export const getLibraryArtist = (
 };
 
 const fetchLibraryArtistLookup = (
-  mbid: string,
+  mbid: string | null | undefined,
   { signal }: SignalOptions = {},
 ): Promise<GetLibraryArtistLookupResponse> => getData(`/library/lookup/${mbid}`, { signal });
 
 export const lookupArtistInLibrary = (
-  mbid: string,
+  mbid: string | null | undefined,
   { signal, bypassCache = false }: SignalOptions & { bypassCache?: boolean } = {},
 ) => {
   if (signal && !bypassCache) return fetchLibraryArtistLookup(mbid, { signal });
@@ -488,10 +551,10 @@ export const lookupArtistInLibrary = (
 };
 
 export const readLibraryLookupCache = (mbids: string[] | null | undefined) => {
-  const result: Record<string, unknown> = {};
+  const result: LookupArtistsInLibraryBatchResponse = {};
   if (!Array.isArray(mbids)) return result;
   mbids.forEach((id) => {
-    const value = queryClient.getQueryData(queryKeys.libraryLookup(id));
+    const value = queryClient.getQueryData<boolean>(queryKeys.libraryLookup(id));
     if (value !== undefined) result[id] = value;
   });
   return result;
@@ -537,10 +600,12 @@ export const lookupArtistsInLibraryBatch = async (
 };
 
 export const lookupAlbumsInLibraryBatch = (
-  mbids: string[] | null | undefined,
+  mbids: (string | null | undefined)[] | null | undefined,
   { signal, bypassCache = false }: SignalOptions & { bypassCache?: boolean } = {},
 ): Promise<LookupAlbumsInLibraryBatchResponse> => {
-  const ids = [...new Set((Array.isArray(mbids) ? mbids : []).filter(Boolean))].sort();
+  const ids = [
+    ...new Set((Array.isArray(mbids) ? mbids : []).filter((mbid): mbid is string => Boolean(mbid))),
+  ].sort();
   if (!ids.length) return Promise.resolve({});
   if (bypassCache) {
     return postData("/library/albums/lookup/batch", { mbids: ids }, { signal });
@@ -592,7 +657,7 @@ export const addArtistToLibrary = async (
 };
 
 export const deleteArtistFromLibrary = (
-  mbid: string,
+  mbid: string | number,
   deleteFiles = false,
   manager: "aurral" | "lidarr" | null = null,
 ): Promise<DeleteArtistFromLibraryResponse> =>
@@ -657,10 +722,10 @@ export const removeMonitoringExclusion = (
   deleteData(`/library/monitoring/exclusions/${encodeURIComponent(id)}`);
 
 export const deleteLidarrAlbumFromLibrary = (
-  mbid: string,
+  mbid: string | null,
   deleteFiles = false,
 ): Promise<DeleteLibraryAlbumResponse> =>
-  deleteData(`/library/albums/lidarr/${encodeURIComponent(mbid)}`, {
+  deleteData(`/library/albums/lidarr/${encodeURIComponent(String(mbid))}`, {
     params: { deleteFiles },
   });
 
@@ -684,7 +749,7 @@ export const deleteTrackFromLibrary = (id: string | number): Promise<DeleteLibra
   deleteData(`/library/tracks/${encodeURIComponent(id)}`);
 
 const fetchLibraryAlbums = async (
-  artistId: string,
+  artistId: string | number,
   { signal, managedBy = null }: SignalOptions & { managedBy?: "aurral" | "lidarr" | null } = {},
 ): Promise<GetLibraryAlbumsResponse> => {
   const data: GetLibraryAlbumsResponse = await getData("/library/albums", {
@@ -698,7 +763,7 @@ const fetchLibraryAlbums = async (
 };
 
 export const getLibraryAlbums = (
-  artistId: string,
+  artistId: string | number,
   {
     signal,
     bypassCache = false,
@@ -823,7 +888,7 @@ export const downloadAlbum = (
 export const downloadTrackToLibrary = async (
   track: Parameters<typeof requestLibraryTrack>[0],
 ): Promise<DownloadTrackToLibraryResponse> => {
-  const result = await postData("/library/downloads/track", track);
+  const result = await postData<DownloadTrackToLibraryResponse>("/library/downloads/track", track);
   if (result?.queued) {
     markDownloadStarted({
       track: {
@@ -864,12 +929,17 @@ export const getDownloadStatus = async (
   ].sort();
   if (!ids.length) return {};
   if (bypassCache) {
-    return getData(`/library/downloads/status?albumIds=${ids.join(",")}`, { signal });
+    return getData<GetDownloadStatusResponse>(
+      `/library/downloads/status?albumIds=${ids.join(",")}`,
+      {
+        signal,
+      },
+    );
   }
   return queryClient.fetchQuery({
     queryKey: queryKeys.downloadStatus(ids),
     queryFn: ({ signal: querySignal }) =>
-      getData(`/library/downloads/status?albumIds=${ids.join(",")}`, {
+      getData<GetDownloadStatusResponse>(`/library/downloads/status?albumIds=${ids.join(",")}`, {
         signal: querySignal,
       }),
     staleTime: 4_000,
@@ -913,8 +983,9 @@ export const setAurralTrackKeepFile = (
     putData(`/library/tracks/aurral/${encodeURIComponent(canonicalId)}`, { keepFile }),
   );
 
-export const refreshLibraryArtist = (mbid: string): Promise<RefreshLibraryArtistResponse> =>
-  postData(`/library/artists/${mbid}/refresh`);
+export const refreshLibraryArtist = (
+  mbid: string | null | undefined,
+): Promise<RefreshLibraryArtistResponse> => postData(`/library/artists/${mbid}/refresh`);
 
 export const getRequests = ({
   refresh = false,

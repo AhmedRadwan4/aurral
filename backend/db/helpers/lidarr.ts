@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { db } from "../../config/db-sqlite.ts";
 import type { LidarrArtistIdMapRow } from "../rows.ts";
+import { asAppError } from "../../../lib/errors.ts";
 
 interface CodedError extends Error {
   code?: string;
@@ -14,7 +15,7 @@ export interface LidarrArtistIdMapping {
 
 export interface LidarrArtistIdMapOps {
   getLidarrArtistIdMap: (musicbrainzId: string) => string | null;
-  getLidarrArtistMbid: (lidarrForeignArtistId: string) => string | null;
+  getLidarrArtistMbid: (lidarrForeignArtistId: string | null) => string | null;
   setLidarrArtistIdMap: (
     musicbrainzId: string,
     lidarrForeignArtistId: string,
@@ -65,8 +66,12 @@ export default function register(dbOps: LidarrArtistIdMapOps) {
     try {
       setLidarrArtistIdMapStmt.run(musicbrainzId, lidarrForeignArtistId, updatedAt);
     } catch (error) {
-      if (String(error?.message || "").includes("lidarr_artist_id_map.lidarr_foreign_artist_id")) {
-        error.code = "LIDARR_ARTIST_ID_CONFLICT";
+      const failure = asAppError(error);
+      if (
+        failure &&
+        String(failure.message || "").includes("lidarr_artist_id_map.lidarr_foreign_artist_id")
+      ) {
+        failure.code = "LIDARR_ARTIST_ID_CONFLICT";
       }
       throw error;
     }

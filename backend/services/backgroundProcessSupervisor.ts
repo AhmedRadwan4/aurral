@@ -3,10 +3,13 @@ import { fileURLToPath } from "node:url";
 import v8 from "node:v8";
 import { ISOLATED_WORKER_GROUPS } from "./backgroundWorkerQueues.ts";
 import type { getHonkerWorkerStatuses } from "./honkerWorkerRuntime.ts";
+import type { WebSocketChannelPayload } from "./websocketService.ts";
+import { asAppError } from "../../lib/errors.ts";
+import { isOwnKey } from "../../lib/ownKey.ts";
 
 type HonkerWorkerStatus = ReturnType<typeof getHonkerWorkerStatuses>[number];
 
-type WorkerMessage =
+export type WorkerMessage =
   | { type: "ready"; group: string }
   | {
       type: "heartbeat";
@@ -21,7 +24,12 @@ type WorkerMessage =
   | { type: "job-finished"; queue: string; jobId: number }
   | { type: "queue-wake"; queue: string }
   | { type: "cache-invalidate"; cache: "playlists" | "lidarr-artists" | "news" }
-  | { type: "websocket-broadcast"; channel: string; data: unknown; userId: number | null }
+  | {
+      type: "websocket-broadcast";
+      channel: string;
+      data: WebSocketChannelPayload;
+      userId?: number | null;
+    }
   | {
       type: "download-owner-client-request";
       requestId: number;
@@ -265,7 +273,7 @@ export function createBackgroundProcessSupervisor({
       const run = describeRun(group);
       if (children.get(group) === child) children.delete(group);
       if (!children.size) {
-        clearInterval(watchdogInterval);
+        if (watchdogInterval) clearInterval(watchdogInterval);
         watchdogInterval = null;
       }
       lastWorkRevision = null;
@@ -334,7 +342,7 @@ export function createBackgroundProcessSupervisor({
       const revision = getWorkRevision?.();
       for (const group of findGroupsWithWork(inspectedAt)) ensure(group);
       const nextWorkAt = Number(getNextWorkAt(inspectedAt));
-      clearTimeout(demandTimer);
+      if (demandTimer) clearTimeout(demandTimer);
       demandTimer = null;
       if (nextWorkAt > 0) {
         demandTimer = setTimeout(
@@ -348,7 +356,7 @@ export function createBackgroundProcessSupervisor({
       lastWorkRevision = null;
       logger.warn?.(
         "[BackgroundWorkers] Could not check for queued work:",
-        error?.message || error,
+        asAppError(error)?.message || error,
       );
     }
   }
@@ -359,10 +367,14 @@ export function createBackgroundProcessSupervisor({
     } catch (error) {
       logger.warn?.(
         "[BackgroundWorkers] Could not check database changes:",
-        error?.message || error,
+        asAppError(error)?.message || error,
       );
       launchGroupsWithWork();
     }
+  }
+
+  function jobTimeoutFor(key: string) {
+    return isOwnKey(jobTimeoutsMs, key) ? jobTimeoutsMs[key] : undefined;
   }
 
   function startWatchdog() {
@@ -371,7 +383,7 @@ export function createBackgroundProcessSupervisor({
       for (const [group, child] of children) {
         const unresponsive = Date.now() - (lastSeen.get(group) || 0) > unresponsiveMs;
         const job = [...(activeJobs.get(group)?.values() || [])].find((entry) => {
-          const limit = jobTimeoutsMs[entry.queue] || jobTimeoutsMs[group];
+          const limit = jobTimeoutFor(entry.queue) || jobTimeoutFor(group);
           return limit && Date.now() - entry.startedAt > limit;
         });
         const jobTimedOut = Boolean(job);
@@ -404,9 +416,9 @@ export function createBackgroundProcessSupervisor({
 
   async function stop({ timeoutMs = 3000 }: { timeoutMs?: number } = {}) {
     stopping = true;
-    clearInterval(demandInterval);
+    if (demandInterval) clearInterval(demandInterval);
     demandInterval = null;
-    clearTimeout(demandTimer);
+    if (demandTimer) clearTimeout(demandTimer);
     demandTimer = null;
     if (watchdogInterval) clearInterval(watchdogInterval);
     watchdogInterval = null;

@@ -27,6 +27,7 @@ import {
   compareActivityRequests,
   mergeActivityRequests,
   groupAlbumGrabRequests,
+  isAlbumActivityRequest,
   matchesActivitySearch,
   type ActivityListEntry,
 } from "./activity/activityListUtils";
@@ -35,12 +36,14 @@ import ActivityAlbumRow from "./activity/ActivityAlbumRow";
 import ActivityToolbar from "./activity/ActivityToolbar";
 import ActivityMissingPage from "./activity/ActivityMissingPage";
 import ActivityInfoModal from "./activity/ActivityInfoModal";
+import { getApiErrorText } from "./onboardingUtils.tsx";
 
 import { Navigate, useLocation, useParams } from "react-router";
 import RouteLink from "../components/RouteLink";
 import { AlertCircle, Music } from "lucide-react";
 import { SkeletonActivityList, SkeletonStatus } from "../components/Skeletons";
 import { queryClient, queryKeys } from "../queryClient.ts";
+import type { ActivityRequest } from "./activity/activityListUtils.ts";
 const ACTIVITY_PAGE_SIZE = 25;
 
 const QUEUE_EMPTY_STATE = {
@@ -57,15 +60,15 @@ function ActivityPage() {
   const { user } = useAuth();
   const hasFlowAccess = user?.role === "admin" || !!user?.permissions?.accessFlow;
   const lidarrConnected = useLibraryDestination().primary === "lidarr";
-  const [localError, setLocalError] = useState(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(ACTIVITY_PAGE_SIZE);
-  const [reSearchingAlbumIds, setReSearchingAlbumIds] = useState({});
-  const [reviewingJobs, setReviewingJobs] = useState({});
-  const [controllingJobs, setControllingJobs] = useState({});
-  const [jobErrors, setJobErrors] = useState({});
+  const [reSearchingAlbumIds, setReSearchingAlbumIds] = useState<Record<string, boolean>>({});
+  const [reviewingJobs, setReviewingJobs] = useState<Record<string, "approve" | "deny">>({});
+  const [controllingJobs, setControllingJobs] = useState<Record<string, "cancel" | "retry">>({});
+  const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
   const [filterValue, setFilterValue] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [infoRequest, setInfoRequest] = useState(null);
+  const [infoRequest, setInfoRequest] = useState<ActivityRequest | null>(null);
 
   const { playTrack, currentTrack, isPlaying, togglePlayPause } = useAudioQueue();
 
@@ -129,7 +132,7 @@ function ActivityPage() {
   );
   const loading = activityQuery.isPending;
   const error =
-    localError || activityQuery.error?.response?.data?.message || activityQuery.error?.message;
+    localError || getApiErrorText(activityQuery.error, "message") || activityQuery.error?.message;
 
   const filteredRequests = useMemo(() => {
     const query = filterValue.trim().toLocaleLowerCase();
@@ -179,7 +182,7 @@ function ActivityPage() {
         return result;
       } catch (requestError) {
         if (!silent) {
-          setLocalError(requestError?.response?.data?.message || "Failed to load activity.");
+          setLocalError(getApiErrorText(requestError, "message") || "Failed to load activity.");
         }
         return null;
       }
@@ -219,8 +222,8 @@ function ActivityPage() {
   }, [activityQueryKey, isMissingView]);
 
   const updateRequests = useCallback(
-    (updater) => {
-      queryClient.setQueryData(activityQueryKey, (current) => {
+    (updater: (prev: ActivityRequest[]) => ActivityRequest[]) => {
+      queryClient.setQueryData<ActivityRequest[]>(activityQueryKey, (current) => {
         const next = Array.isArray(current) ? current : [];
         return updater(next);
       });
@@ -228,7 +231,7 @@ function ActivityPage() {
     [activityQueryKey],
   );
   const settleReviewedJob = useCallback(
-    async (jobId, changes) => {
+    async (jobId: string, changes: Partial<ActivityRequest>) => {
       await queryClient.cancelQueries({ queryKey: activityQueryKey });
       updateRequests((prev) =>
         prev.map((r) =>
@@ -247,7 +250,7 @@ function ActivityPage() {
     [activityQueryKey, updateRequests],
   );
   const reSearchMutation = useMutation({
-    mutationFn: ({ albumId }) => triggerAlbumSearch(albumId),
+    mutationFn: ({ albumId }: { albumId: string }) => triggerAlbumSearch(albumId),
   });
   const approveMutation = useMutation({
     mutationFn: approveBlockedJob,
@@ -256,7 +259,7 @@ function ActivityPage() {
     mutationFn: denyBlockedJob,
   });
 
-  const handleReSearchAlbum = async (request) => {
+  const handleReSearchAlbum = async (request: ActivityRequest) => {
     const albumId = request.albumId;
     if (!albumId || reSearchingAlbumIds[albumId]) return;
     setReSearchingAlbumIds((prev) => ({ ...prev, [albumId]: true }));
@@ -285,7 +288,7 @@ function ActivityPage() {
     }
   };
 
-  const reviewBlockedJob = async (jobId, action) => {
+  const reviewBlockedJob = async (jobId: string | null | undefined, action: "approve" | "deny") => {
     if (!jobId || reviewingJobs[jobId]) return;
     setReviewingJobs((prev) => ({ ...prev, [jobId]: action }));
     try {
@@ -307,7 +310,10 @@ function ActivityPage() {
     }
   };
 
-  const controlDownloadJob = async (jobId, action) => {
+  const controlDownloadJob = async (
+    jobId: string | null | undefined,
+    action: "cancel" | "retry",
+  ) => {
     if (!jobId || controllingJobs[jobId]) return;
     setControllingJobs((prev) => ({ ...prev, [jobId]: action }));
     try {
@@ -340,8 +346,8 @@ function ActivityPage() {
       setJobErrors((prev) => ({
         ...prev,
         [jobId]:
-          jobError?.response?.data?.message ||
-          jobError?.response?.data?.error ||
+          getApiErrorText(jobError, "message") ||
+          getApiErrorText(jobError, "error") ||
           (action === "cancel" ? "Failed to cancel" : "Failed to retry"),
       }));
     } finally {
@@ -350,7 +356,7 @@ function ActivityPage() {
   };
 
   const handleReviewPreview = useCallback(
-    ({ jobId, trackName, artistName, albumName, albumMbid }) => {
+    ({ jobId, trackName, artistName, albumName, albumMbid }: ActivityRequest) => {
       const trackId = String(jobId);
       if (currentTrack?.id === trackId) {
         togglePlayPause();
@@ -358,7 +364,7 @@ function ActivityPage() {
       }
       playTrack({
         id: trackId,
-        src: getStagingStreamUrl(jobId),
+        src: getStagingStreamUrl(trackId),
         title: trackName || "Track",
         artist: artistName || "Artist",
         album: albumName || "",
@@ -480,29 +486,31 @@ function ActivityPage() {
                   </div>
                 );
               }
-              const RowComponent =
-                entry.request.kind === "album_download" ? ActivityAlbumRow : ActivityRequestRow;
-              const row = (
-                <RowComponent
+              const rowProps = {
+                reSearchingAlbumIds,
+                reviewingJobs,
+                controllingJobs,
+                jobErrors,
+                currentTrack,
+                isPlaying,
+                onReSearch: lidarrConnected ? handleReSearchAlbum : undefined,
+                onApprove: (jobId: string | null | undefined) => reviewBlockedJob(jobId, "approve"),
+                onDeny: (jobId: string | null | undefined) => reviewBlockedJob(jobId, "deny"),
+                onCancel: (jobId: string | null | undefined) => controlDownloadJob(jobId, "cancel"),
+                onRetry: (jobId: string | null | undefined) => controlDownloadJob(jobId, "retry"),
+                onPreview: handleReviewPreview,
+                onInfo: setInfoRequest,
+              };
+              return isAlbumActivityRequest(entry.request) ? (
+                <ActivityAlbumRow
                   key={entry.key}
                   request={entry.request}
-                  reSearchingAlbumIds={reSearchingAlbumIds}
-                  reviewingJobs={reviewingJobs}
-                  controllingJobs={controllingJobs}
-                  jobErrors={jobErrors}
-                  currentTrack={currentTrack}
-                  isPlaying={isPlaying}
-                  onReSearch={lidarrConnected ? handleReSearchAlbum : undefined}
-                  onApprove={(jobId) => reviewBlockedJob(jobId, "approve")}
-                  onDeny={(jobId) => reviewBlockedJob(jobId, "deny")}
-                  onCancel={(jobId) => controlDownloadJob(jobId, "cancel")}
-                  onRetry={(jobId) => controlDownloadJob(jobId, "retry")}
-                  onPreview={handleReviewPreview}
-                  onInfo={setInfoRequest}
                   filterValue={filterValue}
+                  {...rowProps}
                 />
+              ) : (
+                <ActivityRequestRow key={entry.key} request={entry.request} {...rowProps} />
               );
-              return row;
             });
           })()}
           {hasMoreItems && (

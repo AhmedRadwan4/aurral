@@ -27,7 +27,10 @@ import {
 import { useToast } from "../../contexts/ToastContext";
 import { showFavoriteRemoved } from "../../utils/favoriteUndo.ts";
 import { queryClient, queryKeys } from "../../queryClient.ts";
-import { PlaylistTracksPanel } from "./components/playlistTrackComponents.tsx";
+import {
+  PlaylistTracksPanel,
+  type PlaylistTrackTarget,
+} from "./components/playlistTrackComponents.tsx";
 import { trackCountLabel } from "./playlistTrackChanges.ts";
 import ManualMissingSearchModal from "../activity/ManualMissingSearchModal.tsx";
 import LibraryInfoModal from "../LibraryInfoModal.tsx";
@@ -36,9 +39,37 @@ import { useAuth } from "../../contexts/AuthContext.tsx";
 import { useAudioQueue } from "../../contexts/audioQueueContext.ts";
 import { getTrackSearchAction } from "./trackAvailability.ts";
 import { normalizeNameKey, normalizePlaylistTrackEntry, reserveUniqueName } from "./flowPageUtils";
+import type { Flow, StaticPlaylist } from "./playlistStats.ts";
+import type { PlaylistTrackRow } from "./playlistPageUtils.ts";
+import type { FetchLibraryFavoritesResponse } from "../../../../backend/routes/library/handlers/libraryIndex.ts";
+import { getApiErrorMessage } from "../onboardingUtils.tsx";
 
-const errorMessage = (err, fallback) =>
-  err?.response?.data?.message || err?.response?.data?.error || err?.message || fallback;
+type FavoriteSongs = {
+  song?: Pick<FetchLibraryFavoritesResponse["song"][number], "id">[];
+};
+
+type ArtworkEditorState = {
+  id: string;
+  title: string;
+  currentArtwork: string;
+  hasCustomArtwork: boolean;
+  fallbackArtwork: string;
+};
+
+interface PlaylistTracksProps {
+  entry: Flow | StaticPlaylist;
+  kind: "flow" | "shared";
+  tracks: PlaylistTrackRow[];
+  loading: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+  staticPlaylists: StaticPlaylist[];
+  fetchStatus: () => Promise<unknown>;
+  activityHint?: string | null;
+  emptyMessage: string;
+  showTrackAvailability?: boolean;
+  recordHistory?: boolean;
+}
 
 export function PlaylistTracks({
   entry,
@@ -53,7 +84,7 @@ export function PlaylistTracks({
   emptyMessage,
   showTrackAvailability = false,
   recordHistory = true,
-}) {
+}: PlaylistTracksProps) {
   const isFlow = kind === "flow";
   const bulkActions = usePlaylistBulkActions();
   const { hasPermission } = useAuth();
@@ -61,16 +92,23 @@ export function PlaylistTracks({
   const navigate = useNavigate();
   const toast = useToast();
   const { showSuccess, showError } = toast;
-  const [reSearchingTrackIds, setReSearchingTrackIds] = useState({});
-  const [manualReplacement, setManualReplacement] = useState(null);
-  const [trackInfo, setTrackInfo] = useState(null);
-  const [artworkEditor, setArtworkEditor] = useState(null);
+  const [reSearchingTrackIds, setReSearchingTrackIds] = useState<Record<string, boolean>>({});
+  const [manualReplacement, setManualReplacement] = useState<PlaylistTrackRow | null>(null);
+  const [trackInfo, setTrackInfo] = useState<{
+    kind: "track";
+    source: "playlist";
+    entity: PlaylistTrackRow;
+    trackNumber: number | null;
+  } | null>(null);
+  const [artworkEditor, setArtworkEditor] = useState<ArtworkEditorState | null>(null);
   const [playlistMenuSavingKey, setPlaylistMenuSavingKey] = useState("");
   const [playlistMenuError, setPlaylistMenuError] = useState("");
   const [libraryTrackSavingKey, setLibraryTrackSavingKey] = useState("");
   const [favoriteTrackSavingKey, setFavoriteTrackSavingKey] = useState("");
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
-  const [trackArtworkByAlbumMbid, setTrackArtworkByAlbumMbid] = useState({});
+  const [trackArtworkByAlbumMbid, setTrackArtworkByAlbumMbid] = useState<Record<string, string>>(
+    {},
+  );
   const canEditArtwork = hasPermission("addAlbum") || hasPermission("changeMonitoring");
 
   const favoriteQuery = useQuery({
@@ -120,7 +158,7 @@ export function PlaylistTracks({
     };
   }, [tracks]);
 
-  const getNextPlaylistName = (baseName) =>
+  const getNextPlaylistName = (baseName: string) =>
     reserveUniqueName(
       new Set(staticPlaylists.map((playlist) => normalizeNameKey(playlist?.name)).filter(Boolean)),
       baseName,
@@ -131,18 +169,14 @@ export function PlaylistTracks({
     await refresh();
   };
 
-  const openTrackArtworkEditor = (track) => {
+  const openTrackArtworkEditor = (track: PlaylistTrackRow) => {
     setArtworkEditor({
       id: track.id,
       title: track.trackName || "Track",
       currentArtwork:
-        track.artworkUrl ||
-        track.coverUrl ||
-        trackArtworkByAlbumMbid[String(track.albumMbid || "")] ||
-        "",
+        track.artworkUrl || trackArtworkByAlbumMbid[String(track.albumMbid || "")] || "",
       hasCustomArtwork: Boolean(track.customArtworkUrl),
-      fallbackArtwork:
-        track.coverUrl || trackArtworkByAlbumMbid[String(track.albumMbid || "")] || "",
+      fallbackArtwork: trackArtworkByAlbumMbid[String(track.albumMbid || "")] || "",
     });
   };
 
@@ -160,7 +194,7 @@ export function PlaylistTracks({
     showSuccess("Artwork updated");
   };
 
-  const saveTrackToPlaylist = async (track, target) => {
+  const saveTrackToPlaylist = async (track: PlaylistTrackRow, target: PlaylistTrackTarget) => {
     const payload = normalizePlaylistTrackEntry(track);
     if (!payload) {
       showError("Track details are incomplete");
@@ -183,7 +217,7 @@ export function PlaylistTracks({
       showSuccess(`Added ${payload.trackName} to ${targetName}`);
       void refreshAll();
     } catch (err) {
-      const message = `Could not add ${payload.trackName} to ${targetName}. Nothing was added. ${errorMessage(err, "Try again.")}`;
+      const message = `Could not add ${payload.trackName} to ${targetName}. Nothing was added. ${getApiErrorMessage(err, "Try again.")}`;
       setPlaylistMenuError(message);
       showError(message);
     } finally {
@@ -191,8 +225,10 @@ export function PlaylistTracks({
     }
   };
 
-  const copyTracks = async (selected, target) => {
-    const payloads = selected.map((track) => normalizePlaylistTrackEntry(track)).filter(Boolean);
+  const copyTracks = async (selected: PlaylistTrackRow[], target: PlaylistTrackTarget) => {
+    const payloads = selected
+      .map((track) => normalizePlaylistTrackEntry(track))
+      .filter((payload) => payload !== null);
     if (payloads.length === 0) {
       showError("No valid tracks to add");
       return;
@@ -214,14 +250,14 @@ export function PlaylistTracks({
       void refreshAll();
     } catch (err) {
       showError(
-        `Could not add ${trackCountLabel(payloads.length)} to ${targetName}. Nothing was added. ${errorMessage(err, "Try again.")}`,
+        `Could not add ${trackCountLabel(payloads.length)} to ${targetName}. Nothing was added. ${getApiErrorMessage(err, "Try again.")}`,
       );
     } finally {
       setBulkActionLoading(false);
     }
   };
 
-  const moveTracks = (selected, target) =>
+  const moveTracks = (selected: PlaylistTrackRow[], target: PlaylistTrackTarget) =>
     bulkActions.moveTracks(
       entry,
       selected,
@@ -230,9 +266,9 @@ export function PlaylistTracks({
         : target,
     );
 
-  const handleDeleteTrack = (track) => bulkActions.removeTracks(entry, [track]);
+  const handleDeleteTrack = (track: PlaylistTrackRow) => bulkActions.removeTracks(entry, [track]);
 
-  const handleReSearchTrack = async (track, forceReplacementSearch = false) => {
+  const handleReSearchTrack = async (track: PlaylistTrackRow, forceReplacementSearch = false) => {
     const jobId = track?.id;
     if (!jobId || reSearchingTrackIds[jobId]) return;
     const searchAction = forceReplacementSearch
@@ -241,7 +277,7 @@ export function PlaylistTracks({
     if (!searchAction) return;
     setReSearchingTrackIds((prev) => ({ ...prev, [jobId]: true }));
     if (searchAction === "research") {
-      queryClient.setQueryData(queryKeys.playlistJobs(entry.id), (prev) =>
+      queryClient.setQueryData<PlaylistTrackRow[]>(queryKeys.playlistJobs(entry.id), (prev) =>
         (prev || []).map((job) =>
           job?.id === jobId ? { ...job, status: "pending", error: null, streamUrl: null } : job,
         ),
@@ -261,19 +297,19 @@ export function PlaylistTracks({
       }
       await refreshAll();
     } catch (err) {
-      showError(errorMessage(err, "Failed to re-search track"));
+      showError(getApiErrorMessage(err, "Failed to re-search track"));
       await refresh();
     } finally {
       setReSearchingTrackIds(({ [jobId]: _, ...prev }) => prev);
     }
   };
 
-  const getFlowArtistLink = (track) =>
+  const getFlowArtistLink = (track: PlaylistTrackRow) =>
     track?.artistMbid
       ? { to: `/artist/${track.artistMbid}`, state: { artistName: track.artistName } }
       : null;
 
-  const getFlowAlbumLink = (track) =>
+  const getFlowAlbumLink = (track: PlaylistTrackRow) =>
     track?.albumMbid && track.artistMbid
       ? {
           to: `/artist/${track.artistMbid}/release/${track.albumMbid}`,
@@ -285,13 +321,13 @@ export function PlaylistTracks({
         }
       : null;
 
-  const getArtistLink = (track) => {
+  const getArtistLink = (track: PlaylistTrackRow) => {
     if (!track?.artistMbid) return null;
     if (isFlow) return getFlowArtistLink(track);
     return { to: resolveLibraryArtistPath({ mbid: track.artistMbid, name: track.artistName }) };
   };
 
-  const getAlbumLink = (track) => {
+  const getAlbumLink = (track: PlaylistTrackRow) => {
     if (!track?.albumMbid) return null;
     if (isFlow && track.artistMbid) return getFlowAlbumLink(track);
     return {
@@ -303,13 +339,13 @@ export function PlaylistTracks({
     };
   };
 
-  const openLink = (link) => {
+  const openLink = (link: { to: string | null; state?: unknown } | null) => {
     if (link?.to) navigate(link.to, { state: link.state });
   };
-  const handleNavigateArtist = (track) => openLink(getArtistLink(track));
-  const handleNavigateAlbum = (track) => openLink(getAlbumLink(track));
+  const handleNavigateArtist = (track: PlaylistTrackRow) => openLink(getArtistLink(track));
+  const handleNavigateAlbum = (track: PlaylistTrackRow) => openLink(getAlbumLink(track));
 
-  const handleAddTrackToLibrary = async (track) => {
+  const handleAddTrackToLibrary = async (track: PlaylistTrackRow) => {
     const payload = {
       artistName: String(track?.artistName || "").trim(),
       trackName: String(track?.trackName || "").trim(),
@@ -341,32 +377,32 @@ export function PlaylistTracks({
             : `Added ${payload.trackName} to your library`,
       );
     } catch (err) {
-      showError(errorMessage(err, "Failed to add track to library"));
+      showError(getApiErrorMessage(err, "Failed to add track to library"));
     } finally {
       setLibraryTrackSavingKey("");
     }
   };
 
-  const getTrackFavoriteId = (track) =>
+  const getTrackFavoriteId = (track: PlaylistTrackRow) =>
     entry?.id && track?.id
       ? `${isFlow ? "flow-song" : "shared-song"}:${encodeURIComponent(`${entry.id}:${track.id}`)}`
       : "";
 
-  const handleToggleFavorite = async (track) => {
+  const handleToggleFavorite = async (track: PlaylistTrackRow) => {
     const id = getTrackFavoriteId(track);
     if (!id || favoriteTrackSavingKey) return;
     const nextStarred = !favoriteTrackIds.has(id);
     const favoriteQueryKey = queryKeys.libraryFavorites;
     setFavoriteTrackSavingKey(id);
     const name = track.trackName || "track";
-    const setStarred = (starred) =>
-      queryClient.setQueryData(favoriteQueryKey, (current = {}) => {
+    const setStarred = (starred: boolean) =>
+      queryClient.setQueryData<FavoriteSongs>(favoriteQueryKey, (current = {}) => {
         const songs = Array.isArray(current.song) ? current.song : [];
         const withoutTrack = songs.filter((song) => String(song?.id || "") !== id);
         return { ...current, song: starred ? [...withoutTrack, { id }] : withoutTrack };
       });
-    let previous;
-    let optimistic;
+    let previous: FavoriteSongs | undefined;
+    let optimistic: FavoriteSongs | undefined;
     try {
       await queryClient.cancelQueries({ queryKey: favoriteQueryKey });
       previous = queryClient.getQueryData(favoriteQueryKey);
@@ -387,7 +423,7 @@ export function PlaylistTracks({
         queryClient.setQueryData(favoriteQueryKey, previous);
       }
       showError(
-        `Could not ${nextStarred ? "add" : "remove"} ${name} ${nextStarred ? "to" : "from"} favorites. Nothing changed. ${errorMessage(err, "Try again.")}`,
+        `Could not ${nextStarred ? "add" : "remove"} ${name} ${nextStarred ? "to" : "from"} favorites. Nothing changed. ${getApiErrorMessage(err, "Try again.")}`,
       );
     } finally {
       void queryClient.invalidateQueries({ queryKey: favoriteQueryKey }).catch(() => {});
@@ -463,9 +499,9 @@ export function PlaylistTracks({
         currentArtwork={artworkEditor?.currentArtwork}
         hasCustomArtwork={artworkEditor?.hasCustomArtwork}
         onClose={() => setArtworkEditor(null)}
-        onUpload={(file) => uploadPlaylistTrackArtwork(entry.id, artworkEditor.id, file)}
-        onSaveUrl={(url) => setPlaylistTrackArtworkUrl(entry.id, artworkEditor.id, url)}
-        onRemove={() => deletePlaylistTrackArtwork(entry.id, artworkEditor.id)}
+        onUpload={(file) => uploadPlaylistTrackArtwork(entry.id, artworkEditor!.id, file)}
+        onSaveUrl={(url) => setPlaylistTrackArtworkUrl(entry.id, artworkEditor!.id, url)}
+        onRemove={() => deletePlaylistTrackArtwork(entry.id, artworkEditor!.id)}
         onSaved={handleArtworkSaved}
       />
       <ManualMissingSearchModal

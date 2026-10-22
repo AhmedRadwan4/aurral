@@ -1,7 +1,27 @@
-const workers = new Map();
-const restartTimers = new Map();
-const restartAttempts = new Map();
-const shutdownHandlers = [];
+import type { Job, Queue } from "@russellthehippo/honker-node";
+import { asAppError } from "../../lib/errors.ts";
+
+interface HonkerWorker {
+  start: () => unknown;
+  stop: () => unknown;
+  isRunning: () => boolean;
+}
+
+interface IdleAbortOptions {
+  idleStopMs?: number;
+  onIdleStop?: (() => void) | null;
+  isBusy?: (() => boolean) | null;
+}
+
+interface WorkerRestartOptions {
+  intentional?: boolean;
+  shouldRestart?: () => boolean;
+}
+
+const workers = new Map<string, HonkerWorker>();
+const restartTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const restartAttempts = new Map<string, number>();
+const shutdownHandlers: (() => unknown)[] = [];
 const DEFAULT_WORKER_IDLE_STOP_MS = 60 * 1000;
 
 let shuttingDown = false;
@@ -17,13 +37,18 @@ export function isHonkerShuttingDown() {
   return shuttingDown;
 }
 
-export function isHonkerDatabaseClosedError(error) {
-  return String(error?.message || "")
+export function isHonkerDatabaseClosedError(error: unknown) {
+  return String(asAppError(error)?.message || "")
     .toLowerCase()
     .includes("database is closed");
 }
 
-export async function withJobHeartbeat(job, queue, fn, extendSeconds = null) {
+export async function withJobHeartbeat(
+  job: Job,
+  queue: Queue,
+  fn: () => unknown,
+  extendSeconds: number | null = null,
+) {
   let runId = null;
   let recordFinished = null;
   try {
@@ -50,11 +75,12 @@ export async function withJobHeartbeat(job, queue, fn, extendSeconds = null) {
     }
     return result;
   } catch (error) {
+    const failure = asAppError(error);
     if (recordFinished) {
       recordFinished(
         runId,
-        error?.code === "HONKER_JOB_INTERRUPTED" ? "interrupted" : "failed",
-        error?.message || String(error),
+        failure?.code === "HONKER_JOB_INTERRUPTED" ? "interrupted" : "failed",
+        failure?.message || String(error),
       );
     }
     throw error;
@@ -67,10 +93,10 @@ export function createIdleAbortController({
   idleStopMs = 0,
   onIdleStop = null,
   isBusy = null,
-} = {}) {
+}: IdleAbortOptions = {}) {
   const controller = new AbortController();
   const timeoutMs = Math.max(0, Math.floor(Number(idleStopMs) || 0));
-  let timer = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let idleStopped = false;
 
   const clear = () => {
@@ -121,7 +147,7 @@ export function createIdleAbortController({
   };
 }
 
-export function registerHonkerWorker(name, { start, stop, isRunning }) {
+export function registerHonkerWorker(name: string, { start, stop, isRunning }: HonkerWorker) {
   workers.set(String(name), { start, stop, isRunning });
 }
 
@@ -134,13 +160,17 @@ export function getHonkerWorkerStatuses() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function registerHonkerShutdownHandler(handler) {
+export function registerHonkerShutdownHandler(handler: () => unknown) {
   if (typeof handler === "function") {
     shutdownHandlers.push(handler);
   }
 }
 
-export function scheduleHonkerComponentRestart(name, startFn, options = {}) {
+export function scheduleHonkerComponentRestart(
+  name: string,
+  startFn: (() => unknown) | null,
+  options: WorkerRestartOptions = {},
+) {
   if (shuttingDown || process.env.NODE_ENV === "test") return;
   const safeName = String(name || "component");
   const shouldRestart =
@@ -156,7 +186,7 @@ export function scheduleHonkerComponentRestart(name, startFn, options = {}) {
 
   const timer = setTimeout(() => {
     restartTimers.delete(safeName);
-    if (shuttingDown || !shouldRestart()) return;
+    if (shuttingDown || !startFn || !shouldRestart()) return;
     try {
       startFn();
       restartAttempts.set(safeName, 0);
@@ -169,7 +199,11 @@ export function scheduleHonkerComponentRestart(name, startFn, options = {}) {
   restartTimers.set(safeName, timer);
 }
 
-export function markHonkerWorkerLoopEnded(name, startFn, options = {}) {
+export function markHonkerWorkerLoopEnded(
+  name: string,
+  startFn: (() => unknown) | null,
+  options: WorkerRestartOptions = {},
+) {
   const safeName = String(name || "worker");
   if (options.intentional || shuttingDown) return;
   const entry = workers.get(safeName);

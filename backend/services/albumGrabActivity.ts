@@ -1,15 +1,75 @@
 import { db } from "../config/db-sqlite.ts";
 import { dbOps } from "../db/helpers/index.ts";
+import type { AurralHistoryEntry } from "../db/helpers/history.ts";
+import type { DownloadJob, JobFields } from "./downloadJobs/downloadTracker.ts";
 import { logger, safeLogDiagnostic } from "./logger.ts";
 
-const trackHistoryId = (jobId) => `aurral-track_download-${jobId}`;
+type AlbumGrabJob = Pick<DownloadJob, "id" | "createdAt"> & { status: string } & JobFields<
+    | "managedBy"
+    | "playlistType"
+    | "requestGroupId"
+    | "albumMbid"
+    | "albumName"
+    | "artistName"
+    | "trackMbid"
+    | "trackNumber"
+    | "discNumber"
+    | "trackName"
+    | "error"
+    | "completedAt"
+    | "downloadSource"
+    | "downloadClient"
+  >;
 
-export function getAlbumGrabActivity(jobId) {
-  const id = dbOps.getAurralHistoryById(trackHistoryId(jobId))?.metadata?.albumGrabId;
-  return id ? dbOps.getAurralHistoryById(id)?.metadata || null : null;
+type AlbumGrabPayload = {
+  jobId: string;
+  albumGrab?: boolean;
+  albumGroupJobIds?: string[] | null;
+  phase?: string;
+  source?: string | null;
+};
+
+type AlbumGrabManifest = {
+  id: string;
+  requestGroupId: string;
+  albumMbid: string;
+  memberJobIds: string[];
+  requestedAt: string;
+  phase: string;
+  source: string | null;
+  fallbackReason: string | null;
+  completedAt?: string | null;
+};
+
+type TrackMetadata = {
+  albumGrabId?: string;
+  previousErrors?: string[];
+  actualDownloadSource?: string | null;
+  downloadMethod?: string | null;
+  completedAt?: string | null;
+  discNumber?: number | null;
+};
+
+type HistoryEntryOf<Metadata> = Omit<AurralHistoryEntry, "metadata"> & {
+  id: string;
+  metadata: Metadata;
+};
+
+const trackHistoryId = (jobId: string) => `aurral-track_download-${jobId}`;
+
+export function getAlbumGrabActivity(jobId: string) {
+  const id = (
+    dbOps.getAurralHistoryById(trackHistoryId(jobId)) as HistoryEntryOf<TrackMetadata | null> | null
+  )?.metadata?.albumGrabId;
+  return id
+    ? (dbOps.getAurralHistoryById(id) as HistoryEntryOf<AlbumGrabManifest> | null)?.metadata || null
+    : null;
 }
 
-export function recordAlbumGrabQueued(payload, jobs) {
+export function recordAlbumGrabQueued(
+  payload: AlbumGrabPayload | null | undefined,
+  jobs: AlbumGrabJob[],
+) {
   if (payload?.albumGrab !== true || !Array.isArray(payload.albumGroupJobIds)) return;
   const leader = jobs.find((job) => job.id === payload.jobId);
   if (
@@ -29,7 +89,7 @@ export function recordAlbumGrabQueued(payload, jobs) {
         job.playlistType === "library" &&
         job.requestGroupId === leader.requestGroupId &&
         job.albumMbid === leader.albumMbid,
-    );
+    ) as AlbumGrabJob[];
   if (members.length < 2) return;
   try {
     const previous = getAlbumGrabActivity(leader.id);
@@ -56,10 +116,20 @@ export function recordAlbumGrabQueued(payload, jobs) {
       createdAt: Date.now(),
     });
     for (const job of members) {
-      const existing = dbOps.getAurralHistoryById(trackHistoryId(job.id));
+      const existing = dbOps.getAurralHistoryById(
+        trackHistoryId(job.id),
+      ) as HistoryEntryOf<TrackMetadata | null> | null;
       const position = job.trackMbid
         ? db
-            .prepare(`
+            .prepare<
+              [
+                string | null | undefined,
+                string | null | undefined,
+                string | null | undefined,
+                number,
+              ],
+              { discNumber: number; trackNumber: number }
+            >(`
         SELECT relation.disc_number AS discNumber, relation.track_number AS trackNumber
         FROM library_album_tracks relation
         JOIN library_albums album ON album.id = relation.album_id
@@ -100,11 +170,15 @@ export function recordAlbumGrabQueued(payload, jobs) {
   }
 }
 
-export function recordAlbumTrackState(job, importedSource = null) {
+export function recordAlbumTrackState(job: AlbumGrabJob, importedSource: string | null = null) {
   try {
-    const existing = dbOps.getAurralHistoryById(trackHistoryId(job.id));
+    const existing = dbOps.getAurralHistoryById(
+      trackHistoryId(job.id),
+    ) as HistoryEntryOf<TrackMetadata | null> | null;
     if (!existing?.metadata?.albumGrabId) return;
-    const manifest = dbOps.getAurralHistoryById(existing.metadata.albumGrabId);
+    const manifest = dbOps.getAurralHistoryById(
+      existing.metadata.albumGrabId,
+    ) as HistoryEntryOf<AlbumGrabManifest> | null;
     if (!manifest) return;
     const status =
       job.status === "done"
@@ -113,7 +187,11 @@ export function recordAlbumTrackState(job, importedSource = null) {
           ? "processing"
           : job.status;
     const previousErrors = [
-      ...new Set([...(existing.metadata.previousErrors || []), job.error].filter(Boolean)),
+      ...new Set(
+        [...(existing.metadata.previousErrors || []), job.error].filter((error): error is string =>
+          Boolean(error),
+        ),
+      ),
     ].slice(-10);
     const statusLabel = {
       completed: "Downloaded",
@@ -162,8 +240,8 @@ export function recordAlbumTrackState(job, importedSource = null) {
         completedAt: terminal
           ? new Date(
               Math.max(
-                ...members.map(
-                  (entry) => Date.parse(entry.metadata.completedAt) || entry.createdAt,
+                ...(members as HistoryEntryOf<TrackMetadata>[]).map(
+                  (entry) => Date.parse(entry.metadata.completedAt ?? "") || entry.createdAt,
                 ),
               ),
             ).toISOString()
@@ -177,11 +255,14 @@ export function recordAlbumTrackState(job, importedSource = null) {
   }
 }
 
-export function recordAlbumGrabPhase(payload, fallbackReason = null) {
+export function recordAlbumGrabPhase(
+  payload: AlbumGrabPayload,
+  fallbackReason: string | null = null,
+) {
   try {
     const activity = getAlbumGrabActivity(payload?.jobId);
     if (!activity) return;
-    const existing = dbOps.getAurralHistoryById(activity.id);
+    const existing = dbOps.getAurralHistoryById(activity.id)!;
     dbOps.insertAurralHistory({
       ...existing,
       createdAt: Date.now(),
@@ -199,17 +280,27 @@ export function recordAlbumGrabPhase(payload, fallbackReason = null) {
   }
 }
 
-export function expandAlbumGrabHistory(entries, since, canViewEntry) {
-  const expanded = new Map(entries.map((entry) => [entry.id, entry]));
-  const manifests = new Map();
+export function expandAlbumGrabHistory(
+  entries: AurralHistoryEntry[],
+  since: number,
+  canViewEntry: (entry: AurralHistoryEntry) => boolean,
+) {
+  const expanded = new Map(
+    entries.map((entry): [string | null, AurralHistoryEntry] => [entry.id, entry]),
+  );
+  const manifests = new Map<string, AlbumGrabManifest>();
   for (const entry of entries) {
-    const id = entry.kind === "album_grab" ? entry.id : entry.metadata?.albumGrabId;
+    const id =
+      entry.kind === "album_grab"
+        ? entry.id
+        : (entry.metadata as TrackMetadata | null)?.albumGrabId;
     if (!id || manifests.has(id)) continue;
-    const manifest = dbOps.getAurralHistoryById(id)?.metadata;
+    const manifest = (dbOps.getAurralHistoryById(id) as HistoryEntryOf<AlbumGrabManifest> | null)
+      ?.metadata;
     if (manifest) manifests.set(id, manifest);
   }
   for (const manifest of manifests.values()) {
-    const visibleMemberJobIds = [];
+    const visibleMemberJobIds: string[] = [];
     for (const jobId of manifest.memberJobIds) {
       const id = trackHistoryId(jobId);
       const entry = expanded.get(id) || dbOps.getAurralHistoryById(id);

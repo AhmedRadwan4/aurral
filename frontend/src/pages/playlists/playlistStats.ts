@@ -30,6 +30,7 @@ export interface Flow {
   lastRunAt: number | null;
   ownerUserId: number | null;
   ownerUsername: string | null;
+  showInLibrary: boolean;
 }
 
 export type PlaylistStats = PlaylistStatusSnapshot["stats"];
@@ -44,6 +45,14 @@ export interface StaticPlaylist {
   trackCount: number;
   recordHistory: boolean;
   showTrackAvailability: boolean;
+  importSource: {
+    provider: string;
+    syncEnabled: boolean;
+    syncIntervalHours: number;
+    keepRemovedTracks: boolean;
+  } | null;
+  trackEntries: { id: string; identity: string }[];
+  trackIdentities: string[];
 }
 
 export type PlaylistStatus = Omit<PlaylistStatusSnapshot, "flows" | "sharedPlaylists"> & {

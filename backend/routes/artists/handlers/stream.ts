@@ -1,3 +1,4 @@
+import type { Router } from "express";
 import { UUID_REGEX } from "../../../../lib/uuid.ts";
 import {
   musicbrainzGetArtistAppearsOnReleaseGroups,
@@ -7,7 +8,7 @@ import {
 import { dbOps } from "../../../db/helpers/index.ts";
 import { noCache } from "../../../middleware/cache.ts";
 import { verifyTokenAuth } from "../../../middleware/auth.ts";
-import { sendSSE } from "../utils.ts";
+import { queryText, sendSSE } from "../utils.ts";
 import { logger } from "../../../services/logger.ts";
 import { getArtistImage } from "../../../services/imageService.ts";
 import { attachCachedCoverUrls } from "../../../services/releaseGroupCoverService.ts";
@@ -19,12 +20,17 @@ import {
   getSimilarArtistCards,
   withListenBrainzStats,
 } from "../shared/transform.ts";
+import { asAppError, errorResponseText } from "../../../../lib/errors.ts";
 
-export function registerStream(router) {
-  router.get("/:mbid/stream", noCache, async (req, res) => {
+type AppearsOnReleaseGroups = Awaited<
+  ReturnType<typeof musicbrainzGetArtistAppearsOnReleaseGroups>
+>;
+
+export function registerStream(router: Router) {
+  router.get<"/:mbid/stream">("/:mbid/stream", noCache, async (req, res) => {
     try {
       const { mbid } = req.params;
-      const streamArtistName = (req.query.artistName || "").trim();
+      const streamArtistName = queryText(req.query.artistName);
       const selectedReleaseTypes =
         typeof req.query.releaseTypes === "string" && req.query.releaseTypes.trim()
           ? req.query.releaseTypes
@@ -32,7 +38,7 @@ export function registerStream(router) {
               .map((value) => value.trim())
               .filter(Boolean)
           : null;
-      const parsedAppearsOnLimit = Number.parseInt(req.query.appearsOnLimit, 10);
+      const parsedAppearsOnLimit = Number.parseInt(String(req.query.appearsOnLimit), 10);
       const appearsOnLimit =
         Number.isFinite(parsedAppearsOnLimit) && parsedAppearsOnLimit > 0
           ? parsedAppearsOnLimit
@@ -71,7 +77,7 @@ export function registerStream(router) {
       const override = dbOps.getArtistOverride(mbid);
       const resolvedMbid = override?.musicbrainzId || mbid;
       const initialName = streamArtistName || "Unknown Artist";
-      const sendArtist = (payload) => {
+      const sendArtist = (payload: unknown) => {
         if (!isClientConnected()) return;
         sendSSE(res, "artist", payload);
       };
@@ -148,7 +154,7 @@ export function registerStream(router) {
             limit: appearsOnLimit,
             signal: requestController.signal,
           })
-            .catch(() => [])
+            .catch((): AppearsOnReleaseGroups => [])
             .then((appearsOnReleaseGroups) => {
               if (!isClientConnected()) return;
               sendArtist({
@@ -237,18 +243,20 @@ export function registerStream(router) {
             }, 100);
           });
       } catch (error) {
-        logger.error("stream", `Error for artist ${mbid}:`, { message: error.message });
+        const failure = asAppError(error);
+        logger.error("stream", `Error for artist ${mbid}:`, { message: failure?.message });
         sendSSE(res, "error", {
           error: "Failed to fetch artist details",
-          message: error.response?.data?.error || error.message,
+          message: errorResponseText(failure, "error") || failure?.message,
         });
         res.end();
       }
     } catch (error) {
-      logger.error("stream", `Unexpected error:`, { message: error.message });
+      const failure = asAppError(error);
+      logger.error("stream", `Unexpected error:`, { message: failure?.message });
       res.status(500).json({
         error: "Failed to stream artist details",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });

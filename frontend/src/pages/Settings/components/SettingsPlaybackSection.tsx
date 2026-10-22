@@ -38,6 +38,27 @@ import {
   SettingsModalToggleGroup,
 } from "./SettingsModalLayout";
 import { pickBestPlexConnection, resolvePlexConnectionUrl } from "../utils/plexConnections";
+import type { useSettingsData } from "../hooks/useSettingsData";
+import { readApiError } from "../utils/apiError.ts";
+
+type SettingsData = ReturnType<typeof useSettingsData>;
+type Integrations = SettingsData["settings"]["integrations"];
+type PlexSettings = Integrations["plex"];
+type NavidromeSettings = Integrations["navidrome"];
+type JellyfinSettings = Integrations["jellyfin"];
+type PlexServer = Awaited<ReturnType<typeof getPlexResources>>["servers"][number];
+type ScrobbleProvider = "lastfm" | "listenbrainz" | "koito";
+type ActiveModal = ScrobbleProvider | "navidrome" | "plex" | "jellyfin" | null;
+type TestStatus = { tone: "success" | "error"; message: string };
+type SettingsPlaybackSectionProps = Pick<
+  SettingsData,
+  "settings" | "playbackSettings" | "updateSettings" | "hasUnsavedChanges" | "handleSaveSettings"
+> & {
+  showSuccess: (message: string) => void;
+  showError: (message: string) => void;
+  showInfo: (message: string) => void;
+};
+
 export function SettingsPlaybackSection({
   settings,
   playbackSettings,
@@ -47,15 +68,15 @@ export function SettingsPlaybackSection({
   showSuccess,
   showError,
   showInfo,
-}) {
-  const [activeModal, setActiveModal] = useState(null);
+}: SettingsPlaybackSectionProps) {
+  const [activeModal, setActiveModal] = useState<ActiveModal>(null);
   const [plexConnecting, setPlexConnecting] = useState(false);
   const [testingPlex, setTestingPlex] = useState(false);
   const [testingNavidrome, setTestingNavidrome] = useState(false);
   const [testingJellyfin, setTestingJellyfin] = useState(false);
-  const [testStatus, setTestStatus] = useState(null);
+  const [testStatus, setTestStatus] = useState<TestStatus | null>(null);
   const [syncingPlex, setSyncingPlex] = useState(false);
-  const [plexServers, setPlexServers] = useState([]);
+  const [plexServers, setPlexServers] = useState<PlexServer[]>([]);
   const [plexLibraries, setPlexLibraries] = useState<
     Awaited<ReturnType<typeof getPlexLibraries>>["libraries"]
   >([]);
@@ -76,7 +97,7 @@ export function SettingsPlaybackSection({
   const [listenBrainzToken, setListenBrainzToken] = useState("");
   const [koitoToken, setKoitoToken] = useState("");
   const [koitoUrl, setKoitoUrl] = useState("");
-  const lastfmPollRef = useRef(null);
+  const lastfmPollRef = useRef<number | null>(null);
 
   useEffect(() => {
     setTestStatus(null);
@@ -107,7 +128,7 @@ export function SettingsPlaybackSection({
     setPlexPathPickerOpen(false);
   };
 
-  const updateNavidrome = (patch) => {
+  const updateNavidrome = (patch: Partial<NavidromeSettings>) => {
     setTestStatus(null);
     updateSettings({
       ...settings,
@@ -118,7 +139,7 @@ export function SettingsPlaybackSection({
     });
   };
 
-  const updatePlex = (patch) => {
+  const updatePlex = (patch: Partial<PlexSettings>) => {
     setTestStatus(null);
     updateSettings({
       ...settings,
@@ -129,7 +150,7 @@ export function SettingsPlaybackSection({
     });
   };
 
-  const updateJellyfin = (patch) => {
+  const updateJellyfin = (patch: Partial<JellyfinSettings>) => {
     setTestStatus(null);
     updateSettings({
       ...settings,
@@ -140,7 +161,7 @@ export function SettingsPlaybackSection({
     });
   };
 
-  const updatePlexLibraryLocalPath = (localPath) => {
+  const updatePlexLibraryLocalPath = (localPath: string) => {
     const trimmed = String(localPath || "").trim();
     const others = pathMappings.filter((entry) => entry?.source !== "plex");
     if (!trimmed) {
@@ -154,7 +175,7 @@ export function SettingsPlaybackSection({
     });
   };
 
-  const loadPlexServers = async (token) => {
+  const loadPlexServers = async (token: string) => {
     const { servers } = await getPlexResources(token);
     const list = Array.isArray(servers) ? servers : [];
     setPlexServers(list);
@@ -261,14 +282,15 @@ export function SettingsPlaybackSection({
           : "Signed in to Plex. Select your server below.",
       );
     } catch (err) {
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Plex sign-in failed: ${errorMsg}`);
     } finally {
       setPlexConnecting(false);
     }
   };
 
-  const handleSelectPlexServer = (server) => {
+  const handleSelectPlexServer = (server: PlexServer) => {
     const best = pickBestPlexConnection(server);
     const url = resolvePlexConnectionUrl(best);
     if (!url) {
@@ -298,26 +320,16 @@ export function SettingsPlaybackSection({
     }
     setTestingPlex(true);
     try {
-      const result = await testPlaybackConnection("plex", plex);
-      if (result.success) {
-        showSuccess(`Connected to Plex${result.version ? ` (v${result.version})` : ""}.`);
-        if (result.machineIdentifier) {
-          updatePlex({ machineIdentifier: result.machineIdentifier });
-        }
-        setTestStatus({ tone: "success", message: "Connected." });
-      } else {
-        setTestStatus({
-          tone: "error",
-          message: "Connection failed. Check Plex settings and retry.",
-        });
-        showError(`Connection failed: ${result.message || result.error}`);
-      }
+      await testPlaybackConnection("plex", plex);
+      showSuccess("Connected to Plex.");
+      setTestStatus({ tone: "success", message: "Connected." });
     } catch (err) {
       setTestStatus({
         tone: "error",
         message: "Connection failed. Check Plex settings and retry.",
       });
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Connection failed: ${errorMsg}`);
     } finally {
       setTestingPlex(false);
@@ -344,7 +356,8 @@ export function SettingsPlaybackSection({
         tone: "error",
         message: "Connection failed. Check the URL and credentials, then retry.",
       });
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Navidrome connection failed: ${errorMsg}`);
     } finally {
       setTestingNavidrome(false);
@@ -381,7 +394,8 @@ export function SettingsPlaybackSection({
         tone: "error",
         message: "Connection failed. Check the URL, API key, and user ID, then retry.",
       });
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Jellyfin connection failed: ${errorMsg}`);
     } finally {
       setTestingJellyfin(false);
@@ -413,13 +427,14 @@ export function SettingsPlaybackSection({
       const deadline = Date.now() + 3 * 60 * 1000;
       lastfmPollRef.current = window.setInterval(() => {
         if (popup.closed || Date.now() >= deadline) {
-          window.clearInterval(lastfmPollRef.current);
+          if (lastfmPollRef.current) window.clearInterval(lastfmPollRef.current);
           lastfmPollRef.current = null;
           refreshScrobbleStatus();
         }
       }, 500);
     } catch (error) {
-      showError(error.response?.data?.error || error.message || "Could not start Last.fm linking");
+      const failure = readApiError(error);
+      showError(failure.error || failure.text || "Could not start Last.fm linking");
     }
   };
 
@@ -430,7 +445,8 @@ export function SettingsPlaybackSection({
       refreshScrobbleStatus();
       showSuccess("ListenBrainz connected.");
     } catch (error) {
-      showError(error.response?.data?.error || error.message || "Could not connect ListenBrainz");
+      const failure = readApiError(error);
+      showError(failure.error || failure.text || "Could not connect ListenBrainz");
     }
   };
 
@@ -441,11 +457,12 @@ export function SettingsPlaybackSection({
       refreshScrobbleStatus();
       showSuccess("Koito connected.");
     } catch (error) {
-      showError(error.response?.data?.error || error.message || "Could not connect Koito");
+      const failure = readApiError(error);
+      showError(failure.error || failure.text || "Could not connect Koito");
     }
   };
 
-  const handleUnlink = async (provider) => {
+  const handleUnlink = async (provider: ScrobbleProvider) => {
     try {
       await unlinkScrobbleProvider(provider);
       setActiveModal(null);
@@ -454,11 +471,12 @@ export function SettingsPlaybackSection({
         `${provider === "lastfm" ? "Last.fm" : provider === "listenbrainz" ? "ListenBrainz" : "Koito"} disconnected.`,
       );
     } catch (error) {
-      showError(error.response?.data?.error || error.message || "Could not disconnect provider");
+      const failure = readApiError(error);
+      showError(failure.error || failure.text || "Could not disconnect provider");
     }
   };
 
-  const handleScrobbleToggle = (provider, enabled) => {
+  const handleScrobbleToggle = (provider: ScrobbleProvider, enabled: boolean) => {
     if (enabled) {
       if (provider === "lastfm" && scrobbleStatus?.lastfm?.configured !== true) {
         setActiveModal("lastfm");
@@ -489,7 +507,8 @@ export function SettingsPlaybackSection({
         );
       }
     } catch (err) {
-      const errorMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      const failure = readApiError(err);
+      const errorMsg = failure.message || failure.error || failure.text;
       showError(`Plex sync failed: ${errorMsg}`);
     } finally {
       setSyncingPlex(false);

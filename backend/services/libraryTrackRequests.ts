@@ -1,22 +1,38 @@
 import { db } from "../config/db-sqlite.ts";
 import { recordTrackJobQueued } from "./aurralHistoryService.ts";
 import { clearTrackMonitoringExclusion } from "./aurralMonitoringStore.ts";
-import { downloadTracker } from "./downloadJobs/downloadTracker.ts";
+import { downloadTracker, type DownloadTrackInput } from "./downloadJobs/downloadTracker.ts";
+import { asAppError } from "../../lib/errors.ts";
 import { getLibraryTrackOwnership } from "./libraryQueryService.ts";
 import { logger } from "./logger.ts";
 
 const libraryTrackStmt = db.prepare("SELECT 1 FROM library_tracks WHERE mbid = ? LIMIT 1");
 
-const sameText = (left, right) =>
+const sameText = (left: unknown, right: unknown) =>
   String(left || "").toLocaleLowerCase() === String(right || "").toLocaleLowerCase();
 
-export function findQueuedLibraryTrackJob({ artistName, trackName, trackMbid = null }) {
+export function findQueuedLibraryTrackJob({
+  artistName,
+  trackName,
+  trackMbid = null,
+}: Pick<DownloadTrackInput, "artistName" | "trackName" | "trackMbid">) {
   return (
-    downloadTracker.getAll().find((job) => {
-      if (job.playlistType !== "library" || ["failed", "done"].includes(job.status)) return false;
-      if (trackMbid) return job.trackMbid === trackMbid;
-      return sameText(job.artistName, artistName) && sameText(job.trackName, trackName);
-    }) || null
+    downloadTracker
+      .getAll()
+      .find(
+        (job: {
+          playlistType: string;
+          status: string;
+          trackMbid: string | null;
+          artistName: string | null;
+          trackName: string | null;
+        }) => {
+          if (job.playlistType !== "library" || ["failed", "done"].includes(job.status))
+            return false;
+          if (trackMbid) return job.trackMbid === trackMbid;
+          return sameText(job.artistName, artistName) && sameText(job.trackName, trackName);
+        },
+      ) || null
   );
 }
 
@@ -24,8 +40,16 @@ export function findQueuedLibraryTrackJob({ artistName, trackName, trackMbid = n
 // exclusion left by deleting it. An automatic request from artist monitoring
 // leaves exclusions and tracks the Library already lists alone.
 export async function requestLibraryTrack(
-  track,
-  { canonicalTrackId = null, user = null, automatic = false } = {},
+  track: DownloadTrackInput,
+  {
+    canonicalTrackId = null,
+    user = null,
+    automatic = false,
+  }: {
+    canonicalTrackId?: unknown;
+    user?: Parameters<typeof recordTrackJobQueued>[1];
+    automatic?: boolean;
+  } = {},
 ) {
   if (!automatic) {
     clearTrackMonitoringExclusion({
@@ -90,7 +114,7 @@ export async function requestLibraryTrack(
     if (reuse.reused) return { queued: false, reused: true, jobId };
   } catch (error) {
     logger.warn("library", "Track reuse failed; leaving acquisition queued", {
-      error: error.message,
+      error: asAppError(error)?.message,
     });
   }
 

@@ -70,6 +70,12 @@ const releaseTarget = (
   },
 });
 
+type ResolvedLink = {
+  to: string;
+  state?: ReturnType<typeof releaseTarget>["state"] | { artistName: string };
+  notice?: string | null;
+};
+
 const notFound = (message: string) => Object.assign(new Error(message), { resolveNotFound: true });
 
 async function resolveCatalog(
@@ -123,7 +129,8 @@ async function resolveLibraryAlbum(params: URLSearchParams, signal: AbortSignal 
   let canonicalId = null;
   if (mbid) {
     const lookup = await lookupAlbumsInLibraryBatch([mbid], { signal }).catch(() => null);
-    canonicalId = lookup?.[mbid]?.canonicalAlbumId || null;
+    const found = lookup?.[mbid];
+    canonicalId = (found && "canonicalAlbumId" in found ? found.canonicalAlbumId : null) || null;
   }
   if (!canonicalId && name) {
     const page = await getLibraryPage(
@@ -142,14 +149,14 @@ export function resolveLinkTarget(
   kind: string,
   params: URLSearchParams,
   { signal }: { signal?: AbortSignal } = {},
-) {
+): Promise<ResolvedLink> {
   if (kind === "artist" || kind === "album") return resolveCatalog(kind, params, signal);
   if (kind === "library-artist") return resolveLibraryArtist(params, signal);
   if (kind === "library-album") return resolveLibraryAlbum(params, signal);
   return Promise.reject(notFound("This link isn't valid"));
 }
 
-export const resolveLinkQueryOptions = (kind: string, search: string) => {
+export const resolveLinkQueryOptions = (kind: string, search: string | URLSearchParams) => {
   const params = new URLSearchParams(search);
   params.sort();
   return queryOptions({

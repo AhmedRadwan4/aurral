@@ -34,7 +34,7 @@ export const SETTINGS_TABS = [
 
 export const SETTINGS_NAV_TABS = SETTINGS_TABS.filter((tab) => !tab.hidden);
 
-const SETTINGS_SEARCH_METADATA = {
+const SETTINGS_SEARCH_METADATA: Partial<Record<string, SettingsSearchMetadata>> = {
   system: {
     sections: ["Runtime", "Aurral 3.0", "Data", "Display", "API key", "More info"],
     services: {
@@ -407,19 +407,19 @@ export const SETTINGS_TAB_IDS = SETTINGS_TABS.map((tab) => tab.id);
 
 export const DEFAULT_SETTINGS_TAB = "system";
 
-export const LEGACY_SETTINGS_TAB_MAP = {
-  integrations: "lidarr",
-  library: "lidarr",
-  playlists: "download-clients",
-  downloads: "system",
-  storage: "storage-health",
-  general: "system",
-  notifications: "connect",
-};
+export const LEGACY_SETTINGS_TAB_MAP = new Map([
+  ["integrations", "lidarr"],
+  ["library", "lidarr"],
+  ["playlists", "download-clients"],
+  ["downloads", "system"],
+  ["storage", "storage-health"],
+  ["general", "system"],
+  ["notifications", "connect"],
+]);
 
 export function normalizeSettingsTabId(tabId: string | null | undefined) {
   if (!tabId) return DEFAULT_SETTINGS_TAB;
-  const legacy = LEGACY_SETTINGS_TAB_MAP[tabId];
+  const legacy = LEGACY_SETTINGS_TAB_MAP.get(tabId);
   if (legacy) return legacy;
   return SETTINGS_TAB_IDS.includes(tabId) ? tabId : DEFAULT_SETTINGS_TAB;
 }

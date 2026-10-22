@@ -5,14 +5,90 @@ import {
   getLibraryForArtistReferences,
   getLibraryForArtists,
   getLibraryTrackPath,
+  type LibraryTrackFile,
 } from "./libraryQueryService.ts";
-import { getManagedByMap } from "./libraryManagementStore.ts";
+import { getManagedByMap, type LibraryOwner } from "./libraryManagementStore.ts";
 import { selectCanonicalFile } from "./canonicalFileSelector.ts";
 
-const albumFiles = (track, albumId) =>
+type ManagementByEntityId = ReturnType<typeof getManagedByMap>;
+
+type LibraryMetadata = {
+  id?: number | string | null;
+  artistId?: number | string | null;
+  librarySource?: string;
+  monitored?: boolean | null;
+  monitor?: string;
+  monitorOption?: string;
+  addOptions?: { monitor?: string };
+  foreignArtistId?: string | null;
+  foreignAlbumId?: string | null;
+  foreignRecordingId?: string | null;
+  foreignTrackId?: string | null;
+  trackListComplete?: boolean;
+  trackList?: { release?: unknown };
+};
+
+type LibraryArtistRecord = {
+  id: number;
+  identityKey: string;
+  mbid: string | null;
+  name: string;
+  sortName: string | null;
+  metadata: LibraryMetadata | null;
+  source?: string | null;
+  sources?: string[];
+  available: boolean;
+  albumCount?: number;
+  trackCount?: number;
+  sizeOnDisk?: number;
+};
+
+type LibraryAlbumRecord = {
+  id: number;
+  identityKey: string;
+  mbid: string | null;
+  releaseGroupMbid: string | null;
+  artistId: number;
+  title: string;
+  albumArtist: string | null;
+  releaseDate: string | null;
+  metadata: LibraryMetadata | null;
+  managedBy?: LibraryOwner | null;
+  source?: string | null;
+  trackIds: number[];
+  sources: string[];
+  available: boolean;
+};
+
+type LibraryTrackRecord = {
+  id: number;
+  identityKey: string;
+  mbid: string | null;
+  title: string;
+  artistName: string | null;
+  metadata: LibraryMetadata | null;
+  monitored: boolean;
+  keepFile: boolean;
+  albums: { albumId: number; discNumber: number; trackNumber: number }[];
+  files: LibraryTrackFile[];
+  sources: string[];
+  available: boolean;
+};
+
+type LibraryReadInput = {
+  artists: LibraryArtistRecord[];
+  albums: LibraryAlbumRecord[];
+  tracks: LibraryTrackRecord[];
+};
+
+type ReadArtist = ReturnType<typeof buildArtist>;
+type ReadAlbum = ReturnType<typeof buildAlbum>;
+type ReadTrack = ReturnType<typeof buildTrack>;
+
+const albumFiles = (track: LibraryTrackRecord, albumId: number) =>
   (track.files || []).filter((file) => file.albumId == null || file.albumId === albumId);
 
-const recordMatches = (record, reference) => {
+const recordMatches = (record: ReadArtist, reference: unknown) => {
   const value = String(reference ?? "").trim();
   if (!value) return false;
   return [record.id, record.canonicalId, record.providerId, record.mbid, record.identityKey].some(
@@ -20,7 +96,11 @@ const recordMatches = (record, reference) => {
   );
 };
 
-const buildArtist = (artist, albumsByArtistId, managementByArtistId = new Map()) => {
+const buildArtist = (
+  artist: LibraryArtistRecord,
+  albumsByArtistId: Map<number, ReadAlbum[]>,
+  managementByArtistId: ManagementByEntityId = new Map(),
+) => {
   const artistAlbums = albumsByArtistId.get(artist.id) || [];
   const hasSummary = artist.albumCount !== undefined;
   const trackCount = hasSummary
@@ -34,6 +114,7 @@ const buildArtist = (artist, albumsByArtistId, managementByArtistId = new Map())
   return {
     id: artist.id,
     canonicalId: artist.id,
+    identityKey: artist.identityKey,
     providerId,
     lidarrManaged: artist.metadata?.librarySource === "lidarr",
     source: artist.source || (artist.sources?.length === 1 ? artist.sources[0] : null),
@@ -62,9 +143,16 @@ const buildArtist = (artist, albumsByArtistId, managementByArtistId = new Map())
   };
 };
 
-const buildAlbum = (album, artistsById, tracksById, managementByAlbumId = new Map()) => {
+const buildAlbum = (
+  album: LibraryAlbumRecord,
+  artistsById: Map<number, LibraryArtistRecord>,
+  tracksById: Map<number, LibraryTrackRecord>,
+  managementByAlbumId: ManagementByEntityId = new Map(),
+) => {
   const artist = artistsById.get(album.artistId);
-  const albumTracks = album.trackIds.map((trackId) => tracksById.get(trackId)).filter(Boolean);
+  const albumTracks = album.trackIds
+    .map((trackId) => tracksById.get(trackId))
+    .filter(Boolean) as LibraryTrackRecord[];
   const sizeOnDisk = albumTracks.reduce((total, track) => {
     const file = selectCanonicalFile(track.files, album.id, album.managedBy);
     return total + (file?.available ? Number(file.size || 0) : 0);
@@ -111,8 +199,8 @@ const buildAlbum = (album, artistsById, tracksById, managementByAlbumId = new Ma
   };
 };
 
-const buildTrack = (track, album) => {
-  const file = selectCanonicalFile(track.files, album.id, album.managedBy);
+const buildTrack = (track: LibraryTrackRecord, album: ReadAlbum) => {
+  const file: LibraryTrackFile | null = selectCanonicalFile(track.files, album.id, album.managedBy);
   const relation = track.albums.find((entry) => entry.albumId === album.id);
   return {
     id: track.id,
@@ -145,7 +233,7 @@ const buildTrack = (track, album) => {
   };
 };
 
-export function buildLibraryReadModel(library) {
+export function buildLibraryReadModel(library: LibraryReadInput) {
   const { artists, albums, tracks } = library;
   const artistsById = new Map(artists.map((artist) => [artist.id, artist]));
   const tracksById = new Map(tracks.map((track) => [track.id, track]));
@@ -156,7 +244,7 @@ export function buildLibraryReadModel(library) {
   const readAlbums = albums.map((album) =>
     buildAlbum(album, artistsById, tracksById, management.album),
   );
-  const albumsByArtistId = new Map();
+  const albumsByArtistId = new Map<number, ReadAlbum[]>();
   for (const album of readAlbums) {
     const artistAlbums = albumsByArtistId.get(album.artistId) || [];
     artistAlbums.push(album);
@@ -166,10 +254,11 @@ export function buildLibraryReadModel(library) {
     buildArtist(artist, albumsByArtistId, management.artist),
   );
   const readTracks = readAlbums.flatMap((album) =>
-    album.trackIds
-      .map((trackId) => tracksById.get(trackId))
-      .filter(Boolean)
-      .map((track) => buildTrack(track, album)),
+    (
+      album.trackIds
+        .map((trackId) => tracksById.get(trackId))
+        .filter(Boolean) as LibraryTrackRecord[]
+    ).map((track) => buildTrack(track, album)),
   );
   return { artists: readArtists, albums: readAlbums, tracks: readTracks };
 }
@@ -179,7 +268,7 @@ export function getLibraryReadModelForArtistPage({
   availableOnly = true,
   limit = 10000,
   offset = 0,
-} = {}) {
+}: { source?: unknown; availableOnly?: boolean; limit?: number; offset?: number } = {}) {
   const library = getLibraryArtistPage({
     source,
     availableOnly,
@@ -188,7 +277,7 @@ export function getLibraryReadModelForArtistPage({
     includeStats: true,
   });
   return {
-    artists: library.artists.map((artist) =>
+    artists: (library.artists as LibraryArtistRecord[]).map((artist) =>
       buildArtist(artist, new Map(), getManagedByMap("artist")),
     ),
     albums: [],
@@ -200,7 +289,7 @@ export function getLibraryReadModelForArtists({
   source = "lidarr",
   availableOnly = true,
   mbids = [],
-} = {}) {
+}: { source?: unknown; availableOnly?: boolean; mbids?: string[] } = {}) {
   return buildLibraryReadModel(getLibraryForArtists({ source, availableOnly, mbids }));
 }
 
@@ -208,7 +297,7 @@ export function getLibraryReadModelForArtistReferences({
   source = "all",
   availableOnly = false,
   references = [],
-} = {}) {
+}: { source?: unknown; availableOnly?: boolean; references?: unknown[] } = {}) {
   return buildLibraryReadModel(
     getLibraryForArtistReferences({ source, availableOnly, references }),
   );
@@ -225,18 +314,18 @@ export function getLibraryReadModelForAlbumReferences({
   source = "lidarr",
   availableOnly = true,
   references = [],
-} = {}) {
+}: { source?: unknown; availableOnly?: boolean; references?: unknown[] } = {}) {
   return buildLibraryReadModel(getLibraryForAlbumReferences({ source, availableOnly, references }));
 }
 
-export function resolveLibraryTrackPath(albumReference, trackReference) {
+export function resolveLibraryTrackPath(albumReference: string, trackReference: string) {
   return getLibraryTrackPath(albumReference, trackReference);
 }
 
-export function findLibraryArtist(artists, reference) {
+export function findLibraryArtist(artists: ReadArtist[], reference: unknown) {
   return artists.find((artist) => recordMatches(artist, reference)) || null;
 }
 
-export function findLibraryTracksForAlbum(tracks, reference) {
+export function findLibraryTracksForAlbum(tracks: ReadTrack[], reference: unknown) {
   return tracks.filter((track) => String(track.albumId) === String(reference));
 }

@@ -1,16 +1,20 @@
 import { logger } from "../logger.ts";
+import { asAppError } from "../../../lib/errors.ts";
 import { enqueuePlaylistOperationJob, getHonkerQueueDepth } from "../honkerDb.ts";
+import type { HonkerEnqueueOptions, HonkerPayload } from "../honkerDb.ts";
+import type { JsonValue } from "@russellthehippo/honker-node";
 import { shouldStartQueueHere } from "../backgroundWorkerQueues.ts";
 import { cleanupBulkOperations, enqueueBulkOperation } from "./bulkOperationStore.ts";
+import type { BulkOperationInput } from "./bulkOperationStore.ts";
 
-let workerCurrentLabel = null;
+let workerCurrentLabel: string | null = null;
 
-async function enqueuePayload(payload = {}, options = {}) {
+async function enqueuePayload(payload: HonkerPayload = {}, options: HonkerEnqueueOptions = {}) {
   const jobId = enqueuePlaylistOperationJob(payload, options);
   return { queued: true, operationId: jobId };
 }
 
-async function enqueueBulkPayload(record) {
+async function enqueueBulkPayload(record: BulkOperationInput) {
   cleanupBulkOperations();
   const result = enqueueBulkOperation(record);
   try {
@@ -18,12 +22,12 @@ async function enqueueBulkPayload(record) {
       const { startPlaylistOperationWorker } = await import("./playlistOperationWorker.ts");
       void startPlaylistOperationWorker();
     } else if (process.env.AURRAL_BACKGROUND_WORKER_GROUP && process.connected) {
-      process.send({ type: "queue-wake", queue: "weekly-flow-operation" });
+      process.send!({ type: "queue-wake", queue: "weekly-flow-operation" });
     }
   } catch (error) {
     logger.warn("playlists", "Accepted playlist operation could not wake its worker", {
       operationId: result.operationId,
-      reason: error.message,
+      reason: asAppError(error)?.message,
     });
   }
   return result;
@@ -41,7 +45,9 @@ function getStatus() {
   };
 }
 
-export function setPlaylistOperationWorkerState({ currentLabel = null } = {}) {
+export function setPlaylistOperationWorkerState({
+  currentLabel = null,
+}: { currentLabel?: JsonValue } = {}) {
   workerCurrentLabel = currentLabel == null ? null : String(currentLabel).trim() || null;
 }
 

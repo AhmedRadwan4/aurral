@@ -1,6 +1,7 @@
 import path from "node:path";
 import { parseFile } from "music-metadata";
 import { db } from "../../config/db-sqlite.ts";
+import type { LibraryAlbumsRow } from "../../db/rows.ts";
 import { resolveDownloadRoot } from "../downloadPaths.ts";
 import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
 import {
@@ -23,7 +24,7 @@ import {
   unlinkLibraryAlbumTrackWithoutMedia,
 } from "../libraryMediaStore.ts";
 
-function jobMetadata(filePath) {
+function jobMetadata(filePath: string) {
   const job = downloadTracker
     .getAll()
     .find(
@@ -48,7 +49,10 @@ function jobMetadata(filePath) {
 // An upgraded file with new identity tags keeps the Library's track and
 // album rows, with their favorites, play counts, and monitoring, under the
 // identity the scan now reads.
-export async function adoptLibraryFileIdentity(filePath, { previousPath = filePath } = {}) {
+export async function adoptLibraryFileIdentity(
+  filePath: string,
+  { previousPath = filePath }: { previousPath?: string } = {},
+) {
   const root = path.resolve(resolveDownloadRoot());
   const current = path.resolve(filePath);
   const previous = path.resolve(previousPath);
@@ -64,15 +68,17 @@ export async function adoptLibraryFileIdentity(filePath, { previousPath = filePa
     );
     const releaseAlbum = findLibraryAlbumByReleaseMbid(record.releaseGroupMbid);
     const artistId = db
-      .prepare("SELECT artist_id FROM library_albums WHERE id = ?")
+      .prepare<[number | null], Pick<LibraryAlbumsRow, "artist_id">>(
+        "SELECT artist_id FROM library_albums WHERE id = ?",
+      )
       .get(media.album_id)?.artist_id;
     const namedAlbum =
       !record.releaseGroupMbid && !record.albumMbid && artistId
         ? findLibraryAlbumByArtistTitle(artistId, record.albumName)
         : null;
     const albumKey = (releaseAlbum || namedAlbum)?.identity_key || record.albumKey;
-    if (media.album_id) rekeyLibraryAlbum(media.album_id, albumKey);
-    rekeyLibraryTrack(media.track_id, record.trackKey);
+    if (media.album_id && albumKey) rekeyLibraryAlbum(media.album_id, albumKey);
+    if (record.trackKey) rekeyLibraryTrack(media.track_id, record.trackKey);
   }
   const before = getLibraryMediaFile({ source: "aurral", path: current });
   await scanMusicRoot({

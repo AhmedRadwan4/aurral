@@ -5,6 +5,7 @@ import {
   musicbrainzGetCachedArtistMbidByName,
   musicbrainzResolveArtistMbidByName,
 } from "../apiClients/index.ts";
+import { asAppError } from "../../../lib/errors.ts";
 import { logger } from "../logger.ts";
 import { getListenHistoryProfile, hasListenHistoryProfile } from "../listeningHistory.ts";
 import {
@@ -17,7 +18,10 @@ import {
   mergeRetainedRecommendationPool,
   rerankRecommendations as rerankRecs,
   selectDiscoverySeeds,
+  type DiscoveryRecommendation,
+  type RecommendationFeedback,
 } from "./recommendationPipeline.ts";
+import type { DiscoveryCache, DiscoveryCacheUpdate } from "../../db/helpers/discovery.ts";
 import { getMusicDataSourceName, getTrendingArtists } from "../musicDataSource/index.ts";
 import { enqueueDiscoveryUserRefreshJob } from "../honkerDb.ts";
 import { websocketService } from "../websocketService.ts";
@@ -35,7 +39,7 @@ import {
   mapWithConcurrency,
   DISCOVERY_QUALITY_ENRICHED,
 } from "./helpers.ts";
-import { getDiscoveryFeedback } from "./feedback.ts";
+import { getDiscoveryFeedback, type DiscoveryFeedbackEntry } from "./feedback.ts";
 import {
   discoveryCache,
   getDiscoveryRefreshState,
@@ -47,19 +51,33 @@ import {
   saveDiscoveryRefreshProgress,
   isGlobalDiscoveryRefreshInProgress,
 } from "./persistence.ts";
-import { buildTagProfile, collectSeedTags } from "./tasteProfile.ts";
+import { buildTagProfile, collectSeedTags, type SourceHealth } from "./tasteProfile.ts";
 import { buildRecommendationsFromSeeds } from "./recommendations.ts";
 import { getTopPlayedArtists } from "../playEventService.ts";
 
 const USER_REFRESH_STAGGER_SECONDS = 15;
 const GLOBAL_REFRESH_RETRY_SECONDS = 60;
 
-export const getUserDiscoveryNamespace = (userId) => `user:${userId}`;
+type DiscoveryUser = NonNullable<ReturnType<typeof userOps.getUserById>>;
 
-const emitUserDiscoveryUpdate = (userId, data) =>
-  websocketService.emitDiscoveryUpdate({ configured: true, ...data }, { userId });
+type ListenbrainzTopArtist = {
+  artist_mbids?: string[];
+  artist_mbid?: string | null;
+  artist_name: string;
+  listen_count?: number;
+};
 
-const enqueueUserRefreshJob = (userId, { reason, delaySeconds }) => {
+export const getUserDiscoveryNamespace = (userId: number) => `user:${userId}`;
+
+const emitUserDiscoveryUpdate = (
+  userId: number,
+  data: Parameters<typeof websocketService.emitDiscoveryUpdate>[0],
+) => websocketService.emitDiscoveryUpdate({ configured: true, ...data }, { userId });
+
+const enqueueUserRefreshJob = (
+  userId: number,
+  { reason, delaySeconds }: { reason: string; delaySeconds: number },
+) => {
   const requestedAt = Date.now();
   markDiscoveryRefreshRequested(getUserDiscoveryNamespace(userId), requestedAt);
   const operationId = enqueueDiscoveryUserRefreshJob(
@@ -74,7 +92,7 @@ const enqueueUserRefreshJob = (userId, { reason, delaySeconds }) => {
   return operationId;
 };
 
-export const markInterruptedUserDiscoveryRefresh = (userId, error) => {
+export const markInterruptedUserDiscoveryRefresh = (userId: number, error: string) => {
   const namespace = getUserDiscoveryNamespace(userId);
   if (!markInterruptedDiscoveryRefresh(error, { namespace })) return false;
   emitUserDiscoveryUpdate(userId, {
@@ -87,8 +105,11 @@ export const markInterruptedUserDiscoveryRefresh = (userId, error) => {
 };
 
 export const requestUserDiscoveryRefresh = (
-  userId,
-  { reason = "manual", delaySeconds = getDiscoveryUserRefreshDelaySeconds() } = {},
+  userId: number | null,
+  {
+    reason = "manual",
+    delaySeconds = getDiscoveryUserRefreshDelaySeconds(),
+  }: { reason?: string; delaySeconds?: number } = {},
 ) => {
   if (userId == null) {
     return { enqueued: false, reason: "not_configured" };
@@ -101,7 +122,7 @@ export const requestUserDiscoveryRefresh = (
   return { enqueued: true, operationId };
 };
 
-const enqueueAllUserDiscoveryRefreshes = (reason) => {
+const enqueueAllUserDiscoveryRefreshes = (reason: string) => {
   const users = userOps.getAllUsers().filter((user) => (user.status || "active") === "active");
   const baseDelay = getDiscoveryUserRefreshDelaySeconds();
   let queued = 0;
@@ -115,7 +136,12 @@ const enqueueAllUserDiscoveryRefreshes = (reason) => {
   return queued;
 };
 
-const fetchListenHistoryArtists = async (listenHistoryProfile, discoveryPeriod) => {
+type ListenHistoryArtist = { mbid: string | null; artistName: string; playcount: number };
+
+const fetchListenHistoryArtists = async (
+  listenHistoryProfile: Parameters<typeof getListenHistoryProfile>[0],
+  discoveryPeriod: string,
+): Promise<ListenHistoryArtist[]> => {
   const profile = getListenHistoryProfile(listenHistoryProfile);
   if (!hasListenHistoryProfile(profile) || discoveryPeriod === "none") {
     return [];
@@ -123,13 +149,15 @@ const fetchListenHistoryArtists = async (listenHistoryProfile, discoveryPeriod) 
 
   if (profile.listenHistoryProvider === "listenbrainz") {
     const data = await listenbrainzRequest(
-      `/1/stats/user/${encodeURIComponent(profile.listenHistoryUsername)}/artists`,
+      `/1/stats/user/${encodeURIComponent(profile.listenHistoryUsername!)}/artists`,
       {
         count: 50,
-        range: getListenbrainzRange(discoveryPeriod),
+        range: getListenbrainzRange(discoveryPeriod)!,
       },
     );
-    const artists = Array.isArray(data?.payload?.artists) ? data.payload.artists : [];
+    const artists: ListenbrainzTopArtist[] = Array.isArray(data?.payload?.artists)
+      ? data.payload.artists
+      : [];
     return artists
       .map((artist) => {
         const mbid = Array.isArray(artist.artist_mbids)
@@ -138,7 +166,7 @@ const fetchListenHistoryArtists = async (listenHistoryProfile, discoveryPeriod) 
         return {
           mbid: mbid || musicbrainzGetCachedArtistMbidByName(artist.artist_name) || null,
           artistName: artist.artist_name,
-          playcount: parseInt(artist.listen_count || 0, 10) || 0,
+          playcount: parseInt(String(artist.listen_count || 0), 10) || 0,
         };
       })
       .filter((artist) => artist.artistName);
@@ -177,7 +205,7 @@ const fetchListenHistoryArtists = async (listenHistoryProfile, discoveryPeriod) 
         playcount: parseInt(artist.playcount || 0, 10) || 0,
       };
     })
-    .filter(Boolean);
+    .filter((artist) => artist !== null);
 };
 
 export const rerankCachedRecommendations = ({
@@ -185,24 +213,36 @@ export const rerankCachedRecommendations = ({
   feedback = [],
   discoveryMode = getDiscoveryMode(),
   limit = getDiscoveryRecommendationsPerRefresh(),
+}: {
+  recommendations?: DiscoveryRecommendation[];
+  feedback?: RecommendationFeedback[];
+  discoveryMode?: string;
+  limit?: number;
 } = {}) =>
   rerankRecs(recommendations, limit, {
     feedback,
     discoveryMode,
   });
 
-const resolveArtistMbids = (items) =>
-  mapWithConcurrency(items, getDiscoveryNetworkConcurrency(), async (item) => {
-    if (item?.id || !item?.name) return;
-    const resolved =
-      musicbrainzGetCachedArtistMbidByName(item.name) ||
-      (await musicbrainzResolveArtistMbidByName(item.name));
-    if (!resolved) return;
-    item.id = resolved;
-    item.navigateTo = resolved;
-  });
+const resolveArtistMbids = (items: DiscoveryRecommendation[]) =>
+  mapWithConcurrency(
+    items,
+    getDiscoveryNetworkConcurrency(),
+    async (item: DiscoveryRecommendation) => {
+      if (item?.id || !item?.name) return;
+      const resolved =
+        musicbrainzGetCachedArtistMbidByName(item.name) ||
+        (await musicbrainzResolveArtistMbidByName(item.name));
+      if (!resolved) return;
+      item.id = resolved;
+      item.navigateTo = resolved;
+    },
+  );
 
-const resolveRecommendationCandidates = async (recommendations, existingArtistKeys) => {
+const resolveRecommendationCandidates = async (
+  recommendations: DiscoveryRecommendation[],
+  existingArtistKeys: Set<string>,
+) => {
   const perRefresh = getDiscoveryRecommendationsPerRefresh();
   await resolveArtistMbids(recommendations.slice(0, perRefresh));
   return mergeResolvedRecommendations(recommendations, existingArtistKeys)
@@ -219,7 +259,7 @@ const resolveRecommendationCandidates = async (recommendations, existingArtistKe
     .slice(0, Math.max(120, perRefresh * 2));
 };
 
-const fetchTrendingArtists = async (existingArtistKeys) => {
+const fetchTrendingArtists = async (existingArtistKeys: Set<string>) => {
   const trendingArtists = await getTrendingArtists({ limit: 100 });
   const globalTop = mergeResolvedRecommendations(trendingArtists, existingArtistKeys).slice(0, 32);
   await resolveArtistMbids(globalTop);
@@ -228,14 +268,26 @@ const fetchTrendingArtists = async (existingArtistKeys) => {
     .slice(0, 32);
 };
 
-const recordHistory = (method, ...args) =>
+type DiscoveryHistory = typeof import("../aurralHistoryService.ts");
+
+const recordHistory = <
+  Method extends
+    | "recordDiscoveryRefreshStarted"
+    | "recordDiscoveryUpdated"
+    | "recordDiscoveryRefreshFailed",
+>(
+  method: Method,
+  ...args: Parameters<DiscoveryHistory[Method]>
+) =>
   import("../aurralHistoryService.ts")
-    .then((history) => history[method](...args))
+    .then((history) =>
+      (history[method] as (...callArgs: Parameters<DiscoveryHistory[Method]>) => unknown)(...args),
+    )
     .catch((err) => {
       logger.warn("discovery", err);
     });
 
-const publishGlobalDiscovery = (discoveryData) => {
+const publishGlobalDiscovery = (discoveryData: DiscoveryCacheUpdate) => {
   Object.assign(discoveryCache, discoveryData);
   dbOps.updateDiscoveryCache(discoveryData);
   markDiscoveryRefreshFinished();
@@ -251,7 +303,9 @@ const publishGlobalDiscovery = (discoveryData) => {
   });
 };
 
-export const updateDiscoveryCache = async (options = {}) => {
+export const updateDiscoveryCache = async (
+  options: { skipHonkerLock?: boolean } = {},
+): Promise<void> => {
   const { withHonkerLock } = await import("../honkerDb.ts");
   if (options.skipHonkerLock !== true) {
     return withHonkerLock(
@@ -283,7 +337,8 @@ export const updateDiscoveryCache = async (options = {}) => {
       );
       logger.info("discovery", `Found ${globalTop.length} trending artists.`);
     } catch (error) {
-      logger.error("discovery", `Failed to fetch global trending artists: ${error.message}`);
+      const failure = asAppError(error);
+      logger.error("discovery", `Failed to fetch global trending artists: ${failure?.message}`);
     }
 
     try {
@@ -293,7 +348,12 @@ export const updateDiscoveryCache = async (options = {}) => {
         `Queued ${queuedUserRefreshes} personal recommendation refresh${queuedUserRefreshes === 1 ? "" : "es"}.`,
       );
     } catch (error) {
-      logger.warn("discovery", "Failed to queue personal recommendation refreshes:", error.message);
+      const failure = asAppError(error);
+      logger.warn(
+        "discovery",
+        "Failed to queue personal recommendation refreshes:",
+        failure?.message,
+      );
     }
 
     publishGlobalDiscovery({
@@ -314,7 +374,7 @@ export const updateDiscoveryCache = async (options = {}) => {
 
     const { notifyDiscoveryUpdated } = await import("../notificationService.ts");
     notifyDiscoveryUpdated().catch((err) =>
-      logger.warn("discovery", "[Discovery] Notification failed:", err.message),
+      logger.warn("discovery", "[Discovery] Notification failed:", asAppError(err)?.message),
     );
     void recordHistory("recordDiscoveryUpdated", { recommendationCount: 0, genreCount: 0 });
 
@@ -325,32 +385,39 @@ export const updateDiscoveryCache = async (options = {}) => {
       }
       dbOps.cleanOldMusicbrainzArtistMbidCache(90);
     } catch (e) {
-      logger.warn("discovery", "[Discovery] Failed to clean old image cache:", e.message);
+      logger.warn(
+        "discovery",
+        "[Discovery] Failed to clean old image cache:",
+        asAppError(e)?.message,
+      );
     }
   } catch (error) {
-    logger.error("discovery", "Failed to update discovery cache:", error.message);
-    logger.error("discovery", "Stack trace:", error.stack);
-    markDiscoveryRefreshFinished(null, { error: error.message });
+    const failure = asAppError(error);
+    logger.error("discovery", "Failed to update discovery cache:", failure?.message);
+    logger.error("discovery", "Stack trace:", failure?.stack);
+    markDiscoveryRefreshFinished(null, { error: failure?.message });
     websocketService.emitDiscoveryUpdate({
       isUpdating: false,
       configured: true,
       phase: "error",
       progress: 100,
       progressMessage: "Discovery refresh failed",
-      error: error.message,
+      error: failure?.message,
     });
-    void recordHistory("recordDiscoveryRefreshFailed", error.message);
+    void recordHistory("recordDiscoveryRefreshFailed", failure?.message);
   }
 };
 
-const feedbackArtists = (feedback, action) =>
+const feedbackArtists = (feedback: DiscoveryFeedbackEntry[], action: string) =>
   feedback
     .filter((entry) => entry.action === action)
     .map((entry) => ({ mbid: entry.artistId, artistName: entry.artistName }));
 
-const collectUserSeeds = async (user, feedback) => {
-  let externalHistory = [];
+const collectUserSeeds = async (user: DiscoveryUser, feedback: DiscoveryFeedbackEntry[]) => {
   const profile = getListenHistoryProfile(user);
+  let externalHistory: (ListenHistoryArtist & {
+    source: typeof profile.listenHistoryProvider;
+  })[] = [];
   try {
     externalHistory = (await fetchListenHistoryArtists(profile, getLastfmDiscoveryPeriod())).map(
       (artist) => ({ ...artist, source: profile.listenHistoryProvider }),
@@ -358,7 +425,7 @@ const collectUserSeeds = async (user, feedback) => {
   } catch (error) {
     logger.error(
       "discovery",
-      `[Discovery] Failed to fetch ${profile.listenHistoryProvider} artists for user ${user.id}: ${error.message}`,
+      `[Discovery] Failed to fetch ${profile.listenHistoryProvider} artists for user ${user.id}: ${asAppError(error)?.message}`,
     );
   }
   const localHistory = getTopPlayedArtists(user.id, { limit: 50 }).map((artist) => ({
@@ -379,10 +446,20 @@ const collectUserSeeds = async (user, feedback) => {
   });
 };
 
-const buildUserRecommendations = async ({ userId, user, existing, startedAt }) => {
-  const sourceHealth = { success: 0, failure: 0 };
+const buildUserRecommendations = async ({
+  userId,
+  user,
+  existing,
+  startedAt,
+}: {
+  userId: number;
+  user: DiscoveryUser;
+  existing: DiscoveryCache;
+  startedAt: number;
+}) => {
+  const sourceHealth: SourceHealth = { success: 0, failure: 0 };
   const feedback = getDiscoveryFeedback(userId);
-  const progress = (phase, progressMessage, value) =>
+  const progress = (phase: string, progressMessage: string, value: number) =>
     emitUserDiscoveryUpdate(userId, {
       isUpdating: true,
       phase,
@@ -442,7 +519,12 @@ const buildUserRecommendations = async ({ userId, user, existing, startedAt }) =
   return { recommendations, seeds, topGenres };
 };
 
-export const updateUserDiscoveryCache = async (userId, options = {}) => {
+export const updateUserDiscoveryCache = async (
+  userId: number,
+  options: { requestedAt?: number; skipHonkerLock?: boolean } = {},
+): Promise<
+  { skipped: true; reason: string } | { refreshed: true; recommendationCount: number }
+> => {
   const { withHonkerLock } = await import("../honkerDb.ts");
   if (options.skipHonkerLock !== true) {
     return withHonkerLock(
@@ -515,17 +597,18 @@ export const updateUserDiscoveryCache = async (userId, options = {}) => {
     });
     return { refreshed: true, recommendationCount: recommendations.length };
   } catch (error) {
+    const failure = asAppError(error);
     logger.error(
       "discovery",
-      `[Discovery] Failed to build recommendations for user ${userId}: ${error.message}`,
+      `[Discovery] Failed to build recommendations for user ${userId}: ${failure?.message}`,
     );
-    markDiscoveryRefreshFinished(namespace, { error: error.message });
+    markDiscoveryRefreshFinished(namespace, { error: failure?.message });
     emitUserDiscoveryUpdate(userId, {
       isUpdating: false,
       phase: "error",
       progress: 100,
       progressMessage: "Discovery refresh failed",
-      error: error.message,
+      error: failure?.message,
     });
     throw error;
   }

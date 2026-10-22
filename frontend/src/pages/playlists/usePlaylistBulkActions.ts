@@ -5,13 +5,16 @@ import {
   useEffect,
   useState,
   useSyncExternalStore,
+  type ReactNode,
 } from "react";
 import { useToast } from "../../contexts/ToastContext";
 import { createPlaylistTrackChanges } from "./playlistTrackChanges.ts";
 
-const BulkActionsContext = createContext(null);
+type PlaylistTrackChanges = ReturnType<typeof createPlaylistTrackChanges>;
 
-export function PlaylistBulkActionsProvider({ children }) {
+const BulkActionsContext = createContext<PlaylistTrackChanges | null>(null);
+
+export function PlaylistBulkActionsProvider({ children }: { children: ReactNode }) {
   const toast = useToast();
   const [changes] = useState(() => createPlaylistTrackChanges(toast));
 
@@ -30,8 +33,16 @@ export function PlaylistBulkActionsProvider({ children }) {
   return createElement(BulkActionsContext.Provider, { value: changes }, children);
 }
 
-export function usePlaylistBulkActions() {
+function usePlaylistTrackChanges() {
   const changes = useContext(BulkActionsContext);
+  if (!changes) {
+    throw new Error("Playlist bulk actions must be used within PlaylistBulkActionsProvider");
+  }
+  return changes;
+}
+
+export function usePlaylistBulkActions() {
+  const changes = usePlaylistTrackChanges();
   return {
     removeTracks: changes.remove,
     moveTracks: changes.move,
@@ -39,6 +50,6 @@ export function usePlaylistBulkActions() {
 }
 
 export function useHiddenPlaylistTracks() {
-  const changes = useContext(BulkActionsContext);
+  const changes = usePlaylistTrackChanges();
   return useSyncExternalStore(changes.subscribe, changes.getHidden, changes.getHidden);
 }

@@ -1,4 +1,8 @@
 import { logger } from "./logger.ts";
+import type { DownloadJob, DownloadTracker } from "./downloadJobs/downloadTracker.ts";
+import type { classifyAudioQuality } from "./qualityProfileModel.ts";
+import type { finalizeQualityUpgradeSuccess } from "./qualityProfileService.ts";
+import type { HistoryJob } from "./aurralHistoryService.ts";
 
 // Fields of a search in progress; a new search or a download clears them.
 export const SEARCH_RESET = Object.freeze({
@@ -6,7 +10,15 @@ export const SEARCH_RESET = Object.freeze({
   searchQueryIndex: 0,
   activeSearch: null,
 });
-export function getPayloadCandidate(payload) {
+type CandidatePayload<Candidate> = {
+  candidateIndex?: unknown;
+  candidate?: Candidate | null;
+  candidates?: Candidate[] | null;
+};
+
+export function getPayloadCandidate<Candidate>(
+  payload: CandidatePayload<Candidate> | null | undefined,
+) {
   const candidateIndex = Number(payload?.candidateIndex || 0);
   return (
     payload?.candidate ||
@@ -14,17 +26,29 @@ export function getPayloadCandidate(payload) {
   );
 }
 
-export function hasNextCandidate(payload) {
+export function hasNextCandidate(
+  payload: { candidateIndex?: unknown; candidates?: unknown } | null | undefined,
+) {
   return (
     Number(payload?.candidateIndex || 0) + 1 <
     (Array.isArray(payload?.candidates) ? payload.candidates.length : 0)
   );
 }
 
-export function buildNextCandidatePayload(payload, sourceResetFields = {}) {
+export function buildNextCandidatePayload<Payload extends object>(
+  payload: Payload,
+): Payload & NextCandidateFields;
+export function buildNextCandidatePayload<Payload extends object, ResetFields extends object>(
+  payload: Payload,
+  sourceResetFields: ResetFields,
+): Payload & NextCandidateFields & ResetFields;
+export function buildNextCandidatePayload(
+  payload: { candidateIndex?: unknown },
+  sourceResetFields: object = {},
+) {
   return {
     ...payload,
-    phase: "download",
+    phase: "download" as const,
     candidate: null,
     candidateIndex: Number(payload?.candidateIndex || 0) + 1,
     pollAttempts: 0,
@@ -32,7 +56,19 @@ export function buildNextCandidatePayload(payload, sourceResetFields = {}) {
   };
 }
 
-export function mergeSearchResults(aggregated, seen, items, buildKey) {
+type NextCandidateFields = {
+  phase: "download";
+  candidate: null;
+  candidateIndex: number;
+  pollAttempts: number;
+};
+
+export function mergeSearchResults<T, K>(
+  aggregated: T[],
+  seen: Set<K>,
+  items: T[],
+  buildKey: (item: T) => K,
+) {
   for (const item of items) {
     const key = buildKey(item);
     if (seen.has(key)) continue;
@@ -51,11 +87,17 @@ const HELD_METADATA_KEYS = [
   "indexerName",
   "remoteUsername",
   "remoteFilename",
-];
+] as const;
 
 // A file that needs review waits while the other candidates and sources are
 // tried. It keeps the job's source details so a denial blocks that file.
-export function holdForReview(job, { source, sourcePath, reason, ...details }) {
+export function holdForReview<
+  Held extends { source: string; sourcePath: string | null | undefined; reason?: string | null },
+>(
+  job: Partial<Record<(typeof HELD_METADATA_KEYS)[number], unknown>> | null | undefined,
+  held: Held,
+) {
+  const { source, sourcePath, reason, ...details } = held;
   return {
     ...details,
     source,
@@ -65,7 +107,17 @@ export function holdForReview(job, { source, sourcePath, reason, ...details }) {
   };
 }
 
-export function blockPipelineJobForReview({ downloadTracker, job, validation, sourcePath }) {
+export function blockPipelineJobForReview({
+  downloadTracker,
+  job,
+  validation,
+  sourcePath,
+}: {
+  downloadTracker: DownloadTracker;
+  job: HistoryJob;
+  validation: { blocked?: boolean; reason?: string | null } | null | undefined;
+  sourcePath: string | null | undefined;
+}) {
   const stagingPath = String(sourcePath || "").trim();
   if (!validation?.blocked || !stagingPath) return false;
   const reason = validation.reason || "Blocked for review";
@@ -81,12 +133,24 @@ export function blockPipelineJobForReview({ downloadTracker, job, validation, so
   return true;
 }
 
-export async function finalizePipelineJobSuccess(options) {
+export async function finalizePipelineJobSuccess(options: PipelineJobSuccessOptions) {
   if (await recordPipelineJobSuccess(options)) {
     await refreshCompletedPipelinePlaylist(options.job);
   }
   return null;
 }
+
+export type PipelineSuccessJob = Parameters<typeof finalizeQualityUpgradeSuccess>[0] &
+  Pick<DownloadJob, "albumName" | "managedBy">;
+
+type PipelineJobSuccessOptions = {
+  downloadTracker: DownloadTracker;
+  job: PipelineSuccessJob;
+  committedFinalPath: string;
+  album?: string | null;
+  quality?: ReturnType<typeof classifyAudioQuality> | null;
+  onSuccess?: () => unknown;
+};
 
 export async function recordPipelineJobSuccess({
   downloadTracker,
@@ -95,7 +159,7 @@ export async function recordPipelineJobSuccess({
   album,
   quality,
   onSuccess,
-}) {
+}: PipelineJobSuccessOptions) {
   if (job.upgradeForJobId) {
     const { finalizeQualityUpgradeSuccess } = await import("./qualityProfileService.ts");
     if (onSuccess) await onSuccess();
@@ -127,7 +191,9 @@ export async function recordPipelineJobSuccess({
   return true;
 }
 
-export async function refreshCompletedPipelinePlaylist(job) {
+export async function refreshCompletedPipelinePlaylist(
+  job: Pick<DownloadJob, "playlistId" | "playlistType">,
+) {
   const playlistType = job.playlistId || job.playlistType;
   const { playlistManager } = await import("./playlists/playlistManager.ts");
   playlistManager.requestPlaylistSync([playlistType]);

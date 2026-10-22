@@ -1,14 +1,23 @@
 import { Pause, Play, Shuffle } from "lucide-react";
+import type { ReactNode } from "react";
 import { useArtworkWash } from "../utils/imageColors";
 import TooltipButton from "./TooltipButton";
 import { useSharedArtworkStyle } from "../navigation/viewTransitions.ts";
 
-export function useCollectionTint(src) {
+export function useCollectionTint(src: string | null | undefined) {
   const wash = useArtworkWash(src || null);
   return wash ? `light-dark(${wash.light}, ${wash.dark})` : null;
 }
 
-export function CollectionPage({ tintSrc, className = "", children }) {
+export function CollectionPage({
+  tintSrc,
+  className = "",
+  children,
+}: {
+  tintSrc?: string | null;
+  className?: string;
+  children?: ReactNode;
+}) {
   const tint = useCollectionTint(tintSrc);
   return (
     <div
@@ -22,6 +31,15 @@ export function CollectionPage({ tintSrc, className = "", children }) {
   );
 }
 
+interface CollectionPlayButtonsProps {
+  label: string;
+  disabled?: boolean;
+  isPlaying: boolean;
+  isShuffleEnabled?: boolean;
+  onPlay?: () => void;
+  onShuffle?: () => void;
+}
+
 export function CollectionPlayButtons({
   label,
   disabled,
@@ -29,7 +47,7 @@ export function CollectionPlayButtons({
   isShuffleEnabled,
   onPlay,
   onShuffle,
-}) {
+}: CollectionPlayButtonsProps) {
   return (
     <>
       <button
@@ -61,6 +79,18 @@ export function CollectionPlayButtons({
   );
 }
 
+interface CollectionHeaderProps {
+  cover: ReactNode;
+  kicker?: ReactNode;
+  title: ReactNode;
+  subtitle?: ReactNode;
+  meta?: ReactNode;
+  status?: ReactNode;
+  actions?: ReactNode;
+  corner?: ReactNode;
+  embedded?: boolean;
+}
+
 export function CollectionHeader({
   cover,
   kicker,
@@ -71,7 +101,7 @@ export function CollectionHeader({
   actions,
   corner,
   embedded = false,
-}) {
+}: CollectionHeaderProps) {
   const artworkStyle = useSharedArtworkStyle();
   const Title = embedded ? "h2" : "h1";
   const coverProps = embedded ? { "data-artwork": "" } : { style: artworkStyle };

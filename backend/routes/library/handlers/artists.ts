@@ -1,3 +1,4 @@
+import type { Router } from "express";
 import { UUID_REGEX } from "../../../../lib/uuid.ts";
 import { libraryManager } from "../../../services/libraryManager.ts";
 import { cacheMiddleware, noCache } from "../../../middleware/cache.ts";
@@ -10,11 +11,12 @@ import {
   getArtistByMbid,
   isMetadataNotFoundError,
 } from "../../../services/providers/brainzmashProvider.ts";
-export function registerArtists(router) {
+import { asAppError, type AppError } from "../../../../lib/errors.ts";
+export function registerArtists(router: Router) {
   router.get("/artists", cacheMiddleware(120), async (req, res) => {
     try {
-      const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10000, 1), 10000);
-      const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit), 10) || 10000, 1), 10000);
+      const offset = Math.max(parseInt(String(req.query.offset), 10) || 0, 0);
       if (req.query.readPath === "canonical") {
         const { artists } = getLibraryReadModelForArtistPage({
           source: req.query.source || "all",
@@ -36,29 +38,35 @@ export function registerArtists(router) {
       }));
       res.json(formatted);
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch artists",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
 
-  router.get("/artists/:mbid/monitoring", noCache, async (req, res) => {
-    try {
-      const { mbid } = req.params;
-      if (!UUID_REGEX.test(mbid)) {
-        return res.status(400).json({ error: "Invalid MBID format" });
+  router.get<"/artists/:mbid/monitoring">(
+    "/artists/:mbid/monitoring",
+    noCache,
+    async (req, res) => {
+      try {
+        const { mbid } = req.params;
+        if (!UUID_REGEX.test(mbid)) {
+          return res.status(400).json({ error: "Invalid MBID format" });
+        }
+        res.json(await libraryManager.getArtistMonitoring(mbid));
+      } catch (error) {
+        const failure = asAppError(error);
+        res.status(500).json({
+          error: "Failed to read artist monitoring",
+          message: failure?.message,
+        });
       }
-      res.json(await libraryManager.getArtistMonitoring(mbid));
-    } catch (error) {
-      res.status(500).json({
-        error: "Failed to read artist monitoring",
-        message: error.message,
-      });
-    }
-  });
+    },
+  );
 
-  router.get("/artists/:mbid", cacheMiddleware(120), async (req, res) => {
+  router.get<"/artists/:mbid">("/artists/:mbid", cacheMiddleware(120), async (req, res) => {
     try {
       const { mbid } = req.params;
       if (!UUID_REGEX.test(mbid)) {
@@ -77,9 +85,10 @@ export function registerArtists(router) {
       };
       res.json(formatted);
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to fetch artist",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
@@ -113,9 +122,10 @@ export function registerArtists(router) {
       try {
         managedBy = await libraryManager.resolveManagedBy(requestedManagedBy);
       } catch (error) {
-        return res.status(error.statusCode || 400).json({
-          error: error.message,
-          code: error.code || null,
+        const failure = asAppError(error);
+        return res.status(failure?.statusCode || 400).json({
+          error: failure?.message,
+          code: failure?.code || null,
         });
       }
 
@@ -148,16 +158,17 @@ export function registerArtists(router) {
           albumMbid: releaseGroupMbid || null,
         });
       } catch (error) {
+        const failure: (AppError & { field?: string }) | undefined = asAppError(error);
         const statusCode =
-          error?.statusCode === 400 || error?.statusCode === 409 ? error.statusCode : 500;
+          failure?.statusCode === 400 || failure?.statusCode === 409 ? failure?.statusCode : 500;
         return res.status(statusCode).json({
           error:
             statusCode === 409
               ? "Saved Lidarr default is no longer valid"
               : "Failed to validate Lidarr add options",
-          message: error.message,
-          field: error.field || null,
-          code: error.code || null,
+          message: failure?.message,
+          field: failure?.field || null,
+          code: failure?.code || null,
         });
       }
 
@@ -170,7 +181,11 @@ export function registerArtists(router) {
           message: artist.error,
         });
         const statusCode =
-          Number.isInteger(artist.statusCode) && artist.statusCode >= 400 ? artist.statusCode : 503;
+          typeof artist.statusCode === "number" &&
+          Number.isInteger(artist.statusCode) &&
+          artist.statusCode >= 400
+            ? artist.statusCode
+            : 503;
         return res.status(statusCode).json({
           error: "Failed to add artist",
           message: artist.error,
@@ -189,14 +204,15 @@ export function registerArtists(router) {
         },
       });
     } catch (error) {
+      const failure = asAppError(error);
       res.status(500).json({
         error: "Failed to add artist",
-        message: error.message,
+        message: failure?.message,
       });
     }
   });
 
-  router.put(
+  router.put<"/canonical/artists/:id/mbid">(
     "/canonical/artists/:id/mbid",
     requireAuth,
     requirePermission("addArtist"),
@@ -231,16 +247,16 @@ export function registerArtists(router) {
           .json({ error: "Lidarr manages this artist. Change its MusicBrainz ID in Lidarr." });
       }
       res.json({
-        id: result.artist.id,
-        mbid: result.artist.mbid,
-        name: result.artist.name,
+        id: result.artist!.id,
+        mbid: result.artist!.mbid,
+        name: result.artist!.name,
         musicbrainzName,
         merged: Boolean(result.mergedArtistId),
       });
     },
   );
 
-  router.put(
+  router.put<"/artists/:mbid">(
     "/artists/:mbid",
     requireAuth,
     requirePermission("changeMonitoring"),
@@ -266,15 +282,16 @@ export function registerArtists(router) {
         }
         res.json(artist);
       } catch (error) {
+        const failure = asAppError(error);
         res.status(500).json({
           error: "Failed to update artist",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
   );
 
-  router.delete(
+  router.delete<"/artists/:mbid">(
     "/artists/:mbid",
     requireAuth,
     requirePermission("deleteArtist"),
@@ -299,15 +316,16 @@ export function registerArtists(router) {
         }
         res.json({ success: true, message: "Artist deleted successfully" });
       } catch (error) {
+        const failure = asAppError(error);
         res.status(500).json({
           error: "Failed to delete artist",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
   );
 
-  router.post(
+  router.post<"/artists/:mbid/refresh">(
     "/artists/:mbid/refresh",
     requireAuth,
     requirePermission("changeMonitoring"),
@@ -328,9 +346,10 @@ export function registerArtists(router) {
         const albums = await libraryManager.getAlbums(artist.id);
 
         if (lidarrClient && lidarrClient.isConfigured()) {
-          const lidarrArtist = await lidarrClient.getArtist(artist.id);
-          if (lidarrArtist && lidarrArtist.monitor !== "none" && lidarrArtist.monitored) {
-            await lidarrClient.triggerArtistSearch(artist.id);
+          const lidarrArtist = await lidarrClient.getArtistByMbid(mbid, { forceRefresh: true });
+          const monitoring = lidarrArtist ? libraryManager.mapLidarrArtist(lidarrArtist) : null;
+          if (lidarrArtist && monitoring?.monitored && monitoring.monitorOption !== "none") {
+            await lidarrClient.triggerArtistSearch(lidarrArtist.id);
           }
         }
 
@@ -340,9 +359,10 @@ export function registerArtists(router) {
           albums: albums.length,
         });
       } catch (error) {
+        const failure = asAppError(error);
         res.status(500).json({
           error: "Failed to refresh artist",
-          message: error.message,
+          message: failure?.message,
         });
       }
     },
@@ -353,8 +373,11 @@ type LibraryArtistRecord =
   | ReturnType<typeof libraryManager.mapLidarrArtist>
   | ReturnType<typeof getLibraryArtistProjection>[number];
 
-export type FetchLibraryArtistResponse = LibraryArtistRecord & {
-  foreignArtistId: string;
+type WithNullableForeignArtistId<Artist> = Artist extends unknown
+  ? Omit<Artist, "foreignArtistId"> & { foreignArtistId: string | null }
+  : never;
+
+export type FetchLibraryArtistResponse = WithNullableForeignArtistId<LibraryArtistRecord> & {
   added: LibraryArtistRecord["addedAt"];
 };
 

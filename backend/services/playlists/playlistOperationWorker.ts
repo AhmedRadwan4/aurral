@@ -1,8 +1,11 @@
+import type { Job, JsonValue } from "@russellthehippo/honker-node";
 import createHonkerWorker from "../honkerWorkerFactory.ts";
 import { getPlaylistOperationQueue } from "../honkerDb.ts";
+import type { HonkerPayload } from "../honkerDb.ts";
 import { processPlaylistOperation } from "./playlistOperations.ts";
 import { setPlaylistOperationWorkerState } from "./playlistOperationQueue.ts";
 import { logger } from "../logger.ts";
+import { asAppError } from "../../../lib/errors.ts";
 import { getBulkOperation, saveBulkOperation } from "./bulkOperationStore.ts";
 
 const PERMANENT_ERROR_CODES = new Set([
@@ -11,13 +14,20 @@ const PERMANENT_ERROR_CODES = new Set([
   "NO_DOWNLOAD_SOURCE",
 ]);
 
-let currentLabel = null;
+let currentLabel: JsonValue = null;
 
-const isPlaylistImport = (payload) =>
+const isPlaylistImport = (payload: HonkerPayload) =>
   payload?.kind === "shared-playlist-create" && payload?.importSource != null;
 
-const importContext = (payload, job) => ({
-  provider: payload?.importSource?.provider || null,
+const importProvider = (payload: HonkerPayload) => {
+  const importSource = payload?.importSource;
+  if (typeof importSource !== "object" || importSource === null || Array.isArray(importSource))
+    return null;
+  return importSource.provider || null;
+};
+
+const importContext = (payload: HonkerPayload, job: Job) => ({
+  provider: importProvider(payload),
   playlistName: payload?.name || null,
   playlistId: payload?.playlistId || null,
   operationId: job?.id || null,
@@ -32,14 +42,14 @@ function syncWorkerState() {
 const worker = createHonkerWorker({
   name: "weekly-flow-operation",
   getQueue: getPlaylistOperationQueue,
-  async processJob(payload, job) {
+  async processJob(payload: HonkerPayload, job) {
     if (payload.kind !== "shared-playlist-bulk") return processPlaylistOperation(payload);
     const record = getBulkOperation(job.id);
     if (!record || ["completed", "failed"].includes(record.state)) return;
     saveBulkOperation({ ...record, state: "running", updatedAt: Date.now() });
     await processPlaylistOperation({ ...payload, operationId: job.id });
     const applied = getBulkOperation(job.id);
-    saveBulkOperation({ ...applied, state: "completed", updatedAt: Date.now() });
+    if (applied) saveBulkOperation({ ...applied, state: "completed", updatedAt: Date.now() });
   },
   idlePollS: 5,
   retryDelayS: 60,
@@ -73,7 +83,7 @@ const worker = createHonkerWorker({
         saveBulkOperation({
           ...record,
           state: "queued",
-          message: error.message,
+          message: asAppError(error)?.message,
           updatedAt: Date.now(),
         });
       }
@@ -86,14 +96,15 @@ const worker = createHonkerWorker({
       saveBulkOperation({
         ...record,
         state: "failed",
-        message: error.message,
+        message: asAppError(error)?.message,
         updatedAt: Date.now(),
       });
     }
   },
   resolveRetry(error, job) {
-    const message = error?.message || String(error);
-    const permanent = PERMANENT_ERROR_CODES.has(String(error?.code || ""));
+    const failure = asAppError(error);
+    const message = failure?.message || String(error);
+    const permanent = PERMANENT_ERROR_CODES.has(String(failure?.code || ""));
     if (isPlaylistImport(job.payload)) {
       logger[permanent || job.attempts >= 3 ? "error" : "warn"](
         "playlist-import",

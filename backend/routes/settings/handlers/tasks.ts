@@ -1,6 +1,8 @@
+import type { Router } from "express";
 import { noCache } from "../../../middleware/cache.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
-export function registerTasks(router) {
+export function registerTasks(router: Router) {
   router.get("/tasks", noCache, async (_req, res) => {
     try {
       const { getHonkerTaskStatus } = await import("../../../services/honkerTaskStatus.ts");
@@ -8,7 +10,7 @@ export function registerTasks(router) {
     } catch (error) {
       res.status(500).json({
         error: "Failed to get task status",
-        message: error.message,
+        message: asAppError(error)?.message,
       });
     }
   });
@@ -25,7 +27,7 @@ export function registerTasks(router) {
     } catch (error) {
       res.status(500).json({
         error: "Failed to clear stuck jobs",
-        message: error.message,
+        message: asAppError(error)?.message,
       });
     }
   });

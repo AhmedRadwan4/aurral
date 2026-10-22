@@ -1,4 +1,5 @@
 import express from "express";
+import type { NextFunction, Request, Response, Router } from "express";
 import path from "node:path";
 import { db } from "../../../config/db-sqlite.ts";
 import { hasPermission, verifyTokenAuth } from "../../../middleware/auth.ts";
@@ -9,6 +10,7 @@ import {
   saveCustomArtworkUpload,
   saveCustomArtworkUrl,
 } from "../../../services/customArtworkService.ts";
+import { asAppError } from "../../../../lib/errors.ts";
 
 const artworkUploadParser = express.raw({
   limit: "8mb",
@@ -18,7 +20,7 @@ const artworkUploadParser = express.raw({
       .startsWith("image/"),
 });
 
-function canEditArtwork(req, res, next) {
+function canEditArtwork(req: Request, res: Response, next: NextFunction) {
   if (
     req.user?.role === "admin" ||
     hasPermission(req.user, "addAlbum") ||
@@ -32,7 +34,7 @@ function canEditArtwork(req, res, next) {
   });
 }
 
-function entityExists(kind, id) {
+function entityExists(kind: string, id: string) {
   if (kind === "album") {
     return Boolean(db.prepare("SELECT 1 FROM library_albums WHERE id = ?").get(id));
   }
@@ -42,7 +44,11 @@ function entityExists(kind, id) {
   return false;
 }
 
-function validateTarget(req, res, next) {
+function validateTarget(
+  req: Request<{ kind: string; id: string }>,
+  res: Response,
+  next: NextFunction,
+) {
   const { kind, id } = req.params;
   if (!["album", "track"].includes(kind) || !entityExists(kind, id)) {
     return res.status(404).json({ error: "Library item not found" });
@@ -54,7 +60,7 @@ export type UploadLibraryCustomArtworkResponse = { ok: true; updatedAt: number }
 
 export type DeleteLibraryCustomArtworkResponse = { ok: true };
 
-export function registerArtwork(router) {
+export function registerArtwork(router: Router) {
   router.get("/artwork/:kind/:id", async (req, res) => {
     if (!verifyTokenAuth(req)) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -94,9 +100,10 @@ export function registerArtwork(router) {
         );
         return res.json({ ok: true, updatedAt: artwork.updatedAt });
       } catch (error) {
+        const failure = asAppError(error);
         return res.status(400).json({
           error: "Failed to save artwork",
-          message: error?.message || "The image could not be saved",
+          message: failure?.message || "The image could not be saved",
         });
       }
     },
@@ -112,9 +119,10 @@ export function registerArtwork(router) {
         const artwork = await saveCustomArtworkUrl(req.params.kind, req.params.id, req.body?.url);
         return res.json({ ok: true, updatedAt: artwork.updatedAt });
       } catch (error) {
+        const failure = asAppError(error);
         return res.status(400).json({
           error: "Failed to save artwork",
-          message: error?.message || "The image could not be downloaded",
+          message: failure?.message || "The image could not be downloaded",
         });
       }
     },

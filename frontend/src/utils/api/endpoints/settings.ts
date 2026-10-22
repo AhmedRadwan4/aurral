@@ -30,6 +30,14 @@ export type AppSettingsResponse = AppSettings & {
   rootWarnings: ReturnType<typeof computeLibraryRootOverlaps>;
 };
 
+export type AppSettingsUpdate = Omit<
+  Partial<AppSettings>,
+  "qualityProfile" | "missingTrackSearch"
+> & {
+  qualityProfile?: Partial<AppSettings["qualityProfile"]>;
+  missingTrackSearch?: Partial<AppSettings["missingTrackSearch"]>;
+};
+
 type PlexPin = { id: number; code: string };
 type PlexIdentity = { machineIdentifier: string; version: string };
 type PlexLibrary = { key: string; title: string };
@@ -39,7 +47,7 @@ type HonkerTasks = Awaited<ReturnType<typeof getHonkerTaskStatus>>;
 type SuccessMessage = { success: true; message: string };
 
 export const startPlexAuth = (
-  forwardUrl: string,
+  forwardUrl?: string,
 ): Promise<{ pinId: PlexPin["id"]; code: PlexPin["code"]; clientId: string; authUrl: string }> =>
   postData("/settings/plex/auth/pin", { forwardUrl });
 
@@ -140,7 +148,7 @@ export const testDownloadClientConnection = (
 ): Promise<ConnectionTestResponse> =>
   postData(`/settings/download-clients/${encodeURIComponent(key)}/test`, config);
 
-export const updateAppSettings = (settings: Partial<AppSettings>): Promise<AppSettingsResponse> =>
+export const updateAppSettings = (settings: AppSettingsUpdate): Promise<AppSettingsResponse> =>
   postData("/settings", settings);
 
 export const getLidarrRootFolders = (

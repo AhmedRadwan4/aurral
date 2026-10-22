@@ -37,12 +37,18 @@ const BLOCKER_MESSAGES = {
     "Sign-in still uses the old single password. Sign in once to create the admin account.",
 };
 
-const isCurrent = (setting, version) =>
+type UpgradeBlockerKind = keyof typeof BLOCKER_MESSAGES;
+type ReviewItem = { path: string; reason: string | null };
+type UpgradeBlocker =
+  | { kind: Exclude<UpgradeBlockerKind, "download-folder-review"> }
+  | { kind: "download-folder-review"; totalItems: number; items: ReviewItem[] };
+
+const isCurrent = (setting: string, version: number) =>
   dbOps.getJSONSetting<{ version: number }>(setting)?.version === version;
 
-function downloadFolderBlockers() {
+function downloadFolderBlockers(): UpgradeBlocker[] {
   const root = path.resolve(resolveDownloadRoot());
-  const sameRoot = (value) => path.resolve(String(value || "")) === root;
+  const sameRoot = (value: string) => path.resolve(String(value || "")) === root;
   const startup = dbOps.getJSONSetting<{ version: number; rootPath: string }>(
     PLAYLIST_STARTUP_MIGRATION_SETTING,
   );
@@ -72,7 +78,7 @@ function downloadFolderBlockers() {
 }
 
 function listBlockers() {
-  const blockers = [];
+  const blockers: UpgradeBlocker[] = [];
   if (getSchemaVersion(db) < MINIMUM_SCHEMA_VERSION) blockers.push({ kind: "schema" });
   if (!isCurrent(STORED_DATA_MIGRATION_SETTING, STORED_DATA_MIGRATION_VERSION)) {
     blockers.push({ kind: "stored-data" });
@@ -100,7 +106,7 @@ export function checkUpgradeReadiness() {
   return { ready, checkedAt, blockers, warnings: getDeprecatedUsage() };
 }
 
-const TASKS_FOR_BLOCKERS = {
+const TASKS_FOR_BLOCKERS: Partial<Record<UpgradeBlockerKind, string>> = {
   "stored-data": "stored-data-migration",
   "identity-markers": "identity-marker-migration",
   "download-folder": "playlist-startup-migration",
@@ -111,7 +117,7 @@ export function queueUpgradeReadinessRecheck() {
   const kinds = new Set(
     listBlockers()
       .map((blocker) => TASKS_FOR_BLOCKERS[blocker.kind])
-      .filter(Boolean),
+      .filter((kind): kind is string => Boolean(kind)),
   );
   kinds.add("upgrade-readiness-check");
   for (const kind of kinds) {

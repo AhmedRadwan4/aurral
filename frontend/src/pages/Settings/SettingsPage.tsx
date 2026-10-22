@@ -55,7 +55,7 @@ function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabs.activeTab]);
 
-  const handleTabSelect = (tabId) => {
+  const handleTabSelect = (tabId: string) => {
     tabs.setActiveTab(tabId);
   };
 
@@ -177,8 +177,6 @@ function SettingsPage() {
             settings={data.settings}
             updateSettings={data.updateSettings}
             health={data.health}
-            hasUnsavedChanges={data.hasUnsavedChanges}
-            saving={data.saving}
             handleSaveSettings={data.handleSaveSettings}
             testingGotify={data.testingGotify}
             setTestingGotify={data.setTestingGotify}

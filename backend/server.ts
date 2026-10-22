@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import type { NextFunction, Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import path from "path";
@@ -14,8 +15,8 @@ import { authMiddleware, isProxyAuthEnabled } from "./middleware/auth.ts";
 import { createRequestFailureLogger } from "./middleware/requestFailureLogger.ts";
 import { handleOidcCallback, isOidcEnabled } from "./services/oidcAuth.ts";
 import { handleGoogleCallback } from "./services/googleAuth.ts";
-import { logger } from "./services/logger.ts";
-import { websocketService } from "./services/websocketService.ts";
+import { logger, logUnhandledRejection } from "./services/logger.ts";
+import { websocketService, type WebSocketChannelPayload } from "./services/websocketService.ts";
 import {
   getLidarrStatusSnapshot,
   hasActiveLidarrStatusSnapshot,
@@ -52,6 +53,7 @@ import scrobblingRouter from "./routes/scrobbling.ts";
 import playEventsRouter from "./routes/playEvents.ts";
 import shareLinksRouter from "./routes/shareLinks.ts";
 import { stopShareListener, syncShareListener } from "./services/shareLinks/shareListener.ts";
+import { asAppError, type AppError } from "../lib/errors.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,9 +63,7 @@ process.on("uncaughtException", (error) => {
   process.exit(1);
 });
 
-process.on("unhandledRejection", (reason) => {
-  logger.error("system", "Unhandled Rejection:", reason);
-});
+process.on("unhandledRejection", logUnhandledRejection);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -74,8 +74,8 @@ const allowedCorsOrigins = String(process.env.CORS_ORIGIN || "")
   .map((v) => v.trim())
   .filter(Boolean);
 
-const isSubsonicRequest = (req) => req.path === "/rest" || req.path.startsWith("/rest/");
-const isImageProxyRequest = (req) =>
+const isSubsonicRequest = (req: Request) => req.path === "/rest" || req.path.startsWith("/rest/");
+const isImageProxyRequest = (req: Request) =>
   (req.method === "GET" || req.method === "HEAD") && req.path.startsWith("/api/image-proxy/");
 
 const corsDefaults = {
@@ -85,7 +85,7 @@ const corsDefaults = {
 const publicCors = cors(corsDefaults);
 const apiCors = cors({ ...corsDefaults, origin: allowedCorsOrigins });
 
-function corsMiddleware(req, res, next) {
+function corsMiddleware(req: Request, res: Response, next: NextFunction) {
   if (isSubsonicRequest(req) || isImageProxyRequest(req)) return publicCors(req, res, next);
   if (allowedCorsOrigins.length > 0) return apiCors(req, res, next);
   return next();
@@ -210,8 +210,9 @@ app.get("/sso/callback", async (req, res) => {
     const code = encodeURIComponent(result.code);
     res.redirect(302, `/sso/complete#code=${code}`);
   } catch (error) {
-    logger.error("auth", "OIDC callback failed:", { message: error.message });
-    const message = encodeURIComponent(error.message || "OIDC login failed");
+    const failure = asAppError(error);
+    logger.error("auth", "OIDC callback failed:", { message: failure?.message });
+    const message = encodeURIComponent(failure?.message || "OIDC login failed");
     res.redirect(302, `/sso/complete#error=${message}`);
   }
 });
@@ -222,8 +223,9 @@ app.get("/sso/google/callback", async (req, res) => {
     const code = encodeURIComponent(result.code);
     res.redirect(302, `/sso/complete#code=${code}&provider=google`);
   } catch (error) {
-    logger.error("auth", "Google callback failed:", { message: error.message });
-    const message = encodeURIComponent(error.message || "Google login failed");
+    const failure = asAppError(error);
+    logger.error("auth", "Google callback failed:", { message: failure?.message });
+    const message = encodeURIComponent(failure?.message || "Google login failed");
     res.redirect(302, `/sso/complete#error=${message}&provider=google`);
   }
 });
@@ -265,11 +267,12 @@ if (fs.existsSync(frontendDist)) {
   });
 }
 
-app.use((err, req, res, next) => {
+app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
   logger.error("system", "Express error:", err || "(no error object)");
   res.locals.failureLogged = true;
   if (res.headersSent) return next(err);
-  if (err?.type === "entity.too.large" || err?.status === 413) {
+  const failure: (AppError & { type?: string }) | undefined = asAppError(err);
+  if (failure?.type === "entity.too.large" || failure?.status === 413) {
     return res.status(413).json({
       error: "Payload too large",
       message: `Request body exceeds limit (${JSON_BODY_LIMIT})`,
@@ -282,9 +285,9 @@ const httpServer = createServer(app);
 websocketService.initialize(httpServer);
 
 const DOWNLOAD_STATUS_INTERVAL_MS = 10000;
-let lastDownloadStatusesPayload = null;
+let lastDownloadStatusesPayload: string | null = null;
 let downloadStatusBroadcastInFlight = false;
-const hasWsSubscribers = (channel) => {
+const hasWsSubscribers = (channel: string) => {
   const stats = websocketService.getStats();
   const total = Number(stats?.channels?.[channel] || 0);
   return total > 0;
@@ -295,7 +298,7 @@ const broadcastDownloadStatuses = async () => {
   try {
     if (!hasWsSubscribers("downloads") && !hasActiveLidarrStatusSnapshot()) return;
     const snapshot = await getLidarrStatusSnapshot();
-    const message = {
+    const message: WebSocketChannelPayload = {
       type: "download_statuses",
       statuses: snapshot.statuses,
       stale: snapshot.stale,
@@ -308,15 +311,16 @@ const broadcastDownloadStatuses = async () => {
       websocketService.broadcast("downloads", message);
     }
   } catch (error) {
-    logger.warn("system", "Failed to broadcast download statuses:", { message: error.message });
+    const failure = asAppError(error);
+    logger.warn("system", "Failed to broadcast download statuses:", { message: failure?.message });
   } finally {
     downloadStatusBroadcastInFlight = false;
   }
 };
 
-const broadcastIntervals = [];
+const broadcastIntervals: NodeJS.Timeout[] = [];
 
-const scheduleBroadcast = (fn, intervalMs) => {
+const scheduleBroadcast = (fn: () => void, intervalMs: number) => {
   fn();
   broadcastIntervals.push(setInterval(fn, intervalMs));
 };
@@ -326,7 +330,7 @@ const stopPlaylistStatusBroadcasts = startPlaylistStatusBroadcasts();
 
 let shuttingDown = false;
 
-const gracefulShutdown = async (signal) => {
+const gracefulShutdown = async (signal: NodeJS.Signals) => {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("system", `Received ${signal}, shutting down...`);
@@ -336,7 +340,7 @@ const gracefulShutdown = async (signal) => {
   stopPlaylistStatusBroadcasts();
   await shutdownHonkerInfrastructure({ timeoutMs: 5000 });
   await stopShareListener();
-  await new Promise((resolve) => {
+  await new Promise<void>((resolve) => {
     httpServer.close(() => resolve());
   });
   process.exit(0);
@@ -361,7 +365,7 @@ httpServer.listen(PORT, async () => {
   void syncShareListener();
 });
 
-httpServer.on("error", (error) => {
+httpServer.on("error", (error: NodeJS.ErrnoException) => {
   if (error.code === "EADDRINUSE") {
     logger.error(
       "system",
