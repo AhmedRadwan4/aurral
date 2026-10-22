@@ -1,18 +1,31 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ChangeEvent } from "react";
 import { ImagePlus, Link as LinkIcon, Upload, X } from "lucide-react";
 import { useModalDialog } from "../hooks/useModalDialog.ts";
 import ArtworkImage from "./ArtworkImage.tsx";
 import Tooltip from "./Tooltip.tsx";
 import TooltipButton from "./TooltipButton.tsx";
 import { cacheImageLocally } from "../utils/api/endpoints/images.ts";
+import type { CustomArtworkResult } from "../utils/api/endpoints/library.ts";
 
-const isWebUrl = (value) => {
+const isWebUrl = (value: string) => {
   try {
     return ["http:", "https:"].includes(new URL(value).protocol);
   } catch {
     return false;
   }
 };
+
+interface ArtworkEditorModalProps {
+  open: boolean;
+  title: string;
+  currentArtwork?: string | null;
+  hasCustomArtwork?: boolean;
+  onClose: () => void;
+  onUpload: (file: File) => Promise<CustomArtworkResult>;
+  onSaveUrl: (url: string) => Promise<CustomArtworkResult>;
+  onRemove: () => Promise<CustomArtworkResult>;
+  onSaved?: (result: CustomArtworkResult) => void | Promise<void>;
+}
 
 export default function ArtworkEditorModal({
   open,
@@ -24,14 +37,14 @@ export default function ArtworkEditorModal({
   onSaveUrl,
   onRemove,
   onSaved,
-}) {
+}: ArtworkEditorModalProps) {
   const titleId = useId();
-  const fileInputRef = useRef(null);
-  const [file, setFile] = useState(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [file, setFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState("");
   const [url, setUrl] = useState("");
   const [urlPreview, setUrlPreview] = useState("");
-  const [source, setSource] = useState(null);
+  const [source, setSource] = useState<"file" | "url" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const { dialogRef, handleBackdropClick } = useModalDialog({ open, onClose, closeDisabled: busy });
@@ -77,7 +90,7 @@ export default function ArtworkEditorModal({
 
   if (!open) return null;
 
-  const chooseFile = (nextFile) => {
+  const chooseFile = (nextFile: File | null | undefined) => {
     if (!nextFile) return;
     if (!nextFile.type?.startsWith("image/")) {
       setError("Choose an image file.");
@@ -90,7 +103,7 @@ export default function ArtworkEditorModal({
     setError("");
   };
 
-  const handleUrlChange = (event) => {
+  const handleUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setUrl(value);
     setUrlPreview("");
@@ -110,7 +123,7 @@ export default function ArtworkEditorModal({
     setBusy(true);
     setError("");
     try {
-      const result = source === "url" ? await onSaveUrl(url.trim()) : await onUpload(file);
+      const result = source === "url" ? await onSaveUrl(url.trim()) : await onUpload(file as File);
       await onSaved?.(result);
       onClose();
     } catch (requestError) {

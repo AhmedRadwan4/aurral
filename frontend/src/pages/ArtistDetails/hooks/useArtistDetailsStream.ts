@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import type { ArtistDetailsResponse } from "../../../../../backend/routes/artists/handlers/details.ts";
 import {
   getArtistDetails,
   getArtistCover,
@@ -11,7 +12,7 @@ import {
   getLibraryArtist,
   readLibraryLookupCache,
 } from "../../../utils/api/endpoints/library.ts";
-import { getAppSettings } from "../../../utils/api/endpoints/settings.ts";
+import { getAppSettings, type AppSettingsResponse } from "../../../utils/api/endpoints/settings.ts";
 import { getStoredAuth } from "../../../utils/api/core.ts";
 import { queryClient, queryKeys } from "../../../queryClient.ts";
 import { useWebSocketChannel } from "../../../hooks/useWebSocket.ts";
@@ -35,7 +36,10 @@ const buildReleaseGroupCoverRequest = (rgId, artist, libraryAlbums, pageArtistNa
   };
 };
 
-const buildInitialArtist = (mbid, artistNameFromNav) =>
+const buildInitialArtist = (
+  mbid: string | undefined,
+  artistNameFromNav: string | undefined,
+): Partial<ArtistDetailsResponse> | null =>
   mbid
     ? {
         id: mbid,
@@ -112,7 +116,9 @@ export function useArtistDetailsStream(
   seedCoverImagesRef.current = seedCoverImages;
   const [coverImages, setCoverImages] = useState(seedCoverImages);
   const [libraryArtist, setLibraryArtist] = useState(seededLibraryArtist);
-  const [libraryAlbums, setLibraryAlbums] = useState([]);
+  const [libraryAlbums, setLibraryAlbums] = useState<Awaited<ReturnType<typeof getLibraryAlbums>>>(
+    [],
+  );
   const [similarArtists, setSimilarArtists] = useState([]);
   const [loading, setLoading] = useState(!mbid);
   const [error, setError] = useState(null);
@@ -122,7 +128,7 @@ export function useArtistDetailsStream(
   const [loadingLibrary, setLoadingLibrary] = useState(seededExistsInLibrary === undefined);
   const [loadingReleases, setLoadingReleases] = useState(!!mbid);
   const [loadingAppearsOn, setLoadingAppearsOn] = useState(!!mbid);
-  const [appSettings, setAppSettings] = useState(null);
+  const [appSettings, setAppSettings] = useState<AppSettingsResponse | null>(null);
   const [albumCovers, setAlbumCovers] = useState({});
   const [fulfilledCoverIds, setFulfilledCoverIds] = useState(() => new Set());
   const albumCoversRef = useRef(albumCovers);

@@ -162,7 +162,7 @@ router.get("/lastfm/link", requireAuth, requireUserAccount, (req, res) => {
   res.json({
     configured: true,
     connected: scrobbleConnectionStore.getConnection(req.user.id, "lastfm") != null,
-    authorizeUrl: `https://www.last.fm/api/auth/?api_key=${encodeURIComponent(getLastfmApiKey())}&cb=${encodeURIComponent(callbackUrl(req, token))}`,
+    authorizeUrl: `https://www.last.fm/api/auth/?api_key=${encodeURIComponent(getLastfmApiKey()!)}&cb=${encodeURIComponent(callbackUrl(req, token))}`,
   });
 });
 
@@ -323,5 +323,33 @@ router.delete("/koito/link", requireAuth, (req, res) => {
   scrobbleConnectionStore.deleteConnection(req.user.id, "koito");
   res.status(204).end();
 });
+
+type ScrobbleProviderStatus = {
+  connected: boolean;
+  displayName: string | null;
+  connectedAt: number | null;
+};
+
+export type ScrobbleStatusResponse = {
+  lastfm: ScrobbleProviderStatus & { configured: boolean };
+  listenbrainz: ScrobbleProviderStatus;
+  koito: ScrobbleProviderStatus;
+};
+
+export type LastfmLinkResponse = {
+  configured: true;
+  connected: boolean;
+  authorizeUrl: string;
+};
+
+export type ListenBrainzLinkResponse = {
+  connected: boolean;
+  displayName: string | null;
+};
+
+export type KoitoLinkResponse = {
+  connected: true;
+  displayName: string;
+};
 
 export default router;

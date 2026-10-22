@@ -25,6 +25,7 @@ import {
 } from "./fileTransfer.ts";
 import {
   SAME_LENGTH_MS,
+  type Recording,
   compareQuality,
   differentTracks,
   formatGap,
@@ -120,10 +121,10 @@ async function rankCopies(files) {
   const ranked = [];
   for (const copies of tracks.values()) {
     if (copies.length > 1) {
-      const quality = new Map(
+      const quality = new Map<unknown, Recording>(
         await Promise.all(copies.map(async (file) => [file, await readRecording(file.path)])),
       );
-      copies.sort((left, right) => compareQuality(quality.get(right), quality.get(left)));
+      copies.sort((left, right) => compareQuality(quality.get(right)!, quality.get(left)!));
     }
     ranked.push(...copies);
   }
@@ -370,7 +371,7 @@ function commitRename(from, to) {
 export function createCleanupContext() {
   let guard = null;
   return {
-    rescan: new Set(),
+    rescan: new Set<string>(),
     deletionGuard() {
       return guard;
     },

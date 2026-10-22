@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient, queryKeys } from "../queryClient.ts";
 import { clearLibraryPageCache, getActiveDownloads } from "../utils/api/endpoints/library.ts";
+import type { ActiveDownloadTrack } from "../utils/activeDownloads.ts";
 import {
   finishedActiveDownloads,
   hasActiveDownloads,
@@ -21,7 +22,7 @@ const refreshFinishedDownloads = () => {
   void queryClient.invalidateQueries({ queryKey: queryKeys.artistDetailsPrefix });
 };
 
-const fetchActiveDownloads = async ({ signal }) => {
+const fetchActiveDownloads = async ({ signal }: { signal: AbortSignal }) => {
   const previous = queryClient.getQueryData(queryKeys.activeDownloads);
   const next = normalizeActiveDownloads(await getActiveDownloads({ signal }));
   if (previous && finishedActiveDownloads(previous, next)) refreshFinishedDownloads();
@@ -38,9 +39,12 @@ export function useActiveDownloads() {
   return useMemo(() => {
     const index = indexActiveDownloads(data);
     return {
-      isAlbumDownloading: (albumMbid) => isAlbumDownloading(index, albumMbid),
-      isArtistDownloading: (artistMbid) => isArtistDownloading(index, artistMbid),
-      isTrackDownloading: (track) => isTrackDownloading(index, track),
+      isAlbumDownloading: (albumMbid: string | null | undefined) =>
+        isAlbumDownloading(index, albumMbid),
+      isArtistDownloading: (artistMbid: string | null | undefined) =>
+        isArtistDownloading(index, artistMbid),
+      isTrackDownloading: (track: ActiveDownloadTrack | null | undefined) =>
+        isTrackDownloading(index, track),
     };
   }, [data]);
 }

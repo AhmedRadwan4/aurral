@@ -43,7 +43,20 @@ let storageHealthCacheKey = "";
 let storageHealthInflight = null;
 let storageHealthInflightKey = "";
 
-function healthStep(id, status, label, extra = {}) {
+export type StorageHealthStep = {
+  id: string;
+  status: "pass" | "fail" | "warn";
+  label: string;
+  detail?: string;
+  fix?: string;
+};
+
+function healthStep(
+  id: string,
+  status: StorageHealthStep["status"],
+  label: string,
+  extra: Partial<Pick<StorageHealthStep, "detail" | "fix">> = {},
+): StorageHealthStep {
   const step = { id, status, label, ...extra };
   if (status === "pass") delete step.fix;
   return step;
@@ -281,7 +294,12 @@ async function runDownloadTransferProbe(sourceDir, targetRoot) {
   }
 }
 
-function buildSection(id, title, steps, { skipped = false, skipReason = null } = {}) {
+function buildSection(
+  id,
+  title,
+  steps: StorageHealthStep[],
+  { skipped = false, skipReason = null }: { skipped?: boolean; skipReason?: string | null } = {},
+) {
   const status = skipped
     ? "skip"
     : steps.some((entry) => entry.status === "fail")
@@ -1048,5 +1066,7 @@ export async function runStorageHealthCheck({ force = false } = {}) {
 }
 
 export function getStorageHealthSnapshot() {
-  return dbOps.getJSONSetting(STORAGE_HEALTH_SNAPSHOT_KEY);
+  return dbOps.getJSONSetting<Awaited<ReturnType<typeof buildStorageHealthCheck>>>(
+    STORAGE_HEALTH_SNAPSHOT_KEY,
+  );
 }

@@ -1,3 +1,33 @@
+import type { NormalizedRelease, NormalizedTrack } from "./brainzmashMappers.ts";
+
+type Track = NormalizedTrack & {
+  discNumber?: unknown;
+  recordingMbid?: unknown;
+  recordingMbidAliases?: string[];
+};
+
+type Release = NormalizedRelease & { releaseMbid?: unknown };
+
+type ArtistCandidate = {
+  name?: unknown;
+  score?: unknown;
+  type?: unknown;
+  disambiguation?: unknown;
+  images?: unknown[];
+};
+
+type AlbumCandidate = {
+  id?: string;
+  title?: unknown;
+  artistName?: unknown;
+  artistId?: unknown;
+  releaseDate?: unknown;
+  type?: unknown;
+  secondaryTypes?: unknown[];
+  releaseStatuses?: unknown[];
+  score?: unknown;
+};
+
 const UNDECOMPOSED_LETTERS = {
   ø: "o",
   Ø: "O",
@@ -15,17 +45,20 @@ const UNDECOMPOSED_LETTERS = {
   Þ: "TH",
   ß: "ss",
   ẞ: "SS",
-};
+} satisfies Record<string, string>;
 
-export function foldDiacritics(value) {
+export function foldDiacritics(value: unknown) {
   return String(value || "")
     .normalize("NFD")
     .replace(/(\p{Script=Latin})\p{M}+/gu, "$1")
     .normalize("NFC")
-    .replace(/[øØæÆœŒđĐðÐłŁþÞßẞ]/g, (letter) => UNDECOMPOSED_LETTERS[letter]);
+    .replace(
+      /[øØæÆœŒđĐðÐłŁþÞßẞ]/g,
+      (letter) => UNDECOMPOSED_LETTERS[letter as keyof typeof UNDECOMPOSED_LETTERS],
+    );
 }
 
-function normalizeText(value) {
+function normalizeText(value: unknown) {
   return foldDiacritics(String(value || "").normalize("NFKD"))
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
@@ -33,14 +66,14 @@ function normalizeText(value) {
     .trim();
 }
 
-function splitSearchWords(value) {
+function splitSearchWords(value: unknown) {
   return normalizeText(value)
     .split(" ")
     .map((entry) => entry.trim())
     .filter(Boolean);
 }
 
-export function getNormalizedText(value) {
+export function getNormalizedText(value: unknown) {
   return normalizeText(value);
 }
 
@@ -61,7 +94,10 @@ const USENET_STRIP =
 const MATCHER_STRIP =
   /\b(deluxe|expanded|anniversary|remaster(?:ed)?|bonus|edition|live|mono|stereo|single|ep|explicit|clean)\b/g;
 
-export function normalizeReleaseText(value, { extended = false } = {}) {
+export function normalizeReleaseText(
+  value: unknown,
+  { extended = false }: { extended?: boolean } = {},
+) {
   return foldDiacritics(value)
     .toLowerCase()
     .replace(/&/g, " and ")
@@ -72,21 +108,21 @@ export function normalizeReleaseText(value, { extended = false } = {}) {
     .trim();
 }
 
-export function normalizeTitle(value, { extended = false } = {}) {
+export function normalizeTitle(value: unknown, { extended = false }: { extended?: boolean } = {}) {
   return normalizeReleaseText(value, { extended })
     .split(" ")
     .filter((word) => word && !TITLE_STOP_WORDS.has(word))
     .join(" ");
 }
 
-export function splitWords(value, options) {
+export function splitWords(value: unknown, options?: { extended?: boolean }) {
   return normalizeReleaseText(value, options)
     .split(" ")
     .map((entry) => entry.trim())
     .filter(Boolean);
 }
 
-function scoreReleaseTextMatch(left, right, options) {
+function scoreReleaseTextMatch(left: unknown, right: unknown, options: { extended?: boolean }) {
   const a = normalizeReleaseText(left, options);
   const b = normalizeReleaseText(right, options);
   if (!a || !b) return 0;
@@ -109,7 +145,11 @@ function scoreReleaseTextMatch(left, right, options) {
   return Math.round(((2 * overlap) / Math.max(1, leftWords.size + rightWords.size)) * 100);
 }
 
-export function scoreTextMatch(left, right, options) {
+export function scoreTextMatch(
+  left: unknown,
+  right: unknown,
+  options?: { extended?: boolean } | null,
+) {
   if (options != null) {
     return scoreReleaseTextMatch(left, right, options);
   }
@@ -136,7 +176,7 @@ export function scoreTextMatch(left, right, options) {
   return Math.round(ratio * 100);
 }
 
-function positiveMs(value) {
+function positiveMs(value: unknown) {
   return value != null && Number.isFinite(Number(value)) && Number(value) > 0
     ? Math.round(Number(value))
     : null;
@@ -149,6 +189,10 @@ export function pickResolvedDurationMs({
   playlistDurationMs = null,
   lastfmDurationMs = null,
   matchedTrackDurationMs = null,
+}: {
+  playlistDurationMs?: unknown;
+  lastfmDurationMs?: unknown;
+  matchedTrackDurationMs?: unknown;
 } = {}) {
   return (
     positiveMs(matchedTrackDurationMs) ||
@@ -157,24 +201,24 @@ export function pickResolvedDurationMs({
   );
 }
 
-export function getYear(value) {
+export function getYear(value: unknown) {
   const match = String(value || "").match(/\b(19\d{2}|20\d{2})\b/);
   return match ? match[1] : null;
 }
 
-function typeRank(value) {
+function typeRank(value: unknown) {
   if (value === "Album") return 0;
   if (value === "EP") return 1;
   if (value === "Single") return 2;
   return 3;
 }
 
-function bootlegPenalty(item) {
+function bootlegPenalty(item: AlbumCandidate | null | undefined) {
   const statuses = Array.isArray(item?.releaseStatuses) ? item.releaseStatuses : [];
   return statuses.some((status) => String(status || "").toLowerCase() === "bootleg") ? 1 : 0;
 }
 
-function isProperNameExtension(query, name) {
+function isProperNameExtension(query: unknown, name: unknown) {
   const normalizedQuery = normalizeText(query);
   const normalizedName = normalizeText(name);
   return (
@@ -185,13 +229,16 @@ function isProperNameExtension(query, name) {
   );
 }
 
-export function artistNamesMatch(left, right) {
+export function artistNamesMatch(left: unknown, right: unknown) {
   const a = normalizeText(left);
   const b = normalizeText(right);
   return Boolean(a) && a === b;
 }
 
-export function rankArtistCandidates(query, candidates = []) {
+export function rankArtistCandidates<T extends ArtistCandidate>(
+  query: unknown,
+  candidates: T[] = [],
+): T[] {
   const normalizedQuery = normalizeText(query);
   return [...candidates].sort((left, right) => {
     const leftName = String(left?.name || "").trim();
@@ -226,16 +273,16 @@ export function rankArtistCandidates(query, candidates = []) {
   });
 }
 
-export function rankAlbumCandidates(
-  albumTitle,
-  candidates = [],
-  { artistName = "", releaseYear = null } = {},
-) {
+export function rankAlbumCandidates<T extends AlbumCandidate>(
+  albumTitle: unknown,
+  candidates: T[] = [],
+  { artistName = "", releaseYear = null }: { artistName?: unknown; releaseYear?: unknown } = {},
+): T[] {
   const normalizedArtist = normalizeText(artistName);
   const targetYear = getYear(releaseYear);
   // A free-text search such as "Fleetwood Mac Rumours" names the artist and
   // the title together.
-  const titleScore = (candidate) =>
+  const titleScore = (candidate: T) =>
     Math.max(
       scoreTextMatch(candidate?.title, albumTitle),
       normalizedArtist
@@ -285,33 +332,34 @@ export function rankAlbumCandidates(
   });
 }
 
-export function tracksInOrder(release) {
-  const disc = (track) => Number(track?.mediumNumber ?? track?.discNumber) || 1;
+export function tracksInOrder(release: { tracks?: Track[] } | null | undefined) {
+  const disc = (track: Track) => Number(track?.mediumNumber ?? track?.discNumber) || 1;
   return [...(release?.tracks || [])].sort(
     (left, right) => disc(left) - disc(right) || (left.trackNumber || 0) - (right.trackNumber || 0),
   );
 }
 
-export function runningOrder(release) {
+export function runningOrder(release: { tracks?: Track[] } | null | undefined) {
   return tracksInOrder(release)
     .map((track) => getNormalizedText(track.title))
     .join("\n");
 }
 
-export function median(values) {
+export function median(values: number[]) {
   const sorted = values.filter((value) => Number(value) > 0).sort((left, right) => left - right);
   if (sorted.length === 0) return null;
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
 }
 
-const lowerId = (value) =>
+const lowerId = (value: unknown) =>
   String(value || "")
     .trim()
     .toLowerCase();
-const isOfficial = (release) => String(release?.status || "").toLowerCase() === "official";
+const isOfficial = (release: { status?: unknown } | null | undefined) =>
+  String(release?.status || "").toLowerCase() === "official";
 
-function recordingIds(track, aliases) {
+function recordingIds(track: Track | null | undefined, aliases: Map<string, string[]>) {
   const recording = lowerId(track?.recordingId || track?.recordingMbid);
   return [
     recording,
@@ -328,7 +376,11 @@ function recordingIds(track, aliases) {
 // its sleeve lengths may come from a CD pressing, so those lengths match too,
 // but a remix or re-recording with the same titles does not. `aliases` maps
 // a recording ID to the IDs merged into it.
-export function pressingLengths(releases, release, aliases = new Map()) {
+export function pressingLengths(
+  releases: Release[],
+  release: Release,
+  aliases: Map<string, string[]> = new Map(),
+) {
   const own = lowerId(release?.id || release?.releaseMbid);
   const order = runningOrder(release);
   const officialOnly = releases.some(isOfficial);
@@ -356,7 +408,7 @@ export function pressingLengths(releases, release, aliases = new Map()) {
 
 // A release keeps the lengths it lists, and a length it lacks is the median
 // of its pressings' lengths.
-export function withPressingDurations(releases, release) {
+export function withPressingDurations(releases: Release[], release: Release) {
   const ordered = tracksInOrder(release);
   const lengths = pressingLengths(releases, release);
   return {

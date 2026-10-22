@@ -1,21 +1,23 @@
 import fs from "node:fs";
+import type { FSWatcher } from "node:fs";
+import type { WatchMessage } from "./libraryWatchProcess.ts";
 import { resolveLocalPath } from "./pathMappings.ts";
 
-let watcher;
+let watcher: FSWatcher | undefined;
 
 function stop() {
   watcher?.close();
-  if (process.connected) process.disconnect();
+  if (process.connected) process.disconnect!();
 }
 
-function send(message) {
+function send(message: WatchMessage) {
   if (!process.connected) return;
-  process.send(message, (error) => {
+  process.send!(message, (error) => {
     if (error) stop();
   });
 }
 
-function fail(error) {
+function fail(error: Error & { code?: string }) {
   send({ type: "error", message: error.message, code: error.code });
   stop();
 }

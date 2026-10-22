@@ -1,11 +1,43 @@
 import { queryClient, queryKeys } from "../queryClient.ts";
 import { getPlaylistTrackStreamUrl } from "./api/endpoints/playlists.ts";
+import type {
+  LibraryAlbum as BackendLibraryAlbum,
+  LibraryArtist as BackendLibraryArtist,
+  LibraryGenre,
+  LibraryTrack as BackendLibraryTrack,
+  LibraryTrackFile as BackendLibraryTrackFile,
+} from "../../../backend/services/libraryQueryService.ts";
 
-const text = (value) => String(value || "").trim();
+interface LibraryArtworkFields {
+  userFavorite?: boolean;
+  coverUrl?: string | null;
+  defaultCoverUrl?: string | null;
+  customArtworkUrl?: string | null;
+  artworkUrl?: string | null;
+}
 
-export const getAlbumCoverId = (album) => album?.releaseGroupMbid || album?.mbid || null;
+export type LibraryArtist = BackendLibraryArtist & LibraryArtworkFields;
+export type LibraryAlbum = BackendLibraryAlbum & LibraryArtworkFields;
+type LibraryTrackFile = BackendLibraryTrackFile & { previewUrl?: string };
+export type LibraryTrack = Omit<BackendLibraryTrack, "files"> &
+  LibraryArtworkFields & { files: LibraryTrackFile[] };
 
-export const favoriteId = (kind, entity) => {
+interface LibraryData {
+  artists: LibraryArtist[];
+  albums: LibraryAlbum[];
+  tracks: LibraryTrack[];
+  genres: LibraryGenre[];
+}
+
+const text = (value: unknown) => String(value || "").trim();
+
+export const getAlbumCoverId = (album: LibraryAlbum | null | undefined) =>
+  album?.releaseGroupMbid || album?.mbid || null;
+
+export const favoriteId = (
+  kind: string,
+  entity: { id?: unknown; identityKey?: unknown } | null | undefined,
+) => {
   const id = text(entity?.id);
   if (kind === "song" && /^(flow|shared)-song:/.test(id)) return id;
   // Keep `:` readable, as the backend's `idFor` does, so ids from the
@@ -13,18 +45,21 @@ export const favoriteId = (kind, entity) => {
   return kind + ":" + encodeURIComponent(text(entity?.identityKey)).replaceAll("%3A", ":");
 };
 
-export const firstAvailableFile = (track, albumId = null) =>
+export const firstAvailableFile = (
+  track: LibraryTrack | null | undefined,
+  albumId: string | number | null = null,
+) =>
   (track?.files || []).find((file) => file.available && file.albumId === albumId) ||
   (track?.files || []).find((file) => file.available && file.albumId == null) ||
   (albumId == null ? (track?.files || []).find((file) => file.available) : null) ||
   null;
 
-export const EMPTY_LIBRARY = { artists: [], albums: [], tracks: [], genres: [] };
+export const EMPTY_LIBRARY: LibraryData = { artists: [], albums: [], tracks: [], genres: [] };
 
-export const normalizeLibraryPages = (pages) =>
-  pages.reduce(
+export const normalizeLibraryPages = (pages: Partial<LibraryData>[]) =>
+  pages.reduce<LibraryData>(
     (result, page) => {
-      ["artists", "albums", "tracks"].forEach((kind) => {
+      (["artists", "albums", "tracks"] as const).forEach((kind) => {
         (Array.isArray(page?.[kind]) ? page[kind] : []).forEach((entity) => {
           if (!result[kind].some((candidate) => String(candidate.id) === String(entity.id))) {
             result[kind].push(entity);
@@ -39,7 +74,24 @@ export const normalizeLibraryPages = (pages) =>
     { artists: [], albums: [], tracks: [], genres: [] },
   );
 
-export const favoriteLibraryFromResponse = (favorites) => {
+export const favoriteLibraryFromResponse = (
+  favorites:
+    | {
+        library?: Partial<LibraryData> | null;
+        song?:
+          | {
+              id: string;
+              title?: unknown;
+              artist?: unknown;
+              album?: unknown;
+              duration?: unknown;
+              suffix?: unknown;
+            }[]
+          | null;
+      }
+    | null
+    | undefined,
+) => {
   const library = normalizeLibraryPages([favorites?.library || EMPTY_LIBRARY]);
   const playlistTracks = (Array.isArray(favorites?.song) ? favorites.song : [])
     .filter((track) => /^(flow|shared)-song:/.test(text(track?.id)))
@@ -59,7 +111,7 @@ export const favoriteLibraryFromResponse = (favorites) => {
         files: [
           {
             available: true,
-            previewUrl: getPlaylistTrackStreamUrl(jobId),
+            previewUrl: getPlaylistTrackStreamUrl(jobId!),
             format: track.suffix || null,
             durationMs,
           },
@@ -71,8 +123,13 @@ export const favoriteLibraryFromResponse = (favorites) => {
     : library;
 };
 
-export const mergeAlbumTrackPageIntoLibrary = (current, page, albumId, tracks) => {
-  const merge = (kind) => {
+export const mergeAlbumTrackPageIntoLibrary = (
+  current: LibraryData,
+  page: Partial<LibraryData> | null | undefined,
+  albumId: string | number,
+  tracks: LibraryTrack[],
+) => {
+  const merge = <Kind extends "artists" | "albums" | "tracks">(kind: Kind): LibraryData[Kind] => {
     const existing = current[kind] || [];
     const merged = [...existing, ...(Array.isArray(page?.[kind]) ? page[kind] : [])].filter(
       (entity, index, values) =>
@@ -111,19 +168,23 @@ export const mergeAlbumTrackPageIntoLibrary = (current, page, albumId, tracks) =
   };
 };
 
-export const getCachedAlbumTracks = (album, tracksById) => {
+export const getCachedAlbumTracks = (
+  album: LibraryAlbum | null | undefined,
+  tracksById: Map<string, LibraryTrack>,
+) => {
   const queryKey = queryKeys.libraryAlbumTracks(String(album?.id), album?.releaseGroupMbid);
   const cached = queryClient.getQueryState(queryKey)?.isInvalidated
     ? null
-    : queryClient.getQueryData(queryKey)?.tracks;
+    : queryClient.getQueryData<{ tracks: LibraryTrack[] }>(queryKey)?.tracks;
   return cached || album?.trackIds?.map((id) => tracksById.get(String(id))).filter(Boolean) || [];
 };
 
-export const yearOf = (value) => /^(\d{4})/.exec(String(value || "").trim())?.[1] || "";
+export const yearOf = (value: string | null | undefined) =>
+  /^(\d{4})/.exec(String(value || "").trim())?.[1] || "";
 
 const RELEASE_TYPES = { single: "Single", ep: "EP", broadcast: "Broadcast" };
 
-export const releaseTypeOf = (album) => {
+export const releaseTypeOf = (album: LibraryAlbum | null | undefined) => {
   const metadata = album?.metadata || {};
   const type = metadata.albumType || metadata.releaseType || [metadata.tags?.releasetype].flat()[0];
   return (
@@ -135,7 +196,10 @@ export const releaseTypeOf = (album) => {
   );
 };
 
-export const albumCardMeta = (album, { available, total }) => {
+export const albumCardMeta = (
+  album: LibraryAlbum | null | undefined,
+  { available, total }: { available: number; total?: number | null },
+) => {
   const partial = Boolean(total && available < total);
   const unit = total === 1 ? "track" : "tracks";
   return {

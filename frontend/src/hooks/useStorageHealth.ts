@@ -2,37 +2,54 @@ import { useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getStorageHealth, runStorageHealthCheck } from "../utils/api/endpoints/settings.ts";
 import { queryClient, queryKeys } from "../queryClient.ts";
+import type { getStorageHealthSnapshot } from "../../../backend/services/storageHealthService.ts";
 
-const toSnapshot = (result, dataUpdatedAt = 0) => ({
+type StoredStorageHealth = NonNullable<ReturnType<typeof getStorageHealthSnapshot>>;
+
+type StorageHealthResult = { success: boolean } & (
+  | StoredStorageHealth
+  | (Pick<StoredStorageHealth, "partial" | "sections"> & {
+      ok: null;
+      checkedAt: null;
+      unavailable: true;
+    })
+);
+
+const toSnapshot = (result: StorageHealthResult | null | undefined, dataUpdatedAt = 0) => ({
   ok: result?.ok !== false,
   hasFailure: result?.ok === false,
   checkedAt: result?.checkedAt || (dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : null),
   result: result || null,
 });
 
+type StorageHealthSnapshot = ReturnType<typeof toSnapshot>;
+
 export function getStorageHealthCache() {
   const state = queryClient.getQueryState(queryKeys.storageHealth);
-  return toSnapshot(queryClient.getQueryData(queryKeys.storageHealth), state?.dataUpdatedAt);
+  return toSnapshot(
+    queryClient.getQueryData<StorageHealthResult>(queryKeys.storageHealth),
+    state?.dataUpdatedAt,
+  );
 }
 
-export function subscribeStorageHealth(listener) {
+export function subscribeStorageHealth(listener: (snapshot: StorageHealthSnapshot) => void) {
   return queryClient.getQueryCache().subscribe((event) => {
     const queryKey = event.query?.queryKey;
     if (
       !queryKey ||
       queryKey.length !== queryKeys.storageHealth.length ||
-      queryKey.some((value, index) => value !== queryKeys.storageHealth[index])
+      queryKey.some((value: unknown, index: number) => value !== queryKeys.storageHealth[index])
     )
       return;
     listener(getStorageHealthCache());
   });
 }
 
-export function setStorageHealthResult(result) {
+export function setStorageHealthResult(result: StorageHealthResult | null | undefined) {
   queryClient.setQueryData(queryKeys.storageHealth, result || null);
 }
 
-export function refreshStorageHealth({ force = false } = {}) {
+export function refreshStorageHealth({ force = false }: { force?: boolean } = {}) {
   return queryClient.fetchQuery({
     queryKey: queryKeys.storageHealth,
     queryFn: ({ signal }) =>
@@ -41,7 +58,10 @@ export function refreshStorageHealth({ force = false } = {}) {
   });
 }
 
-export function useStorageHealth({ enabled = true, pollMs = 120000 } = {}) {
+export function useStorageHealth({
+  enabled = true,
+  pollMs = 120000,
+}: { enabled?: boolean; pollMs?: number } = {}) {
   const query = useQuery({
     queryKey: queryKeys.storageHealth,
     queryFn: ({ signal }) => getStorageHealth({ signal }),

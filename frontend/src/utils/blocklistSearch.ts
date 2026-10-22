@@ -1,11 +1,22 @@
-function normalizeArtist(artist) {
+import type { ArtistIdentity } from "../../../backend/services/discovery/recommendationPipeline.ts";
+import type { ArtistSearchResult } from "../../../backend/services/unifiedSearchService.ts";
+
+type BlocklistArtist = Partial<ArtistSearchResult>;
+
+type BlocklistSearchResponse = {
+  top?: BlocklistArtist | null;
+  catalog?: { artists?: BlocklistArtist[] | null } | null;
+  library?: { artists?: BlocklistArtist[] | null } | null;
+};
+
+function normalizeArtist(artist: ArtistIdentity | null | undefined) {
   return {
     id: artist?.id || artist?.mbid || artist?.foreignArtistId || null,
     name: String(artist?.name || artist?.artistName || "").trim(),
   };
 }
 
-export function buildBlocklistArtistSuggestions(response, limit = 6) {
+export function buildBlocklistArtistSuggestions(response: BlocklistSearchResponse, limit = 6) {
   const candidates = [
     response?.top?.type === "artist" ? response.top : null,
     ...(Array.isArray(response?.catalog?.artists) ? response.catalog.artists : []),

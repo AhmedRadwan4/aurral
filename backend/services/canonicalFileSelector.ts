@@ -1,10 +1,20 @@
-const sourceRank = (source, managedBy) => {
+import type { LibraryTrackFile } from "./libraryQueryService.ts";
+
+type CanonicalFileCandidate = Partial<Omit<LibraryTrackFile, "available">> & {
+  available?: unknown;
+};
+
+const sourceRank = (source: string | null | undefined, managedBy: string | null) => {
   if (managedBy && source === managedBy) return 0;
   if (source === "lidarr") return 1;
   return 2;
 };
 
-export function selectCanonicalFile(files, albumId = null, managedBy = null) {
+export function selectCanonicalFile<T extends CanonicalFileCandidate>(
+  files: T[] | null | undefined,
+  albumId: number | null = null,
+  managedBy: string | null = null,
+) {
   const candidates = (Array.isArray(files) ? files : [])
     .filter((file) => file?.albumId == null || albumId == null || file.albumId == albumId)
     .map((file) => ({ file }))

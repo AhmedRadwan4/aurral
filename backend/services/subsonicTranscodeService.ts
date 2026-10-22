@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { parseFile } from "music-metadata";
+import type { Response } from "express";
 import { streamAudioFile } from "./audioFileStream.ts";
 
 const OUTPUT_FORMATS = {
@@ -9,7 +10,18 @@ const OUTPUT_FORMATS = {
   aac: { codec: "aac", container: "adts", contentType: "audio/aac", maxBitrate: 512 },
 };
 
-export async function streamSubsonicAudio(res, filePath, { format, maxBitRate, timeOffset }) {
+type OutputFormat = keyof typeof OUTPUT_FORMATS;
+export type SubsonicStreamFormat = "" | "raw" | OutputFormat;
+
+export async function streamSubsonicAudio(
+  res: Response,
+  filePath: string,
+  {
+    format,
+    maxBitRate,
+    timeOffset,
+  }: { format: SubsonicStreamFormat; maxBitRate: number; timeOffset?: number },
+) {
   if (format === "raw" || (!format && !maxBitRate)) return streamAudioFile(res, filePath);
   if (!format) {
     try {
@@ -48,7 +60,7 @@ export async function streamSubsonicAudio(res, filePath, { format, maxBitRate, t
 
   return new Promise((resolve) => {
     const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let spawnError;
+    let spawnError: NodeJS.ErrnoException | undefined;
     const stop = () => {
       child.stdout.destroy();
       if (child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");

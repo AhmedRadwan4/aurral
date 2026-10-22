@@ -91,10 +91,10 @@ async function resolveLidarrProfiles(lidarr) {
       metadataProfileId ? null : fetchMetadataProfiles({ url, apiKey }),
     ]);
     if (!qualityProfileId && Array.isArray(qualityProfiles) && qualityProfiles[0]?.id != null) {
-      qualityProfileId = parseInt(qualityProfiles[0].id, 10) || null;
+      qualityProfileId = parseInt(String(qualityProfiles[0].id), 10) || null;
     }
     if (!metadataProfileId && Array.isArray(metadataProfiles) && metadataProfiles[0]?.id != null) {
-      metadataProfileId = parseInt(metadataProfiles[0].id, 10) || null;
+      metadataProfileId = parseInt(String(metadataProfiles[0].id), 10) || null;
     }
   } catch (error) {
     logger.warn("onboarding", "Could not auto-pick Lidarr profiles:", { message: error.message });
@@ -203,5 +203,9 @@ router.post("/complete", async (req, res) => {
     });
   }
 });
+
+export type OnboardingCompleteResponse = { success: true };
+
+export type LidarrTestResponse = { success: true; message: string };
 
 export default router;

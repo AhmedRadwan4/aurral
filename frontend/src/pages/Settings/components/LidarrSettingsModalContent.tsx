@@ -1,5 +1,13 @@
 import { useState } from "react";
+import type { ComponentProps } from "react";
 import { testLidarrConnection } from "../../../utils/api/endpoints/settings.ts";
+import type { AppSettings } from "../../../../../backend/db/helpers/settings.ts";
+import type { BootstrapPayload } from "../../../../../backend/routes/health.ts";
+import type {
+  fetchQualityProfiles,
+  fetchRootFolders,
+  fetchTags,
+} from "../../../../../backend/services/lidarrSettingsService.ts";
 
 import { Link } from "react-router";
 import { RefreshCw } from "lucide-react";
@@ -9,6 +17,40 @@ import { SettingsInput, SettingsSelect } from "./SettingsField";
 import { SettingsArrFieldSet, SettingsArrFormGroup } from "./arr/SettingsArrLayout";
 import { describeLidarrConnectionState } from "../utils/librarySettings";
 import { RootOverlapWarning } from "./RootOverlapWarning";
+
+type LidarrSettings = {
+  integrations?: Partial<AppSettings["integrations"]>;
+  rootWarnings?: ComponentProps<typeof RootOverlapWarning>["rootWarnings"];
+};
+type LidarrIntegrationDraft = NonNullable<AppSettings["integrations"]["lidarr"]>;
+type LidarrTestStatus = { tone: "success" | "error"; message: string };
+type LidarrRootFolderOption = Awaited<ReturnType<typeof fetchRootFolders>>[number];
+type LidarrNamedOption = Awaited<ReturnType<typeof fetchQualityProfiles>>[number];
+type LidarrTagOption = Awaited<ReturnType<typeof fetchTags>>[number];
+type LidarrHealth = Pick<BootstrapPayload, "lidarr" | "lidarrConfigured"> | null;
+
+type LidarrSettingsSectionProps = {
+  settings: LidarrSettings;
+  updateSettings: (next: LidarrSettings) => void;
+  health?: LidarrHealth;
+  lidarrRootFolders?: LidarrRootFolderOption[];
+  loadingLidarrRootFolders: boolean;
+  lidarrProfiles?: LidarrNamedOption[];
+  loadingLidarrProfiles: boolean;
+  lidarrMetadataProfiles?: LidarrNamedOption[];
+  loadingLidarrMetadataProfiles: boolean;
+  lidarrTags?: LidarrTagOption[];
+  loadingLidarrTags: boolean;
+  refreshLidarrResources: (credentials: { url: string; apiKey: string }) => Promise<unknown[]>;
+  testingLidarr: boolean;
+  setTestingLidarr: (testing: boolean) => void;
+  applyingCommunityGuide: boolean;
+  setShowCommunityGuideModal: (open: boolean) => void;
+  showSuccess: (message: string) => void;
+  showError: (message: string) => void;
+  showInfo: (message: string) => void;
+};
+
 export function LidarrSettingsSection({
   settings,
   updateSettings,
@@ -29,9 +71,9 @@ export function LidarrSettingsSection({
   showSuccess,
   showError,
   showInfo,
-}) {
-  const [lidarrTestLatencyMs, setLidarrTestLatencyMs] = useState(null);
-  const [lidarrTestStatus, setLidarrTestStatus] = useState(null);
+}: LidarrSettingsSectionProps) {
+  const [lidarrTestLatencyMs, setLidarrTestLatencyMs] = useState<number | null>(null);
+  const [lidarrTestStatus, setLidarrTestStatus] = useState<LidarrTestStatus | null>(null);
 
   const safeLidarrRootFolders = Array.isArray(lidarrRootFolders) ? lidarrRootFolders : [];
   const safeLidarrProfiles = Array.isArray(lidarrProfiles) ? lidarrProfiles : [];
@@ -44,7 +86,7 @@ export function LidarrSettingsSection({
     health,
   });
 
-  const updateLidarr = (patch) =>
+  const updateLidarr = (patch: LidarrIntegrationDraft) =>
     updateSettings({
       ...settings,
       integrations: {

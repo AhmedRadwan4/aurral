@@ -4,6 +4,9 @@ import { readPlaylistPages, requirePlaylistPath } from "./playback/playlistUsage
 const CLIENT_NAME = "Aurral";
 const CLIENT_VERSION = "1.0.0";
 const JELLYFIN_TIMEOUT_MS = 30_000;
+
+type JellyfinItemsPage<T> = { Items?: T[]; TotalRecordCount?: number };
+
 const NON_MUSIC_COLLECTION_TYPES = new Set([
   "movies",
   "tvshows",
@@ -15,8 +18,14 @@ const NON_MUSIC_COLLECTION_TYPES = new Set([
   "playlists",
 ]);
 
+type JellyfinUser = { Id?: string; Name?: string };
+
 export class JellyfinClient {
-  constructor(url, apiKey, userId) {
+  declare url: string | null;
+  declare apiKey: string | null;
+  declare userId: string | null;
+
+  constructor(url: string, apiKey: string, userId: string) {
     this.url = url ? String(url).replace(/\/+$/, "") : null;
     this.apiKey = apiKey || null;
     this.userId = userId ? String(userId).trim() : null;
@@ -33,7 +42,17 @@ export class JellyfinClient {
     };
   }
 
-  async request(method, endpoint, { params, data } = {}) {
+  async request(
+    method: string,
+    endpoint: string,
+    {
+      params,
+      data,
+    }: {
+      params?: Record<string, string | number | boolean | null | undefined>;
+      data?: unknown;
+    } = {},
+  ) {
     if (!this.isConfigured()) throw new Error("Jellyfin is not configured");
     const response = await axios({
       method,
@@ -53,11 +72,11 @@ export class JellyfinClient {
   async getUser() {
     return this.request("GET", `/Users/${encodeURIComponent(this.userId)}`);
   }
-  async getUsers() {
+  async getUsers(): Promise<JellyfinUser[]> {
     return this.request("GET", "/Users");
   }
 
-  async getPlaylistTrackPaths(excludedIds = new Set()) {
+  async getPlaylistTrackPaths(excludedIds: Set<string> = new Set()) {
     // An API key can enumerate users; query each user's private playlists too.
     const users = await this.getUsers();
     if (!Array.isArray(users) || !users.length || users.some((user) => !user?.Id)) {
@@ -65,8 +84,8 @@ export class JellyfinClient {
     }
     const paths = new Set();
     for (const user of users) {
-      const playlists = await readPlaylistPages(async (startIndex) => {
-        const page = await this.request("GET", "/Items", {
+      const playlists = await readPlaylistPages(async (startIndex: number) => {
+        const page: JellyfinItemsPage<{ Id?: string }> = await this.request("GET", "/Items", {
           params: {
             userId: user.Id,
             recursive: true,
@@ -82,16 +101,20 @@ export class JellyfinClient {
         if (!playlist?.Id) throw new Error("Jellyfin playlist is missing its ID");
         const id = String(playlist.Id);
         if (excludedIds.has(id)) continue;
-        const entries = await readPlaylistPages(async (startIndex) => {
-          const page = await this.request("GET", `/Playlists/${encodeURIComponent(id)}/Items`, {
-            params: {
-              userId: user.Id,
-              startIndex,
-              limit: 200,
-              fields: "Path",
-              enableImages: false,
+        const entries = await readPlaylistPages(async (startIndex: number) => {
+          const page: JellyfinItemsPage<{ Type?: string; Path?: string }> = await this.request(
+            "GET",
+            `/Playlists/${encodeURIComponent(id)}/Items`,
+            {
+              params: {
+                userId: user.Id,
+                startIndex,
+                limit: 200,
+                fields: "Path",
+                enableImages: false,
+              },
             },
-          });
+          );
           return { items: page?.Items, total: page?.TotalRecordCount };
         });
         for (const entry of entries) {
@@ -103,7 +126,7 @@ export class JellyfinClient {
     return [...paths];
   }
 
-  async findUserByUsername(username) {
+  async findUserByUsername(username: string | null | undefined) {
     const wanted = String(username || "")
       .trim()
       .toLowerCase();
@@ -152,7 +175,15 @@ export class JellyfinClient {
     }
   }
 
-  async createPlaylist({ name, itemIds, userId = this.userId }) {
+  async createPlaylist({
+    name,
+    itemIds,
+    userId = this.userId,
+  }: {
+    name: string;
+    itemIds: string[];
+    userId?: string | null;
+  }) {
     return this.request("POST", "/Playlists", {
       data: {
         Name: name,
@@ -164,7 +195,7 @@ export class JellyfinClient {
     });
   }
 
-  async getPlaylistItems(playlistId, userId = this.userId) {
+  async getPlaylistItems(playlistId: string, userId = this.userId) {
     const items = [];
     const limit = 200;
 
@@ -188,7 +219,12 @@ export class JellyfinClient {
     }
   }
 
-  async addPlaylistItems(playlistId, itemIds, userId = this.userId, onBatchAdded = () => {}) {
+  async addPlaylistItems(
+    playlistId: string,
+    itemIds: string[],
+    userId = this.userId,
+    onBatchAdded: (batch: string[]) => void | Promise<void> = () => {},
+  ) {
     const batchSize = 50;
     let start = 0;
     while (start < itemIds.length) {
@@ -207,7 +243,7 @@ export class JellyfinClient {
     }
   }
 
-  async removePlaylistItems(playlistId, entryIds) {
+  async removePlaylistItems(playlistId: string, entryIds: string[]) {
     const batchSize = 50;
     for (let start = 0; start < entryIds.length; start += batchSize) {
       await this.request("DELETE", `/Playlists/${encodeURIComponent(playlistId)}/Items`, {
@@ -216,7 +252,7 @@ export class JellyfinClient {
     }
   }
 
-  async getPlaylistMetadata(playlistId, userId = this.userId) {
+  async getPlaylistMetadata(playlistId: string, userId = this.userId) {
     try {
       return await this.request("GET", `/Items/${encodeURIComponent(playlistId)}`, {
         params: { userId },
@@ -252,17 +288,25 @@ export class JellyfinClient {
    *   Completed incremental changes are not rolled back.
    */
   async syncPlaylistItems(
-    playlistId,
-    itemIds,
-    { userId = this.userId, managedItemIds = [], onManagedItemsChange = () => {} } = {},
+    playlistId: string,
+    itemIds: unknown,
+    {
+      userId = this.userId,
+      managedItemIds = [],
+      onManagedItemsChange = () => {},
+    }: {
+      userId?: string | null;
+      managedItemIds?: string[];
+      onManagedItemsChange?: (ids: string[]) => void | Promise<void>;
+    } = {},
   ) {
-    const validIds = (ids) =>
+    const validIds = (ids: unknown): ids is string[] =>
       Array.isArray(ids) &&
       ids.every((id) => typeof id === "string" && id.length > 0 && id === id.trim());
     if (!validIds(itemIds) || !validIds(managedItemIds)) {
       throw new Error("Jellyfin playlist item IDs must be non-empty strings");
     }
-    const counts = (ids) => {
+    const counts = (ids: string[]) => {
       const result = new Map();
       for (const id of ids) result.set(id, (result.get(id) || 0) + 1);
       return result;
@@ -317,7 +361,7 @@ export class JellyfinClient {
       }
     }
 
-    const groups = new Map();
+    const groups = new Map<string, string[]>();
     for (const entry of entries) {
       const group = groups.get(entry.PlaylistItemId) || [];
       group.push(entry.Id);
@@ -376,8 +420,20 @@ export class JellyfinClient {
   }
 
   async updatePlaylist(
-    playlistId,
-    { name, itemIds, userId = this.userId, managedItemIds = [], onManagedItemsChange },
+    playlistId: string,
+    {
+      name,
+      itemIds,
+      userId = this.userId,
+      managedItemIds = [],
+      onManagedItemsChange,
+    }: {
+      name: string;
+      itemIds: string[];
+      userId?: string | null;
+      managedItemIds?: string[];
+      onManagedItemsChange?: (ids: string[]) => void | Promise<void>;
+    },
   ) {
     // The playlist metadata endpoint expects a logged-in user, not an API key.
     const endpoint = `/Items/${encodeURIComponent(playlistId)}`;
@@ -401,7 +457,7 @@ export class JellyfinClient {
     return { Id: String(playlistId), managedItemIds: managed };
   }
 
-  async deletePlaylist(playlistId, userId = this.userId) {
+  async deletePlaylist(playlistId: string, userId = this.userId) {
     return this.request("DELETE", `/Items/${encodeURIComponent(playlistId)}`, {
       params: { userId },
     });
@@ -418,7 +474,7 @@ export class JellyfinClient {
       .flatMap((folder) => folder?.Locations || []);
   }
 
-  async reportUpdatedFolders(folders) {
+  async reportUpdatedFolders(folders: string[]) {
     return this.request("POST", "/Library/Media/Updated", {
       data: { Updates: folders.map((folder) => ({ Path: folder, UpdateType: "Modified" })) },
     });

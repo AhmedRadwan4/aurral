@@ -12,7 +12,19 @@ const normalizeFeedbackAction = (value) => {
   return ["more_like_this", "less_like_this", "block_artist"].includes(action) ? action : null;
 };
 
-const normalizeFeedbackList = (value) =>
+export interface DiscoveryFeedbackEntry {
+  id: string | null;
+  artistId: string | null;
+  artistName: string | null;
+  action: string | null;
+  sourceContext: string | null;
+  tagContext: string[];
+  seedContext: string[];
+  createdAt: unknown;
+  expiresAt: unknown;
+}
+
+const normalizeFeedbackList = (value): DiscoveryFeedbackEntry[] =>
   (Array.isArray(value) ? value : [])
     .filter((entry) => entry && typeof entry === "object")
     .map((entry) => ({
@@ -56,7 +68,20 @@ export const filterBlockedArtistsForUser = (
   return list.filter((artist) => !matchesArtistKeys(artist, blockedKeys));
 };
 
-export const addDiscoveryFeedback = (userId = "global", entry = {}) => {
+export type DiscoveryFeedbackInput = {
+  id?: string | null;
+  action: string | null;
+  artistId?: string | null;
+  artistName?: string | null;
+  sourceContext?: string | null;
+  tagContext?: string[];
+  seedContext?: string[];
+};
+
+export const addDiscoveryFeedback = (
+  userId = "global",
+  entry: Partial<DiscoveryFeedbackInput> = {},
+) => {
   const action = normalizeFeedbackAction(entry.action);
   if (!action) throw new Error("Invalid discovery feedback action");
   const artistId = String(entry.artistId || "").trim() || null;

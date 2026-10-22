@@ -23,7 +23,10 @@ function loadShare(req, res) {
     notFound(res);
     return null;
   }
-  return { link, target };
+  return { link, target } as {
+    link: NonNullable<ReturnType<typeof getLiveShareLink>>;
+    target: typeof target;
+  };
 }
 
 function findTrack(target, req) {

@@ -14,6 +14,11 @@ const MUSIC_SCANNER = "Plex Music";
 const TRACK_TYPE = 10; // Plex metadata type for audio tracks
 const READ_TIMEOUT_MS = 30_000;
 
+type PlexMetadata = { ratingKey?: string | number; Media?: { Part?: { file?: string }[] }[] };
+type PlexContainerPage = {
+  MediaContainer?: { Metadata?: PlexMetadata[]; size?: number; totalSize?: number };
+};
+
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
@@ -36,6 +41,17 @@ function findPlexXmlElements(xml, name) {
 function toBool(value) {
   return value === true || value === "1" || value === 1;
 }
+
+export type PlexHomeUser = {
+  id: string | number;
+  uuid?: string | null;
+  title?: string;
+  username: string | null;
+  email: string | null;
+  restricted: boolean;
+  admin: boolean;
+  guest: boolean;
+};
 
 export class PlexClient {
   constructor(url, token, clientId) {
@@ -142,7 +158,7 @@ export class PlexClient {
     return { servers, total: list.length };
   }
 
-  static async getHomeUsers(adminToken, adminClientId) {
+  static async getHomeUsers(adminToken, adminClientId): Promise<PlexHomeUser[]> {
     const { data } = await axios.get(`${PLEX_TV}/api/v2/home/users`, {
       headers: PlexClient.plexHeaders(adminClientId, { token: adminToken }),
     });
@@ -411,7 +427,7 @@ export class PlexClient {
   async getPlaylistTrackPaths(excludedIds = new Set()) {
     const read = (endpoint, params = {}) =>
       readPlaylistPages(async (start) => {
-        const data = await this.request(endpoint, {
+        const data: PlexContainerPage = await this.request(endpoint, {
           timeout: 30_000,
           params: {
             ...params,

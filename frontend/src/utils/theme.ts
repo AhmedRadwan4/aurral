@@ -7,6 +7,7 @@ import {
   mixColors,
   normalizeHexColor,
   oklchToHex,
+  type HexColor,
   withAlpha,
 } from "./themeColor.ts";
 import { THEME_PRESETS } from "./themePresets.ts";
@@ -21,8 +22,8 @@ export const LEGACY_THEME_STORAGE_KEYS = [
 ];
 export const THEME_DOCUMENT_VERSION = 2;
 export const DEFAULT_THEME_ID = "aurral";
-export const THEME_APPEARANCES = ["system", "light", "dark"];
-export const THEME_MODES = ["light", "dark"];
+export const THEME_APPEARANCES: readonly unknown[] = ["system", "light", "dark"];
+export const THEME_MODES = ["light", "dark"] as const;
 export const MAX_CUSTOM_THEMES = 50;
 export const THEME_SEED_ROLES = [
   "background",
@@ -32,7 +33,7 @@ export const THEME_SEED_ROLES = [
   "warning",
   "success",
   "info",
-];
+] as const;
 
 export const THEME_COLOR_ROLES = [
   "chrome",
@@ -56,32 +57,81 @@ export const THEME_COLOR_ROLES = [
   "controlOn",
   "controlOnContrast",
   "scrim",
-];
+] as const;
 
-const cssVariable = (role) =>
+type ThemeMode = (typeof THEME_MODES)[number];
+type ThemeSeedRole = (typeof THEME_SEED_ROLES)[number];
+type ThemeColorRole = (typeof THEME_COLOR_ROLES)[number];
+type ThemeSeed = Partial<Record<ThemeSeedRole, HexColor>> & {
+  background: HexColor;
+  accent: HexColor;
+};
+type StoredThemeSeed = Partial<Record<ThemeSeedRole, unknown>>;
+type Theme = { id: string; name: string } & (
+  | { light: ThemeSeed; dark?: ThemeSeed }
+  | { light?: ThemeSeed; dark: ThemeSeed }
+);
+type StoredTheme = {
+  id?: unknown;
+  name?: unknown;
+  light?: StoredThemeSeed;
+  dark?: StoredThemeSeed;
+};
+type ThemeDocument = {
+  version: number;
+  themeId: string;
+  appearance: string;
+  matchArtwork: boolean;
+  themes: Theme[];
+};
+type StoredThemeDocument = {
+  version?: unknown;
+  themeId?: unknown;
+  appearance?: unknown;
+  matchArtwork?: unknown;
+  themes?: unknown;
+};
+type StoredLegacyPalette = {
+  surface?: unknown;
+  accent?: unknown;
+  text?: unknown;
+  danger?: unknown;
+  warning?: unknown;
+  success?: unknown;
+  info?: unknown;
+};
+type StoredLegacyTheme = {
+  id?: unknown;
+  name?: unknown;
+  label?: unknown;
+  colors?: StoredLegacyPalette;
+  variants?: Record<string, StoredLegacyPalette>;
+};
+
+const cssVariable = (role: ThemeColorRole) =>
   `--aurral-${role.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
 
 const STATUS_DEFAULTS = {
   light: { danger: "#dc2626", warning: "#b45309", success: "#15803d", info: "#2563eb" },
   dark: { danger: "#ef4444", warning: "#f59e0b", success: "#22c55e", info: "#60a5fa" },
-};
+} satisfies Record<ThemeMode, Record<"danger" | "warning" | "success" | "info", HexColor>>;
 
 export const AURRAL_THEME = {
   id: DEFAULT_THEME_ID,
   name: "Aurral",
   light: { background: "#ffffff", text: "#171717", accent: "#525252" },
   dark: { background: "#121212", text: "#ffffff", accent: "#b3b3b3" },
-};
+} satisfies Theme;
 
-export const BUILT_IN_THEMES = [AURRAL_THEME, ...THEME_PRESETS];
-const BUILT_IN_THEME_IDS = new Set(BUILT_IN_THEMES.map((theme) => theme.id));
+export const BUILT_IN_THEMES: Theme[] = [AURRAL_THEME, ...THEME_PRESETS];
+const BUILT_IN_THEME_IDS = new Set<string>(BUILT_IN_THEMES.map((theme) => theme.id));
 
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-const otherMode = (mode) => (mode === "dark" ? "light" : "dark");
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const otherMode = (mode: ThemeMode): ThemeMode => (mode === "dark" ? "light" : "dark");
 
-function readableOn(background, candidates) {
+function readableOn(background: HexColor, candidates: HexColor[]) {
   return (
-    [...candidates, "#ffffff", "#000000"].find(
+    ([...candidates, "#ffffff", "#000000"] satisfies HexColor[]).find(
       (color) => contrastRatio(color, background) >= 4.5,
     ) ||
     (contrastRatio("#ffffff", background) >= contrastRatio("#000000", background)
@@ -90,11 +140,11 @@ function readableOn(background, candidates) {
   );
 }
 
-export function createThemePalette(seed) {
+export function createThemePalette(seed: ThemeSeed) {
   const dark = isDarkColor(seed.background);
   const surface = normalizeHexColor(seed.background);
   const base = hexToOklch(surface);
-  const shade = (delta) => oklchToHex({ ...base, l: base.l + delta });
+  const shade = (delta: number) => oklchToHex({ ...base, l: base.l + delta });
   const toward = dark ? 1 : -1;
   const surfaceRaised = shade(toward * (dark ? 0.05 : 0.035));
   const surfacePopover = shade(toward * (dark ? 0.1 : 0.075));
@@ -116,9 +166,9 @@ export function createThemePalette(seed) {
   const status = Object.fromEntries(
     Object.entries(STATUS_DEFAULTS[dark ? "dark" : "light"]).map(([role, fallback]) => [
       role,
-      adjustLightnessForContrast(seed[role] || fallback, surfacePopover, 4.5),
+      adjustLightnessForContrast(seed[role as ThemeSeedRole] || fallback, surfacePopover, 4.5),
     ]),
-  );
+  ) as Record<"danger" | "warning" | "success" | "info", HexColor>;
 
   return {
     chrome,
@@ -142,10 +192,12 @@ export function createThemePalette(seed) {
   };
 }
 
-function mirrorSeed(seed, mode) {
+type ThemePalette = ReturnType<typeof createThemePalette>;
+
+function mirrorSeed(seed: ThemeSeed, mode: ThemeMode): ThemeSeed {
   const dark = mode === "dark";
   const background = hexToOklch(seed.background);
-  const mirrored = {
+  const mirrored: ThemeSeed = {
     background: oklchToHex(
       dark
         ? { l: 0.2, c: Math.min(background.c, 0.03), h: background.h }
@@ -157,19 +209,19 @@ function mirrorSeed(seed, mode) {
     const text = hexToOklch(seed.text);
     mirrored.text = oklchToHex({ l: dark ? 0.93 : 0.24, c: Math.min(text.c, 0.03), h: text.h });
   }
-  for (const role of ["danger", "warning", "success", "info"]) {
+  for (const role of ["danger", "warning", "success", "info"] as const) {
     if (seed[role]) mirrored[role] = seed[role];
   }
   return mirrored;
 }
 
-export function getThemeSeed(theme, mode) {
-  return theme[mode] || mirrorSeed(theme[otherMode(mode)], mode);
+export function getThemeSeed(theme: Theme, mode: ThemeMode): ThemeSeed {
+  return theme[mode] || mirrorSeed(theme[otherMode(mode)]!, mode);
 }
 
-const paletteCache = new WeakMap();
+const paletteCache = new WeakMap<Theme, Partial<Record<ThemeMode, ThemePalette>>>();
 
-export function getThemePalette(theme, mode) {
+export function getThemePalette(theme: Theme, mode: ThemeMode) {
   let palettes = paletteCache.get(theme);
   if (!palettes) {
     palettes = {};
@@ -179,7 +231,7 @@ export function getThemePalette(theme, mode) {
   return palettes[mode];
 }
 
-export function tintSeedWithArtwork(seed, artwork) {
+export function tintSeedWithArtwork(seed: ThemeSeed, artwork: HexColor): ThemeSeed {
   const art = hexToOklch(artwork);
   const background = hexToOklch(seed.background);
   const dark = isDarkColor(seed.background);
@@ -194,11 +246,11 @@ export function tintSeedWithArtwork(seed, artwork) {
   };
 }
 
-function normalizeSeed(value, mode, themeName) {
+function normalizeSeed(value: StoredThemeSeed, mode: ThemeMode, themeName: string): ThemeSeed {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${themeName} has unreadable ${mode} colors.`);
   }
-  const seed = {};
+  const seed: Partial<Record<ThemeSeedRole, HexColor>> = {};
   for (const role of THEME_SEED_ROLES) {
     if (value[role] === undefined || value[role] === null || value[role] === "") continue;
     const color = normalizeHexColor(value[role]);
@@ -210,35 +262,38 @@ function normalizeSeed(value, mode, themeName) {
   if (isDarkColor(seed.background) !== (mode === "dark")) {
     throw new Error(`${themeName} needs a ${mode} background for its ${mode} colors.`);
   }
-  return seed;
+  return seed as ThemeSeed;
 }
 
-export function normalizeThemeName(value) {
+export function normalizeThemeName(value: unknown) {
   const name = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
   if (!name) throw new Error("Give the theme a name.");
   if (name.length > 48) throw new Error("Theme names can be up to 48 characters.");
   return name;
 }
 
-export function isThemeId(value) {
+export function isThemeId(value: unknown): value is string {
   return typeof value === "string" && /^[a-z0-9](?:[a-z0-9-]{0,63})$/.test(value);
 }
 
-export function normalizeTheme(value) {
+export function normalizeTheme(value: StoredTheme): Theme {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("This theme is unreadable.");
   const name = normalizeThemeName(value.name);
   if (!isThemeId(value.id)) throw new Error(`${name} has an invalid id.`);
-  const theme = { id: value.id, name };
+  const theme: { id: string; name: string; light?: ThemeSeed; dark?: ThemeSeed } = {
+    id: value.id,
+    name,
+  };
   for (const mode of THEME_MODES) {
     if (value[mode] !== undefined && value[mode] !== null)
       theme[mode] = normalizeSeed(value[mode], mode, name);
   }
   if (!theme.light && !theme.dark) throw new Error(`${name} needs light or dark colors.`);
-  return theme;
+  return theme as Theme;
 }
 
-export function createThemeId(name, takenIds = []) {
+export function createThemeId(name: unknown, takenIds: string[] = []) {
   const slug =
     String(name || "")
       .toLowerCase()
@@ -251,7 +306,7 @@ export function createThemeId(name, takenIds = []) {
   return id;
 }
 
-export function createDefaultThemeDocument() {
+export function createDefaultThemeDocument(): ThemeDocument {
   return {
     version: THEME_DOCUMENT_VERSION,
     themeId: DEFAULT_THEME_ID,
@@ -261,13 +316,14 @@ export function createDefaultThemeDocument() {
   };
 }
 
-export function normalizeThemeDocument(value) {
+export function normalizeThemeDocument(value: StoredThemeDocument): ThemeDocument {
   const document = createDefaultThemeDocument();
   if (!value || typeof value !== "object" || value.version !== THEME_DOCUMENT_VERSION)
     return document;
-  if (THEME_APPEARANCES.includes(value.appearance)) document.appearance = value.appearance;
+  if (THEME_APPEARANCES.includes(value.appearance))
+    document.appearance = value.appearance as string;
   document.matchArtwork = value.matchArtwork === true;
-  const seen = new Set(BUILT_IN_THEME_IDS);
+  const seen = new Set<string>(BUILT_IN_THEME_IDS);
   for (const item of Array.isArray(value.themes) ? value.themes : []) {
     if (document.themes.length >= MAX_CUSTOM_THEMES) break;
     try {
@@ -283,23 +339,23 @@ export function normalizeThemeDocument(value) {
   return document;
 }
 
-export function isDefaultThemeDocument(document) {
+export function isDefaultThemeDocument(document: ThemeDocument) {
   return JSON.stringify(document) === JSON.stringify(createDefaultThemeDocument());
 }
 
-export function convertLegacyTheme(value) {
+export function convertLegacyTheme(value: StoredLegacyTheme): StoredTheme {
   if (!value || typeof value !== "object" || !value.colors)
     throw new Error("This theme file is unreadable.");
   const palettes = [value.colors, ...Object.values(value.variants || {})];
-  const theme = { id: value.id, name: value.name ?? value.label };
+  const theme: StoredTheme = { id: value.id, name: value.name ?? value.label };
   for (const colors of palettes) {
     const background = normalizeHexColor(String(colors?.surface || "").slice(0, 7));
     const accent = normalizeHexColor(String(colors?.accent || "").slice(0, 7));
     if (!background || !accent) continue;
     const mode = isDarkColor(background) ? "dark" : "light";
     if (theme[mode]) continue;
-    const seed = { background, accent };
-    for (const role of ["text", "danger", "warning", "success", "info"]) {
+    const seed: StoredThemeSeed = { background, accent };
+    for (const role of ["text", "danger", "warning", "success", "info"] as const) {
       const color = normalizeHexColor(String(colors[role] || "").slice(0, 7));
       if (color) seed[role] = color;
     }
@@ -308,7 +364,7 @@ export function convertLegacyTheme(value) {
   return theme;
 }
 
-function readStorage(key) {
+function readStorage(key: string): string | null {
   try {
     return globalThis.localStorage?.getItem(key) ?? null;
   } catch {
@@ -316,7 +372,7 @@ function readStorage(key) {
   }
 }
 
-function writeStorage(key, value) {
+function writeStorage(key: string, value: string | null) {
   try {
     if (value === null) globalThis.localStorage?.removeItem(key);
     else globalThis.localStorage?.setItem(key, value);
@@ -326,7 +382,7 @@ function writeStorage(key, value) {
   }
 }
 
-function parseJson(value) {
+function parseJson(value: string | null) {
   try {
     return JSON.parse(value);
   } catch {
@@ -334,12 +390,12 @@ function parseJson(value) {
   }
 }
 
-function migrateLegacyDocument() {
+function migrateLegacyDocument(): ThemeDocument | null {
   const selection = readStorage("aurralTheme");
   const appearance = readStorage("aurralThemeAppearance:v1");
   const legacyThemes = parseJson(readStorage("aurralThemes:v1"));
   if (selection === null && appearance === null && legacyThemes === null) return null;
-  const themes = [];
+  const themes: Theme[] = [];
   let themeId = THEME_APPEARANCES.includes(selection) ? DEFAULT_THEME_ID : selection;
   for (const item of Array.isArray(legacyThemes) ? legacyThemes : []) {
     try {
@@ -368,44 +424,44 @@ function migrateLegacyDocument() {
   return document;
 }
 
-function readLocalDocument() {
+function readLocalDocument(): ThemeDocument {
   const stored = parseJson(readStorage(THEME_STORAGE_KEY));
   if (stored) return normalizeThemeDocument(stored);
   return migrateLegacyDocument() || createDefaultThemeDocument();
 }
 
-let documentCache = null;
-let artworkColor = null;
-let preview = null;
-let saveToAccount = null;
-let appliedPalette = null;
-let tweenFrame = null;
-let lastPaintCache = null;
-const listeners = new Set();
+let documentCache: ThemeDocument | null = null;
+let artworkColor: HexColor | null = null;
+let preview: { theme: Theme; mode: ThemeMode } | null = null;
+let saveToAccount: ((document: ThemeDocument) => void) | null = null;
+let appliedPalette: ThemePalette | null = null;
+let tweenFrame: number | null = null;
+let lastPaintCache: string | null = null;
+const listeners = new Set<() => void>();
 
-export function getThemeDocument() {
+export function getThemeDocument(): ThemeDocument {
   documentCache ||= readLocalDocument();
   return documentCache;
 }
 
-export function subscribeToTheme(listener) {
+export function subscribeToTheme(listener: () => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-export function getAllThemes(document = getThemeDocument()) {
+export function getAllThemes(document = getThemeDocument()): Theme[] {
   return [...BUILT_IN_THEMES, ...document.themes];
 }
 
-export function findTheme(themeId, document = getThemeDocument()) {
+export function findTheme(themeId: string, document = getThemeDocument()) {
   return getAllThemes(document).find((theme) => theme.id === themeId) || null;
 }
 
-export function isCustomTheme(theme) {
-  return Boolean(theme) && !BUILT_IN_THEME_IDS.has(theme.id);
+export function isCustomTheme(theme: Theme | null) {
+  return Boolean(theme) && !BUILT_IN_THEME_IDS.has(theme!.id);
 }
 
-function commit(document, { fromAccount = false } = {}) {
+function commit(document: ThemeDocument, { fromAccount = false }: { fromAccount?: boolean } = {}) {
   documentCache = document;
   const storedLocally = writeStorage(THEME_STORAGE_KEY, JSON.stringify(document));
   render();
@@ -417,27 +473,27 @@ function commit(document, { fromAccount = false } = {}) {
 const NOT_SAVED_MESSAGE =
   "This browser couldn't save your themes. They'll reset when the page reloads.";
 
-function update(changes) {
+function update(changes: Partial<ThemeDocument>) {
   commit(normalizeThemeDocument({ ...getThemeDocument(), ...changes }));
 }
 
-export function selectTheme(themeId) {
+export function selectTheme(themeId: string) {
   update({ themeId: findTheme(themeId) ? themeId : DEFAULT_THEME_ID });
 }
 
-export function setThemeAppearance(appearance) {
+export function setThemeAppearance(appearance: string) {
   update({ appearance: THEME_APPEARANCES.includes(appearance) ? appearance : "system" });
 }
 
-export function setImmersiveMode(enabled) {
+export function setImmersiveMode(enabled: unknown) {
   update({ matchArtwork: Boolean(enabled) });
 }
 
-export function saveCustomTheme(value, { select = true } = {}) {
+export function saveCustomTheme(value: StoredTheme, { select = true }: { select?: boolean } = {}) {
   const document = getThemeDocument();
   const exists = document.themes.some((theme) => theme.id === value.id);
   const id = exists
-    ? value.id
+    ? (value.id as string)
     : createThemeId(
         value.name,
         document.themes.map((theme) => theme.id),
@@ -454,7 +510,7 @@ export function saveCustomTheme(value, { select = true } = {}) {
   return theme;
 }
 
-export function removeCustomTheme(themeId) {
+export function removeCustomTheme(themeId: string) {
   const document = getThemeDocument();
   const index = document.themes.findIndex((theme) => theme.id === themeId);
   if (index < 0) return null;
@@ -471,7 +527,11 @@ export function removeCustomTheme(themeId) {
   return removed;
 }
 
-export function restoreCustomTheme({ theme, index, wasSelected }) {
+export function restoreCustomTheme({
+  theme,
+  index,
+  wasSelected,
+}: NonNullable<ReturnType<typeof removeCustomTheme>>) {
   const document = getThemeDocument();
   if (document.themes.some((item) => item.id === theme.id)) return;
   if (document.themes.length >= MAX_CUSTOM_THEMES) {
@@ -484,7 +544,7 @@ export function restoreCustomTheme({ theme, index, wasSelected }) {
   commit({ ...document, themes, themeId: wasSelected ? theme.id : document.themeId });
 }
 
-function syncThemeWithAccount(userId, accountDocument) {
+function syncThemeWithAccount(userId: number, accountDocument: StoredThemeDocument | null) {
   const owner = Number(readStorage(THEME_OWNER_STORAGE_KEY)) || null;
   writeStorage(THEME_OWNER_STORAGE_KEY, String(userId));
   if (accountDocument) {
@@ -501,11 +561,21 @@ function syncThemeWithAccount(userId, accountDocument) {
   return isDefaultThemeDocument(local) ? null : local;
 }
 
-export function startThemeAccountSync({ userId, loadAccountTheme, saveAccountTheme, onSaveError }) {
+export function startThemeAccountSync({
+  userId,
+  loadAccountTheme,
+  saveAccountTheme,
+  onSaveError,
+}: {
+  userId: number;
+  loadAccountTheme: () => Promise<{ theme?: StoredThemeDocument | null } | undefined>;
+  saveAccountTheme: (document: ThemeDocument) => Promise<unknown>;
+  onSaveError?: () => void;
+}) {
   let stopped = false;
   let edits = 0;
-  let pending = Promise.resolve();
-  const save = (document) => {
+  let pending: Promise<unknown> = Promise.resolve();
+  const save = (document: ThemeDocument) => {
     edits += 1;
     pending = pending
       .then(() => (stopped ? undefined : saveAccountTheme(document)))
@@ -536,41 +606,41 @@ export function startThemeAccountSync({ userId, loadAccountTheme, saveAccountThe
   };
 }
 
-export function previewTheme(theme, mode) {
+export function previewTheme(theme: Theme | null, mode: ThemeMode) {
   preview = theme ? { theme, mode } : null;
   render();
 }
 
-export function setArtworkColor(color) {
+export function setArtworkColor(color: unknown) {
   const next = normalizeHexColor(color);
   if (next === artworkColor) return;
   artworkColor = next;
   render({ animate: true });
 }
 
-function systemMode() {
+function systemMode(): ThemeMode {
   return globalThis.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-export function resolveThemeMode(appearance = getThemeDocument().appearance) {
+export function resolveThemeMode(appearance = getThemeDocument().appearance): ThemeMode {
   return appearance === "light" || appearance === "dark" ? appearance : systemMode();
 }
 
-function mixPaletteColor(from, to, amount) {
-  const rgb = mixColors(from.slice(0, 7), to.slice(0, 7), amount);
+function mixPaletteColor(from: string, to: string, amount: number) {
+  const rgb = mixColors(from.slice(0, 7) as HexColor, to.slice(0, 7) as HexColor, amount);
   if (from.length === 7 && to.length === 7) return rgb;
-  const alpha = (hex) => (hex.length === 9 ? Number.parseInt(hex.slice(7), 16) / 255 : 1);
+  const alpha = (hex: string) => (hex.length === 9 ? Number.parseInt(hex.slice(7), 16) / 255 : 1);
   return withAlpha(rgb, alpha(from) + (alpha(to) - alpha(from)) * amount);
 }
 
-function setVariables(root, palette) {
+function setVariables(root: HTMLElement, palette: ThemePalette | null) {
   for (const role of THEME_COLOR_ROLES) {
     if (palette) root.style.setProperty(cssVariable(role), palette[role]);
     else root.style.removeProperty(cssVariable(role));
   }
 }
 
-function updateMetaThemeColor(palette) {
+function updateMetaThemeColor(palette: ThemePalette | null) {
   const document = globalThis.document;
   const color =
     palette?.chrome ||
@@ -580,7 +650,11 @@ function updateMetaThemeColor(palette) {
     meta.setAttribute("content", color);
 }
 
-function paint(root, palette, { animate, fallback }) {
+function paint(
+  root: HTMLElement,
+  palette: ThemePalette | null,
+  { animate, fallback }: { animate: boolean; fallback: ThemePalette },
+) {
   if (tweenFrame !== null) {
     globalThis.cancelAnimationFrame?.(tweenFrame);
     tweenFrame = null;
@@ -602,7 +676,7 @@ function paint(root, palette, { animate, fallback }) {
     return;
   }
   const started = globalThis.performance?.now?.() ?? Date.now();
-  const step = (now) => {
+  const step = (now: number) => {
     const progress = Math.min(1, (now - started) / 280);
     const eased = 1 - (1 - progress) ** 3;
     if (progress < 1) {
@@ -610,7 +684,7 @@ function paint(root, palette, { animate, fallback }) {
         root,
         Object.fromEntries(
           THEME_COLOR_ROLES.map((role) => [role, mixPaletteColor(from[role], to[role], eased)]),
-        ),
+        ) as ThemePalette,
       );
       tweenFrame = globalThis.requestAnimationFrame(step);
       return;
@@ -622,7 +696,7 @@ function paint(root, palette, { animate, fallback }) {
   tweenFrame = globalThis.requestAnimationFrame(step);
 }
 
-function writePaintCache(document, theme) {
+function writePaintCache(document: ThemeDocument, theme: Theme) {
   const cache = JSON.stringify({
     appearance: document.appearance,
     themeId: theme.id,
@@ -634,7 +708,7 @@ function writePaintCache(document, theme) {
   writeStorage(THEME_PAINT_STORAGE_KEY, cache);
 }
 
-function render({ animate = false } = {}) {
+function render({ animate = false }: { animate?: boolean } = {}) {
   const root = globalThis.document?.documentElement;
   if (!root?.style) return;
   const document = getThemeDocument();

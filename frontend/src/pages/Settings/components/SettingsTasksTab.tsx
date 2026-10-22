@@ -1,5 +1,13 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import type {
+  clearStaleHonkerJobs,
+  HonkerTaskStatus,
+  TaskQueueRow,
+  TaskScheduledRow,
+  TaskWorkerRow,
+} from "../../../../../backend/services/honkerTaskStatus.ts";
+import type { ApiError } from "../../../utils/api/core.ts";
 import {
   getSettingsTasks,
   clearSettingsStaleTasks,
@@ -12,6 +20,10 @@ import { DotLoader } from "../../../components/DotLoader";
 import Tooltip from "../../../components/Tooltip";
 import { formatRelativeTime } from "../../../utils/dateTime.ts";
 const POLL_INTERVAL_MS = 5000;
+
+type ClearStaleResult = Awaited<ReturnType<typeof clearStaleHonkerJobs>> & {
+  tasks: HonkerTaskStatus;
+};
 
 const STATUS_META = {
   interrupted: {
@@ -64,18 +76,18 @@ const STATUS_META = {
   },
 };
 
-function parseDate(value) {
+function parseDate(value: string | null | undefined) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
 }
 
-function formatRelative(value, empty = "Never") {
+function formatRelative(value: string | null | undefined, empty = "Never") {
   const date = parseDate(value);
   return date ? formatRelativeTime(date) : empty;
 }
 
-function formatDuration(ms) {
+function formatDuration(ms: number | string | null | undefined) {
   if (ms == null || ms === "") return "—";
   const value = Number(ms);
   if (!Number.isFinite(value) || value < 0) return "—";
@@ -87,25 +99,25 @@ function formatDuration(ms) {
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
-function formatCount(value) {
+function formatCount(value: number | null | undefined) {
   const count = Number(value || 0);
   return Number.isFinite(count) ? count : 0;
 }
 
-function isFutureRunAt(task) {
+function isFutureRunAt(task: TaskQueueRow) {
   if (task.status !== "scheduled") return false;
   const runAt = parseDate(task.runAt);
   return runAt ? runAt.getTime() > Date.now() : false;
 }
 
-function formatQueueDuration(task) {
+function formatQueueDuration(task: TaskQueueRow) {
   if (task.status === "running") {
     return formatDuration(task.runningForMs);
   }
   return formatDuration(task.durationMs);
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status }: { status: string }) {
   const meta = STATUS_META[status] || {
     label: status || "Unknown",
     tone: "muted",
@@ -127,7 +139,7 @@ function StatusBadge({ status }) {
   );
 }
 
-function EmptyRows({ colSpan }) {
+function EmptyRows({ colSpan }: { colSpan: number }) {
   return (
     <tr className="arr-table__empty-row">
       <td colSpan={colSpan}>No task data available.</td>
@@ -135,7 +147,7 @@ function EmptyRows({ colSpan }) {
   );
 }
 
-function LoadingRows({ colSpan }) {
+function LoadingRows({ colSpan }: { colSpan: number }) {
   return (
     <tr className="arr-table__empty-row">
       <td colSpan={colSpan}>
@@ -145,7 +157,17 @@ function LoadingRows({ colSpan }) {
   );
 }
 
-function TasksHealthSummary({ summary, loading, clearing = false, onClearStale }) {
+function TasksHealthSummary({
+  summary,
+  loading,
+  clearing = false,
+  onClearStale,
+}: {
+  summary: HonkerTaskStatus["summary"] | undefined;
+  loading: boolean;
+  clearing?: boolean;
+  onClearStale?: () => void;
+}) {
   if (loading || !summary) {
     return (
       <div className="arr-info arr-info--tasks">
@@ -207,7 +229,13 @@ function TasksHealthSummary({ summary, loading, clearing = false, onClearStale }
   );
 }
 
-function ScheduledTable({ scheduled = [], loading = false }) {
+function ScheduledTable({
+  scheduled = [],
+  loading = false,
+}: {
+  scheduled?: TaskScheduledRow[];
+  loading?: boolean;
+}) {
   return (
     <div className="arr-table-wrap">
       <table className="arr-table arr-table--tasks" aria-busy={loading}>
@@ -255,7 +283,7 @@ function ScheduledTable({ scheduled = [], loading = false }) {
   );
 }
 
-function isIdleWorker(worker) {
+function isIdleWorker(worker: TaskWorkerRow) {
   return (
     worker.status === "not_loaded" &&
     formatCount(worker.processing) === 0 &&
@@ -266,7 +294,15 @@ function isIdleWorker(worker) {
   );
 }
 
-function WorkersTable({ workers = [], loading = false, showAllWorkers = false }) {
+function WorkersTable({
+  workers = [],
+  loading = false,
+  showAllWorkers = false,
+}: {
+  workers?: TaskWorkerRow[];
+  loading?: boolean;
+  showAllWorkers?: boolean;
+}) {
   const visibleWorkers = useMemo(() => {
     if (showAllWorkers) return workers;
     return workers.filter((worker) => !isIdleWorker(worker));
@@ -327,7 +363,13 @@ function WorkersTable({ workers = [], loading = false, showAllWorkers = false })
   );
 }
 
-function QueueTable({ queue = [], loading = false }) {
+function QueueTable({
+  queue = [],
+  loading = false,
+}: {
+  queue?: TaskQueueRow[];
+  loading?: boolean;
+}) {
   return (
     <div className="arr-table-wrap">
       <table className="arr-table arr-table--tasks arr-table--task-queue" aria-busy={loading}>
@@ -412,24 +454,30 @@ function QueueTable({ queue = [], loading = false }) {
   );
 }
 
-export function SettingsTasksTab({ showError, showSuccess }) {
+export function SettingsTasksTab({
+  showError,
+  showSuccess,
+}: {
+  showError: (message: string) => void;
+  showSuccess: (message: string) => void;
+}) {
   const [clearing, setClearing] = useState(false);
   const [showAllWorkers, setShowAllWorkers] = useState(false);
-  const tasksQuery = useQuery({
+  const tasksQuery = useQuery<HonkerTaskStatus, ApiError>({
     queryKey: queryKeys.settingsTasks,
     queryFn: ({ signal }) => getSettingsTasks({ signal }),
     staleTime: 0,
     refetchInterval: POLL_INTERVAL_MS,
     refetchIntervalInBackground: false,
   });
-  const tasks = tasksQuery.data;
+  const tasks: HonkerTaskStatus | undefined = tasksQuery.data;
   const loading = tasksQuery.isPending;
   const loadError =
     tasksQuery.error?.response?.data?.message ||
     tasksQuery.error?.response?.data?.error ||
     tasksQuery.error?.message ||
     null;
-  const clearMutation = useMutation({
+  const clearMutation = useMutation<ClearStaleResult>({
     mutationFn: clearSettingsStaleTasks,
     onSuccess: (result) => queryClient.setQueryData(queryKeys.settingsTasks, result.tasks || null),
   });

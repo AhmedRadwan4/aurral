@@ -1,11 +1,12 @@
 import crypto from "crypto";
+import type { StoredIntegrations } from "../db/helpers/settings.ts";
 
 const PREFIX = "AURRAL_ENC:";
 const ALGO = "aes-256-gcm";
 const IV_LEN = 12;
 const TAG_LEN = 16;
 
-export function encryptWithKey(text, key) {
+export function encryptWithKey(text: string | null | undefined, key: Buffer) {
   if (text == null || text === "") return text;
   if (!key || key.length !== 32) return text;
   const iv = crypto.randomBytes(IV_LEN);
@@ -17,7 +18,7 @@ export function encryptWithKey(text, key) {
   return PREFIX + Buffer.concat([iv, tag, enc]).toString("base64");
 }
 
-export function decryptWithKey(text, key) {
+export function decryptWithKey(text: string | null | undefined, key: Buffer) {
   if (text == null || text === "") return text;
   if (typeof text !== "string" || !text.startsWith(PREFIX)) return text;
   if (!key || key.length !== 32) return text;
@@ -52,26 +53,31 @@ const SENSITIVE_PATHS = [
   ["lastfm", "apiSecret"],
 ];
 
-function getAt(obj, path) {
-  let cur = obj;
+type JsonObject = Record<string, unknown>;
+
+function getAt(obj: object, path: string[]) {
+  let cur: unknown = obj;
   for (const p of path) {
     if (cur == null || typeof cur !== "object") return undefined;
-    cur = cur[p];
+    cur = (cur as JsonObject)[p];
   }
   return cur;
 }
 
-function setAt(obj, path, value) {
-  let cur = obj;
+function setAt(obj: object, path: string[], value: unknown) {
+  let cur = obj as JsonObject;
   for (let i = 0; i < path.length - 1; i++) {
     const p = path[i];
     if (cur[p] == null) cur[p] = {};
-    cur = cur[p];
+    cur = cur[p] as JsonObject;
   }
   if (cur != null) cur[path[path.length - 1]] = value;
 }
 
-export function decryptIntegrations(integrations, key) {
+export function decryptIntegrations(
+  integrations: StoredIntegrations | null | undefined,
+  key: Buffer,
+): StoredIntegrations | null | undefined {
   if (!integrations || typeof integrations !== "object") return integrations;
   const out = structuredClone(integrations);
   for (const path of SENSITIVE_PATHS) {
@@ -81,7 +87,10 @@ export function decryptIntegrations(integrations, key) {
   return out;
 }
 
-export function encryptIntegrations(integrations, key) {
+export function encryptIntegrations(
+  integrations: StoredIntegrations | null | undefined,
+  key: Buffer,
+): StoredIntegrations | null | undefined {
   if (!integrations || typeof integrations !== "object") return integrations;
   const out = structuredClone(integrations);
   for (const path of SENSITIVE_PATHS) {

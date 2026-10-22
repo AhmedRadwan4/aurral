@@ -8,18 +8,257 @@ import {
 } from "../../services/downloadFolderConfig.ts";
 import { normalizeExistingFileMode } from "../../services/downloadJobs/fileReuseMode.ts";
 import { normalizeDateTimeFormat } from "../../config/constants.ts";
+import type { defaultData } from "../../config/constants.ts";
+import type { normalizeNewsFeeds } from "../../services/apiClients/config.ts";
 import {
   normalizeIntervalDays,
   normalizeQualityProfile,
 } from "../../services/qualityProfileModel.ts";
+import type { SettingsRow } from "../rows.ts";
+import type { CacheOps } from "./cache.ts";
+import type { DiscoveryCacheOps } from "./discovery.ts";
+import type { ArtistOverrideOps } from "./overrides.ts";
+import type { LidarrArtistIdMapOps } from "./lidarr.ts";
+import type { AurralHistoryOps } from "./history.ts";
+import type { InboxOps } from "./inbox.ts";
 
-const getSettingStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
-const upsertSettingStmt = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
-const deleteSettingStmt = db.prepare("DELETE FROM settings WHERE key = ?");
+type IntegrationDefaults = typeof defaultData.settings.integrations;
+
+type LidarrIntegration = Omit<
+  IntegrationDefaults["lidarr"],
+  "rootFolderPath" | "rootFolderPaths" | "qualityProfileId" | "metadataProfileId" | "tagId"
+> & {
+  rootFolderPath: string | null;
+  rootFolderPaths: string[];
+  qualityProfileId: number | null;
+  metadataProfileId: number | null;
+  tagId: number | null;
+  enabled?: boolean;
+  insecure?: boolean;
+};
+
+type NavidromeIntegration = IntegrationDefaults["navidrome"] & {
+  m3uPathMode?: unknown;
+  pathMappings?: unknown;
+};
+
+type PlexIntegration = IntegrationDefaults["plex"] & {
+  loginEnabled?: boolean;
+  configuredByUserId?: number;
+};
+
+type LastfmIntegration = IntegrationDefaults["lastfm"];
+
+type SlskdIntegration = IntegrationDefaults["slskd"] & { cleanupAfterRuns?: boolean };
+
+interface ProwlarrIndexerOverride {
+  enabled: boolean;
+  priority: number;
+}
+
+type ProwlarrIntegration = Omit<IntegrationDefaults["prowlarr"], "indexers"> & {
+  indexers: Record<string, ProwlarrIndexerOverride>;
+};
+
+type NzbgetIntegration = IntegrationDefaults["nzbget"] & { deleteLeftovers?: boolean };
+
+type SabnzbdIntegration = IntegrationDefaults["sabnzbd"];
+
+type YtdlpIntegration = IntegrationDefaults["ytdlp"];
+
+type DeemixIntegration = IntegrationDefaults["deemix"];
+
+type TicketmasterIntegration = IntegrationDefaults["ticketmaster"];
+
+type NewsFeed = ReturnType<typeof normalizeNewsFeeds>[number];
+
+type NewsIntegration = Omit<IntegrationDefaults["news"], "feeds"> & {
+  feeds: NewsFeed[];
+  groups?: Record<string, boolean>;
+};
+
+type MetadataIntegration = IntegrationDefaults["metadata"];
+
+type GeneralIntegration = IntegrationDefaults["general"] & { apiKey?: string };
+
+type GotifyIntegration = IntegrationDefaults["gotify"];
+
+type JellyfinIntegration = IntegrationDefaults["jellyfin"];
+
+interface GoogleIntegration {
+  enabled?: boolean;
+  clientId?: string;
+  clientSecret?: string;
+  redirectUri?: string;
+}
+
+interface WebhookHeader {
+  key: string;
+  value: string;
+}
+
+interface WebhookTarget {
+  url: string;
+  headers?: WebhookHeader[];
+  body?: string | null;
+}
+
+type WebhookEvents = IntegrationDefaults["webhookEvents"];
+
+export interface StoredIntegrations {
+  [service: string]: unknown;
+  navidrome?: Partial<NavidromeIntegration>;
+  plex?: Partial<PlexIntegration>;
+  jellyfin?: Partial<JellyfinIntegration>;
+  lastfm?: Partial<LastfmIntegration>;
+  slskd?: Partial<SlskdIntegration>;
+  prowlarr?: Partial<ProwlarrIntegration>;
+  nzbget?: Partial<NzbgetIntegration>;
+  sabnzbd?: Partial<SabnzbdIntegration>;
+  ytdlp?: Partial<YtdlpIntegration>;
+  deemix?: Partial<DeemixIntegration>;
+  ticketmaster?: Partial<TicketmasterIntegration>;
+  news?: Partial<NewsIntegration>;
+  lidarr?: Partial<LidarrIntegration>;
+  metadata?: Partial<MetadataIntegration>;
+  general?: Partial<GeneralIntegration>;
+  gotify?: Partial<GotifyIntegration>;
+  google?: Partial<GoogleIntegration>;
+  webhooks?: WebhookTarget[];
+  webhookEvents?: Partial<WebhookEvents>;
+  soulseek?: unknown;
+  musicbrainz?: { email?: string; customUrl?: string };
+  coverArtArchive?: unknown;
+}
+
+export type SettingsPlaylistWorker = ReturnType<typeof normalizePlaylistWorkerSettings>;
+
+interface SettingsPlaylistArtwork {
+  style: "aurral" | "photo";
+}
+
+type SettingsMissingTrackSearch = ReturnType<typeof normalizeMissingTrackSearchSettings>;
+
+type SettingsInbox = typeof defaultData.settings.inbox;
+
+interface StoredSecurity {
+  localNetworkBypass?: { enabled?: boolean };
+  ssoOnly?: boolean;
+}
+
+export interface StoredPlaylistWorker {
+  concurrency?: unknown;
+  retryPausedPlaylistIds?: unknown;
+  existingFileMode?: unknown;
+}
+
+interface StoredPlaylistArtwork {
+  style?: unknown;
+}
+
+interface StoredMissingTrackSearch {
+  enabled?: unknown;
+  intervalDays?: unknown;
+}
+
+interface StoredInbox {
+  enabled?: boolean;
+  releases?: boolean;
+  shows?: boolean;
+  news?: boolean;
+  recommendedNews?: boolean;
+  discoveries?: boolean;
+}
+
+interface StoredBlocklist {
+  artists?: string[];
+  tags?: string[];
+}
+
+export type QualityProfile = ReturnType<typeof normalizeQualityProfile>;
+
+export interface AppSettings {
+  integrations: StoredIntegrations;
+  quality: string;
+  dateTimeFormat: string;
+  qualityProfile: QualityProfile;
+  queueCleaner: Record<string, unknown>;
+  security: StoredSecurity;
+  rootFolderPath: string | null;
+  downloadFolderPath: string | null;
+  pathMappings: ReturnType<typeof normalizePathMappings>;
+  releaseTypes: string[];
+  flows: unknown;
+  sharedPlaylists: unknown;
+  subsonic: typeof defaultData.settings.subsonic;
+  playlistWorker: SettingsPlaylistWorker;
+  playlistArtwork: SettingsPlaylistArtwork;
+  missingTrackSearch: SettingsMissingTrackSearch;
+  reviewTimeoutHours: number;
+  inbox: SettingsInbox;
+  blocklist: StoredBlocklist;
+  onboardingComplete: boolean;
+}
+
+export interface SettingsUpdate {
+  integrations?: StoredIntegrations;
+  quality?: string;
+  dateTimeFormat?: string | null;
+  qualityProfile?: unknown;
+  queueCleaner?: Record<string, unknown>;
+  security?: StoredSecurity;
+  inbox?: StoredInbox;
+  rootFolderPath?: string | null;
+  downloadFolderPath?: string | null;
+  pathMappings?: unknown;
+  releaseTypes?: string[];
+  flows?: unknown;
+  sharedPlaylists?: unknown;
+  subsonic?: { favoriteAutoKeep?: boolean };
+  playlistWorker?: StoredPlaylistWorker;
+  playlistArtwork?: StoredPlaylistArtwork;
+  missingTrackSearch?: StoredMissingTrackSearch;
+  reviewTimeoutHours?: number | string;
+  blocklist?: StoredBlocklist;
+  onboardingComplete?: boolean;
+}
+
+export interface SettingsOps {
+  invalidateSettingsCache: () => void;
+  getJSONSetting: <T = unknown>(key: string) => T | null;
+  setJSONSetting: (key: string, value: unknown) => void;
+  getUserDiscoverLayout: (userId: number) => unknown;
+  setUserDiscoverLayout: (userId: number, layout: unknown) => void;
+  getUserTheme: (userId: number) => unknown;
+  setUserTheme: (userId: number, theme: unknown) => void;
+  deleteUserTheme: (userId: number) => void;
+  setLidarrRootFolderPaths: (paths: unknown) => string[];
+  getSettings: () => AppSettings;
+  updateSettings: (settings: SettingsUpdate) => void;
+}
+
+export type DbOps = SettingsOps &
+  CacheOps &
+  DiscoveryCacheOps &
+  ArtistOverrideOps &
+  LidarrArtistIdMapOps &
+  AurralHistoryOps &
+  InboxOps;
+
+const getSettingStmt = db.prepare<[string], Pick<SettingsRow, "value">>(
+  "SELECT value FROM settings WHERE key = ?",
+);
+const upsertSettingStmt = db.prepare<[string, string | null]>(
+  "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+);
+const deleteSettingStmt = db.prepare<[string]>("DELETE FROM settings WHERE key = ?");
 
 const PLAYLIST_WORKER_RETRY_CYCLE_MINUTES = 360;
 
-function readStoredSettingJson(primaryKey, legacyKeys = []) {
+function readStoredSettingJson<T = unknown>(
+  primaryKey: string,
+  legacyKeys: string[] = [],
+): T | null {
   const primary = dbHelpers.parseJSON(getSettingStmt.get(primaryKey)?.value);
   if (primary != null) return primary;
   for (const legacyKey of legacyKeys) {
@@ -29,8 +268,10 @@ function readStoredSettingJson(primaryKey, legacyKeys = []) {
   return null;
 }
 
-function normalizePlaylistArtworkSettings(raw) {
-  const artwork = raw && typeof raw === "object" ? raw : {};
+function normalizePlaylistArtworkSettings(
+  raw: StoredPlaylistArtwork | null | undefined,
+): SettingsPlaylistArtwork {
+  const artwork: StoredPlaylistArtwork = raw && typeof raw === "object" ? raw : {};
   const style = String(artwork.style || "photo")
     .trim()
     .toLowerCase();
@@ -39,8 +280,8 @@ function normalizePlaylistArtworkSettings(raw) {
   };
 }
 
-function normalizeMissingTrackSearchSettings(raw) {
-  const search = raw && typeof raw === "object" ? raw : {};
+function normalizeMissingTrackSearchSettings(raw: StoredMissingTrackSearch | null | undefined) {
+  const search: StoredMissingTrackSearch = raw && typeof raw === "object" ? raw : {};
   return {
     enabled: search.enabled === true,
     intervalDays: normalizeIntervalDays(search.intervalDays, 1),
@@ -50,13 +291,13 @@ function normalizeMissingTrackSearchSettings(raw) {
 export const MAX_REVIEW_TIMEOUT_HOURS = 720;
 
 // Hours a song may wait in review before it is denied; 0 waits indefinitely.
-export function normalizeReviewTimeoutHours(value) {
+export function normalizeReviewTimeoutHours(value: unknown): number {
   const hours = Number(value);
   return Number.isInteger(hours) && hours >= 0 && hours <= MAX_REVIEW_TIMEOUT_HOURS ? hours : 0;
 }
 
-function normalizePlaylistWorkerSettings(raw) {
-  const worker = raw && typeof raw === "object" ? raw : {};
+function normalizePlaylistWorkerSettings(raw: StoredPlaylistWorker | null | undefined) {
+  const worker: StoredPlaylistWorker = raw && typeof raw === "object" ? raw : {};
   const parsedConcurrency = Number(worker.concurrency);
   const concurrency =
     Number.isFinite(parsedConcurrency) && parsedConcurrency >= 1
@@ -88,11 +329,11 @@ function getOrCreateEncryptionKey() {
   return key;
 }
 
-let settingsCache = null;
+let settingsCache: AppSettings | null = null;
 let settingsCacheTime = 0;
 const SETTINGS_CACHE_TTL = 60000;
 
-const normalizeLidarrRootFolderPaths = (paths) => [
+const normalizeLidarrRootFolderPaths = (paths: unknown): string[] => [
   ...new Set(
     (Array.isArray(paths) ? paths : []).map((value) => String(value || "").trim()).filter(Boolean),
   ),
@@ -113,23 +354,23 @@ export const dbOps = {
   },
 
   getUserDiscoverLayout(userId) {
-    return dbOps.getJSONSetting(`user:${parseInt(userId, 10)}:discoverLayout`);
+    return dbOps.getJSONSetting(`user:${parseInt(String(userId), 10)}:discoverLayout`);
   },
 
   setUserDiscoverLayout(userId, layout) {
-    dbOps.setJSONSetting(`user:${parseInt(userId, 10)}:discoverLayout`, layout);
+    dbOps.setJSONSetting(`user:${parseInt(String(userId), 10)}:discoverLayout`, layout);
   },
 
   getUserTheme(userId) {
-    return dbOps.getJSONSetting(`user:${parseInt(userId, 10)}:theme`);
+    return dbOps.getJSONSetting(`user:${parseInt(String(userId), 10)}:theme`);
   },
 
   setUserTheme(userId, theme) {
-    dbOps.setJSONSetting(`user:${parseInt(userId, 10)}:theme`, theme);
+    dbOps.setJSONSetting(`user:${parseInt(String(userId), 10)}:theme`, theme);
   },
 
   deleteUserTheme(userId) {
-    deleteSettingStmt.run(`user:${parseInt(userId, 10)}:theme`);
+    deleteSettingStmt.run(`user:${parseInt(String(userId), 10)}:theme`);
   },
 
   setLidarrRootFolderPaths(paths) {
@@ -164,7 +405,9 @@ export const dbOps = {
     const quality = getSettingStmt.get("quality")?.value;
     const dateTimeFormat = getSettingStmt.get("dateTimeFormat")?.value;
     const queueCleaner = dbHelpers.parseJSON(getSettingStmt.get("queueCleaner")?.value);
-    const security = dbHelpers.parseJSON(getSettingStmt.get("security")?.value);
+    const security: StoredSecurity | null = dbHelpers.parseJSON(
+      getSettingStmt.get("security")?.value,
+    );
     const rootFolderPath = getSettingStmt.get("rootFolderPath")?.value;
     const downloadFolderPath = getSettingStmt.get("downloadFolderPath")?.value || null;
     syncDownloadFolderPath(downloadFolderPath);
@@ -172,27 +415,32 @@ export const dbOps = {
       dbHelpers.parseJSON(getSettingStmt.get("pathMappings")?.value) || [],
     );
     syncPathMappings(pathMappings);
-    const releaseTypes = dbHelpers.parseJSON(getSettingStmt.get("releaseTypes")?.value);
+    const releaseTypes: string[] | null = dbHelpers.parseJSON(
+      getSettingStmt.get("releaseTypes")?.value,
+    );
     const flows = readStoredSettingJson("flows", ["weeklyFlows"]);
     const staticPlaylists = readStoredSettingJson("sharedPlaylists", ["sharedFlowPlaylists"]);
-    const subsonic = readStoredSettingJson("subsonic") || {};
+    const subsonic = readStoredSettingJson<{ favoriteAutoKeep?: boolean }>("subsonic") || {};
     const playlistWorker = normalizePlaylistWorkerSettings(
-      readStoredSettingJson("playlistWorker", ["weeklyFlowWorker"]),
+      readStoredSettingJson<StoredPlaylistWorker>("playlistWorker", ["weeklyFlowWorker"]),
     );
     const playlistArtwork = normalizePlaylistArtworkSettings(
-      readStoredSettingJson("playlistArtwork"),
+      readStoredSettingJson<StoredPlaylistArtwork>("playlistArtwork"),
     );
     const missingTrackSearch = normalizeMissingTrackSearchSettings(
-      readStoredSettingJson("missingTrackSearch"),
+      readStoredSettingJson<StoredMissingTrackSearch>("missingTrackSearch"),
     );
     const reviewTimeoutHours = normalizeReviewTimeoutHours(
       getSettingStmt.get("reviewTimeoutHours")?.value,
     );
-    const inbox = dbHelpers.parseJSON(getSettingStmt.get("inbox")?.value) || {};
-    const blocklist = dbHelpers.parseJSON(getSettingStmt.get("blocklist")?.value);
+    const inbox: StoredInbox = dbHelpers.parseJSON(getSettingStmt.get("inbox")?.value) || {};
+    const blocklist: StoredBlocklist | null = dbHelpers.parseJSON(
+      getSettingStmt.get("blocklist")?.value,
+    );
     const onboardingComplete = getSettingStmt.get("onboardingComplete")?.value === "true";
 
-    const decryptedIntegrations = decryptIntegrations(integrations, encKey) || {};
+    const decryptedIntegrations: StoredIntegrations =
+      decryptIntegrations(integrations, encKey) || {};
     const storedQualityProfile = dbHelpers.parseJSON(getSettingStmt.get("qualityProfile")?.value);
     const qualityProfile = normalizeQualityProfile(
       storedQualityProfile,
@@ -249,7 +497,7 @@ export const dbOps = {
     const updateFn = db.transaction(() => {
       if (settings.integrations) {
         const encKey = getOrCreateEncryptionKey();
-        const existingIntegrations =
+        const existingIntegrations: StoredIntegrations =
           decryptIntegrations(
             dbHelpers.parseJSON(getSettingStmt.get("integrations")?.value),
             encKey,
@@ -377,7 +625,7 @@ export const dbOps = {
     });
     updateFn();
   },
-};
+} as DbOps;
 
 export function getSettingsEncryptionKey() {
   return getOrCreateEncryptionKey();

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -12,12 +12,21 @@ const FOCUSABLE_SELECTOR = [
 
 let bodyScrollLockCount = 0;
 let previousBodyOverflow = "";
-const openDialogStack = [];
-const isolatedElementState = new WeakMap();
+type InertableElement = Element & { inert?: boolean };
 
-function getFocusableElements(container) {
+interface IsolatedElementState {
+  count: number;
+  hadInertAttribute: boolean;
+  inert?: boolean;
+  ariaHidden: string | null;
+}
+
+const openDialogStack: symbol[] = [];
+const isolatedElementState = new WeakMap<Element, IsolatedElementState>();
+
+function getFocusableElements(container: HTMLElement | null) {
   if (!container) return [];
-  return Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
     (element) =>
       element.getClientRects().length > 0 && element.getAttribute("aria-hidden") !== "true",
   );
@@ -38,7 +47,7 @@ function unlockBodyScroll() {
   }
 }
 
-function isolateElement(element) {
+function isolateElement(element: InertableElement) {
   const current = isolatedElementState.get(element);
   if (current) {
     current.count += 1;
@@ -55,7 +64,7 @@ function isolateElement(element) {
   element.setAttribute("aria-hidden", "true");
 }
 
-function restoreElement(element) {
+function restoreElement(element: InertableElement) {
   const state = isolatedElementState.get(element);
   if (!state) return;
   state.count -= 1;
@@ -75,8 +84,8 @@ function restoreElement(element) {
   isolatedElementState.delete(element);
 }
 
-function isolateDialogBackground(dialog) {
-  const isolated = [];
+function isolateDialogBackground(dialog: HTMLElement) {
+  const isolated: InertableElement[] = [];
   let branch = dialog;
 
   while (branch?.parentElement && branch.parentElement !== document.body) {
@@ -102,8 +111,20 @@ function isolateDialogBackground(dialog) {
   };
 }
 
-export function useModalDialog({ open, onClose, closeDisabled = false, initialFocusRef }) {
-  const dialogRef = useRef(null);
+interface ModalDialogOptions {
+  open: boolean;
+  onClose?: () => void;
+  closeDisabled?: boolean;
+  initialFocusRef?: RefObject<HTMLElement | null>;
+}
+
+export function useModalDialog({
+  open,
+  onClose,
+  closeDisabled = false,
+  initialFocusRef,
+}: ModalDialogOptions) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   const dialogIdRef = useRef(Symbol("modal-dialog"));
   const onCloseRef = useRef(onClose);
   const closeDisabledRef = useRef(closeDisabled);
@@ -119,17 +140,18 @@ export function useModalDialog({ open, onClose, closeDisabled = false, initialFo
     openDialogStack.push(dialogId);
     lockBodyScroll();
 
-    let restoreBackground = null;
+    let restoreBackground: (() => void) | null = null;
     const focusTimer = window.setTimeout(() => {
       const dialog = dialogRef.current;
       if (!dialog || openDialogStack[openDialogStack.length - 1] !== dialogId) return;
-      const preferredFocus = initialFocusRef?.current || dialog.querySelector("[autofocus]");
+      const preferredFocus =
+        initialFocusRef?.current || dialog.querySelector<HTMLElement>("[autofocus]");
       const nextFocus = preferredFocus || getFocusableElements(dialog)[0] || dialog;
       nextFocus.focus({ preventScroll: true });
       restoreBackground = isolateDialogBackground(dialog);
     }, 0);
 
-    const handleKeyDown = (event) => {
+    const handleKeyDown = (event: KeyboardEvent) => {
       const dialog = dialogRef.current;
       if (!dialog || openDialogStack[openDialogStack.length - 1] !== dialogId) return;
 
@@ -174,7 +196,7 @@ export function useModalDialog({ open, onClose, closeDisabled = false, initialFo
     };
   }, [initialFocusRef, open]);
 
-  const handleBackdropClick = (event) => {
+  const handleBackdropClick = (event: ReactMouseEvent) => {
     const isTopmost = openDialogStack[openDialogStack.length - 1] === dialogIdRef.current;
     if (event.target === event.currentTarget && isTopmost && !closeDisabledRef.current) {
       onCloseRef.current?.();

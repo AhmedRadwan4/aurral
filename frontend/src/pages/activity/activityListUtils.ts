@@ -1,9 +1,31 @@
+import type { LidarrRequestItem } from "../../../../backend/services/lidarrRequestBuilder.ts";
+import type { AurralRequestItem } from "../../../../backend/services/aurralHistoryService.ts";
 import { formatDate, formatTime } from "../../utils/dateTime.ts";
 
 const SOURCE_NAMES = { slskd: "Soulseek", usenet: "Usenet", deemix: "deemix", ytdlp: "yt-dlp" };
 
-export function groupAlbumGrabRequests(requests) {
-  const rows = [];
+type Missing<Present, Other> = { [K in Exclude<keyof Other, keyof Present>]?: undefined };
+
+export type ActivityRequest = (
+  | (LidarrRequestItem & Missing<LidarrRequestItem, AurralRequestItem>)
+  | (AurralRequestItem & Missing<AurralRequestItem, LidarrRequestItem>)
+) & {
+  children?: ActivityRequest[];
+  createdAt?: number | null;
+  error?: string | null;
+  qualityLabel?: string | null;
+  qualityState?: string | null;
+  playlistType?: string | null;
+  downloadSource?: string | null;
+  downloadClient?: string | null;
+  progressLabel?: string | null;
+  sourceSummary?: string | null;
+  activeStatusLabel?: string | null;
+  downloadMethodLabel?: string | null;
+};
+
+export function groupAlbumGrabRequests(requests: ActivityRequest[]) {
+  const rows: ActivityRequest[] = [];
   const groups = new Map();
   for (const request of requests) {
     const grab = request.albumGrab;
@@ -117,7 +139,10 @@ export function groupAlbumGrabRequests(requests) {
   return rows;
 }
 
-export function matchesActivitySearch(request, query) {
+export function matchesActivitySearch(
+  request: ActivityRequest,
+  query: string | null | undefined,
+): boolean {
   const value = String(query || "")
     .trim()
     .toLocaleLowerCase();
@@ -140,7 +165,7 @@ export function matchesActivitySearch(request, query) {
   );
 }
 
-const getRequestIdentity = (request) =>
+const getRequestIdentity = (request: ActivityRequest | null | undefined) =>
   String(
     request?.id ||
       [
@@ -157,7 +182,7 @@ const getRequestIdentity = (request) =>
         .join(":"),
   );
 
-const buildRequestChangeSignature = (request) =>
+const buildRequestChangeSignature = (request: ActivityRequest | null | undefined) =>
   JSON.stringify({
     source: request?.source || null,
     kind: request?.kind || null,
@@ -177,7 +202,10 @@ const buildRequestChangeSignature = (request) =>
     canReSearch: request?.canReSearch === true,
   });
 
-export const mergeActivityRequests = (previousRequests, nextRequests) => {
+export const mergeActivityRequests = (
+  previousRequests: ActivityRequest[] | null | undefined,
+  nextRequests: ActivityRequest[] | null | undefined,
+) => {
   const incoming = Array.isArray(nextRequests) ? nextRequests : [];
   if (!Array.isArray(previousRequests) || previousRequests.length === 0) {
     return incoming;
@@ -200,7 +228,7 @@ export const mergeActivityRequests = (previousRequests, nextRequests) => {
   });
 };
 
-export const formatTimelineTime = (value) => {
+export const formatTimelineTime = (value: string | number | null | undefined) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return formatTime(date, {
@@ -209,7 +237,7 @@ export const formatTimelineTime = (value) => {
   });
 };
 
-const formatReviewDuration = (ms) => {
+const formatReviewDuration = (ms: number) => {
   if (!Number.isFinite(ms) || ms < 0) return null;
   const totalSeconds = Math.round(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -217,7 +245,7 @@ const formatReviewDuration = (ms) => {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 };
 
-export const formatReviewReasonSummary = (subtitle) => {
+export const formatReviewReasonSummary = (subtitle: string | null | undefined) => {
   const raw = String(subtitle || "").trim();
   if (!raw) return null;
   const colon = raw.indexOf(":");
@@ -241,7 +269,7 @@ export const formatReviewReasonSummary = (subtitle) => {
   return parts.join(" · ");
 };
 
-const formatDateGroupLabel = (value) => {
+const formatDateGroupLabel = (value: string) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown date";
   const now = new Date();
@@ -260,8 +288,12 @@ const formatDateGroupLabel = (value) => {
   });
 };
 
-const groupRequestsByDate = (requests) => {
-  const groups = [];
+export type ActivityListEntry =
+  | { type: "date"; label: string; key: string }
+  | { type: "item"; request: ActivityRequest; key: string | null | undefined };
+
+const groupRequestsByDate = (requests: ActivityRequest[]) => {
+  const groups: ActivityListEntry[] = [];
   let currentLabel = null;
   for (const request of requests) {
     const label = formatDateGroupLabel(request.completedAt || request.requestedAt);
@@ -274,7 +306,7 @@ const groupRequestsByDate = (requests) => {
   return groups;
 };
 
-export const compareActivityRequests = (a, b) => {
+export const compareActivityRequests = (a: ActivityRequest, b: ActivityRequest) => {
   const aReSearchable = a?.canReSearch === true ? 1 : 0;
   const bReSearchable = b?.canReSearch === true ? 1 : 0;
   if (aReSearchable !== bReSearchable) {
@@ -286,7 +318,7 @@ export const compareActivityRequests = (a, b) => {
   );
 };
 
-export const buildHistoryListEntries = (requests) => {
+export const buildHistoryListEntries = (requests: ActivityRequest[]) => {
   const reSearchable = [];
   const rest = [];
   for (const request of requests) {
@@ -296,7 +328,7 @@ export const buildHistoryListEntries = (requests) => {
       rest.push(request);
     }
   }
-  const entries = reSearchable.map((request) => ({
+  const entries = reSearchable.map((request): ActivityListEntry => ({
     type: "item",
     request,
     key: request.id || request.mbid,

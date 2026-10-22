@@ -1,12 +1,30 @@
+import type { ReactNode } from "react";
+
 export const STEPS = ["admin", "lidarr"];
 
-export function OnboardingStep({ centered = false, children }) {
+export function OnboardingStep({
+  centered = false,
+  children,
+}: {
+  centered?: boolean;
+  children?: ReactNode;
+}) {
   return (
     <div className={`onboarding-step${centered ? " onboarding-step--center" : ""}`}>{children}</div>
   );
 }
 
-export function OnboardingStepHeader({ title, titleClassName = "", copy, centered = false }) {
+export function OnboardingStepHeader({
+  title,
+  titleClassName = "",
+  copy,
+  centered = false,
+}: {
+  title: ReactNode;
+  titleClassName?: string;
+  copy?: ReactNode;
+  centered?: boolean;
+}) {
   return (
     <div className={`onboarding-step__header${centered ? " onboarding-step__header--center" : ""}`}>
       <h2 className={`onboarding-title${titleClassName ? ` ${titleClassName}` : ""}`}>{title}</h2>
@@ -15,12 +33,18 @@ export function OnboardingStepHeader({ title, titleClassName = "", copy, centere
   );
 }
 
-export function OnboardingHint({ children, center = false }) {
+export function OnboardingHint({
+  children,
+  center = false,
+}: {
+  children?: ReactNode;
+  center?: boolean;
+}) {
   if (!children) return null;
   return <p className={`onboarding-hint${center ? " onboarding-hint--center" : ""}`}>{children}</p>;
 }
 
-export const getApiErrorMessage = (error, fallback) =>
+export const getApiErrorMessage = (error: unknown, fallback: string) =>
   error?.response?.data?.message || error?.response?.data?.error || error?.message || fallback;
 
 export const ONBOARDING_HERO_LOGO_SIZE = 56;

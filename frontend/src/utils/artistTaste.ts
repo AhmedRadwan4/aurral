@@ -1,6 +1,23 @@
+import type {
+  ArtistIdentity,
+  DiscoveryRecommendation,
+} from "../../../backend/services/discovery/recommendationPipeline.ts";
+
+type ArtistFeedbackSource = ArtistIdentity &
+  Pick<
+    DiscoveryRecommendation,
+    "tags" | "matchedTags" | "supportingSeeds" | "sourceArtist" | "sourceArtists"
+  > & {
+    genres?: string[] | null;
+    sourceType?: string | null;
+    discoveryTier?: string | null;
+  };
+
+type ArtistFeedbackAction = "more_like_this" | "less_like_this" | "block_artist";
+
 export const getArtistRecordId = (artist) => artist?.id || artist?.mbid || artist?.foreignArtistId;
 
-const uniqueTextList = (values) => {
+const uniqueTextList = (values: (string | null | undefined)[]) => {
   const seen = new Set();
   const out = [];
   for (const entry of values) {
@@ -15,9 +32,12 @@ const uniqueTextList = (values) => {
 };
 
 export const buildArtistFeedbackPayload = (
-  artist,
-  action,
-  { sourceContext = null, seedArtistName = null } = {},
+  artist: ArtistFeedbackSource | null | undefined,
+  action: ArtistFeedbackAction,
+  {
+    sourceContext = null,
+    seedArtistName = null,
+  }: { sourceContext?: string | null; seedArtistName?: string | null } = {},
 ) => {
   const tagContext = uniqueTextList([
     ...(Array.isArray(artist?.matchedTags) ? artist.matchedTags : []),

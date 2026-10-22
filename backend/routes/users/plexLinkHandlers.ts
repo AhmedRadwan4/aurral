@@ -9,10 +9,44 @@ import {
 import { plexConnectionStore } from "../../services/plex/plexConnectionStore.ts";
 import { playlistManager } from "../../services/playlists/playlistManager.ts";
 import { logger } from "../../services/logger.ts";
+import type { PlexClient, PlexHomeUser } from "../../services/plex.ts";
 
 function getGlobalPlexConfig() {
   return dbOps.getSettings()?.integrations?.plex || {};
 }
+
+export type PlexConnectedResponse = {
+  connected: true;
+  linkType: string;
+  plexUsername: string | null;
+  connectedAt: number;
+};
+
+export type PlexLinkStatusResponse = ReturnType<typeof plexConnectionStore.getPublicStatus> & {
+  globalAccount: Awaited<ReturnType<typeof resolveGlobalPlexAccount>>;
+  isGlobalAccountOwner: boolean;
+};
+
+export type PlexPinResponse = {
+  pinId: Awaited<ReturnType<typeof PlexClient.generatePin>>["id"];
+  code: string;
+  clientId: string;
+  authUrl: string;
+};
+
+export type PlexCompleteResponse =
+  | {
+      pending: true;
+      connected?: undefined;
+      linkType?: undefined;
+      plexUsername?: undefined;
+      connectedAt?: undefined;
+    }
+  | (PlexConnectedResponse & { pending?: undefined });
+
+export type PlexHomeUsersResponse = {
+  users: (PlexHomeUser & { alreadyLinked: boolean })[];
+};
 
 export function isPlexLoginEnabled() {
   const plex = getGlobalPlexConfig();

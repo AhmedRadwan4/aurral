@@ -287,8 +287,8 @@ const getActiveLidarrAlbums = async () => {
 };
 
 export const getActiveLibraryDownloads = async () => {
-  const albums = new Set();
-  const artists = new Set();
+  const albums = new Set<string>();
+  const artists = new Set<string>();
   const tracks = [];
   for (const job of downloadTracker.getActiveByPlaylistType("library")) {
     tracks.push({
@@ -606,3 +606,21 @@ export function registerDownloads(router) {
     }
   });
 }
+
+export type ResearchLibraryTrackResponse = {
+  success: true;
+  queued: true;
+  operationId: Awaited<ReturnType<typeof playlistOperationQueue.enqueuePayload>>["operationId"];
+};
+
+export type DownloadTrackToLibraryResponse = { success: true } & Awaited<
+  ReturnType<typeof requestLibraryTrack>
+>;
+
+export type DownloadAlbumResponse = { success: true; message: string };
+
+export type TriggerAlbumSearchResponse = { success: true; message: string };
+
+export type GetActiveDownloadsResponse = Awaited<ReturnType<typeof getActiveLibraryDownloads>>;
+
+export type GetDownloadStatusResponse = Awaited<ReturnType<typeof getDownloadStatusesForAlbumIds>>;

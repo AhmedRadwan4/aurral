@@ -1,4 +1,5 @@
 import { db, dbHelpers } from "../config/db-sqlite.ts";
+import type { LibraryMediaFilesRow } from "../db/rows.ts";
 import {
   computeLibraryGenreStats,
   rebuildStoredLibraryGenreStats,
@@ -11,6 +12,29 @@ import {
   refreshLibraryManagementCache,
 } from "./libraryManagementStore.ts";
 import { selectCanonicalFile } from "./canonicalFileSelector.ts";
+
+type LibraryTrackFileQuality = {
+  format?: string | null;
+  bitrate?: number | null;
+  sampleRate?: number | null;
+  bitsPerSample?: number | null;
+  audioFormat?: string | null;
+  quality?: { name?: string | null } | null;
+};
+
+export type LibraryTrackFile = {
+  id: LibraryMediaFilesRow["id"];
+  albumId: LibraryMediaFilesRow["album_id"];
+  source: LibraryMediaFilesRow["source"];
+  path: LibraryMediaFilesRow["path"];
+  format: LibraryMediaFilesRow["format"];
+  size: LibraryMediaFilesRow["size"];
+  mtimeMs: LibraryMediaFilesRow["mtime_ms"];
+  durationMs: LibraryMediaFilesRow["duration_ms"];
+  quality: LibraryTrackFileQuality | null;
+  available: boolean;
+  createdAt: LibraryMediaFilesRow["created_at"];
+};
 
 const SOURCES = new Set(["aurral", "lidarr", "readonly", "flow"]);
 const libraryCache = new Map();
@@ -117,6 +141,104 @@ const CANONICAL_FROM = `FROM library_artists AS artist
   LEFT JOIN library_media_files AS media
     ON media.track_id = track.id
     AND ${albumMediaCondition("media", "album_track")}`;
+
+export interface LibraryAlbumMetadata {
+  albumType?: string | null;
+  releaseType?: string | null;
+  tags?: { releasetype?: string | string[] } | null;
+  monitored?: boolean | null;
+}
+
+export interface LibraryTrackAlbumRef {
+  albumId: number;
+  discNumber: number;
+  trackNumber: number;
+}
+
+export interface LibraryAlbum {
+  id: number;
+  canonicalId?: string;
+  identityKey: string;
+  mbid: string | null;
+  releaseGroupMbid: string | null;
+  artistId: number;
+  title: string;
+  albumArtist: string | null;
+  releaseDate: string | null;
+  createdAt: number;
+  metadata: LibraryAlbumMetadata | null;
+  providerId?: string | number | null;
+  monitored?: boolean;
+  monitorOption?: string;
+  trackIds: number[];
+  sources: string[];
+  source?: string | null;
+  available: boolean;
+  managedBy?: string | null;
+  monitorMode?: string | null;
+  trackCount?: number;
+  availableTrackCount?: number;
+}
+
+export interface LibraryTrack {
+  id: number;
+  canonicalId?: string;
+  identityKey: string;
+  mbid: string | null;
+  title: string;
+  artistName: string | null;
+  createdAt: number;
+  metadata: Record<string, unknown> | null;
+  providerId?: string | number | null;
+  monitored: boolean;
+  keepFile: boolean;
+  albums: LibraryTrackAlbumRef[];
+  files: LibraryTrackFile[];
+  sources: string[];
+  source?: string | null;
+  available: boolean;
+  managedBy?: string | null;
+  monitorMode?: string | null;
+}
+
+interface LibraryRowArtist {
+  id: number;
+  canonicalId: string;
+  identityKey: string;
+  mbid: string | null;
+  name: string;
+  sortName: string | null;
+  metadata: Record<string, unknown> | null;
+  providerId: string | number | null;
+  monitored: boolean;
+  monitorOption: string;
+  albumIds: number[];
+  sources: string[];
+  source: string | null;
+  available: boolean;
+  managedBy: string | null;
+  monitorMode: string | null;
+}
+
+interface LibraryAlbumTrackArtist {
+  id: number;
+  identityKey: string;
+  mbid: string | null;
+  name: string;
+  sortName: string | null;
+  metadata: Record<string, unknown> | null;
+  albumIds: number[];
+  managedBy: string | null;
+  monitorMode: string | null;
+  sources: string[];
+  available: boolean;
+}
+
+export type LibraryArtist =
+  | NonNullable<ReturnType<typeof getLibraryArtistPage>["artists"][number]>
+  | LibraryRowArtist
+  | LibraryAlbumTrackArtist;
+export type LibraryGenre = ReturnType<typeof computeLibraryGenreStats>[number];
 
 function buildLibraryFromRows(rows) {
   const artistManagement = getManagedByMap("artist");
@@ -743,7 +865,12 @@ export function getLibraryTrackPath(albumReference, trackReference) {
   if (!album || !track) return null;
 
   const files = db
-    .prepare(
+    .prepare<
+      [number, number, number],
+      Pick<LibraryMediaFilesRow, "id" | "source" | "path" | "available"> & {
+        albumId: number | null;
+      }
+    >(
       `SELECT media.id,
             media.album_id AS albumId,
             media.source,

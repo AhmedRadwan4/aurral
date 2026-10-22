@@ -114,6 +114,36 @@ async function enqueueBulkAction(req, res, action) {
   });
 }
 
+export type StaticPlaylistQueuedResponse = {
+  success: true;
+  playlistId: string;
+  queued: true;
+  operationId: string;
+};
+
+export type DeleteStaticPlaylistTrackResponse = {
+  success: true;
+  playlistId: string;
+  removedJobId: string;
+  queued: true;
+  operationId: string;
+};
+
+export type SetPlaylistTrackAvailabilityResponse = {
+  success: true;
+  showTrackAvailability: boolean;
+};
+
+export type SetPlaylistRecordHistoryResponse = {
+  success: true;
+  recordHistory: boolean;
+};
+
+export type BulkPlaylistOperationResponse = {
+  acceptedJobIds: string[];
+  rejected: { jobId: string; message: string }[];
+} & ({ queued: true; operationId: string } | { queued: false; operationId?: undefined });
+
 export function registerStaticPlaylists(router) {
   for (const [path, action] of [
     ["track-removals", "remove"],
