@@ -5,7 +5,12 @@ import { asAppError } from "../../../lib/errors.ts";
 import { parseFile } from "music-metadata";
 import { db } from "../../config/db-sqlite.ts";
 import type { LibraryAlbumsRow, LibraryArtistsRow, LibraryMediaFilesRow } from "../../db/rows.ts";
-import { buildLibraryTrackPath, isPathInsideRoot, resolveDownloadRoot } from "../downloadPaths.ts";
+import {
+  buildLibraryTrackPath,
+  findLibraryFileVariant,
+  isPathInsideRoot,
+  resolveDownloadRoot,
+} from "../downloadPaths.ts";
 import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
 import { writeAudioTags } from "../audioTags.ts";
 import { buildMetadataRecord } from "../libraryFileScanner.ts";
@@ -175,17 +180,21 @@ const libraryTrackAt = (filePath: string) => {
   return media?.available === 1 ? media.track_id : null;
 };
 
+// A file whose name differs only in case holds the name too, as it does on a
+// case-insensitive drive.
 async function nameHolder(target: string, file: AlbumFileRow, context: CleanupPlanContext) {
-  const existing = await fs.lstat(target).catch(() => null);
+  const variant = findLibraryFileVariant(target);
+  const existing = variant && (await fs.lstat(variant).catch(() => null));
   const sameFile =
     existing &&
     (await fs
       .stat(file.path)
       .then((stat) => stat.ino === existing.ino && stat.dev === existing.dev)
       .catch(() => false));
-  const holder = existing && !sameFile ? target : context.targets.get(target);
+  const onDisk = existing && !sameFile ? variant : null;
+  const holder = onDisk || context.targets.get(target);
   return holder
-    ? { path: holder, onDisk: holder === target, trackId: libraryTrackAt(holder) }
+    ? { path: holder, onDisk: holder === onDisk, trackId: libraryTrackAt(holder) }
     : null;
 }
 
@@ -261,7 +270,11 @@ async function planAlbum(albumId: number, context: CleanupPlanContext) {
       },
       path.extname(file.path),
     );
-    let rename = target !== path.resolve(file.path);
+    // A file whose name differs from its Library name only in case already has
+    // that name. On a case-insensitive drive the two names are one file.
+    let rename =
+      target !== path.resolve(file.path) &&
+      findLibraryFileVariant(target) !== path.resolve(file.path);
     if (rename && !isPathInsideRoot(target, context.root)) {
       items.push({
         sourcePath: file.path,
@@ -283,7 +296,7 @@ async function planAlbum(albumId: number, context: CleanupPlanContext) {
       if (copy?.keepHolder) {
         items.push({
           sourcePath: file.path,
-          targetPath: target,
+          targetPath: holder.onDisk ? holder.path : target,
           status: "duplicate",
           reason: copy.reason,
           details: { ...details, removable: true },
@@ -301,13 +314,13 @@ async function planAlbum(albumId: number, context: CleanupPlanContext) {
         continue;
       }
       items.push({
-        sourcePath: target,
+        sourcePath: holder.path,
         targetPath: file.path,
         status: "duplicate",
         reason: "A better copy exists. Removing this file gives that copy this name.",
         details: { removable: true, takesName: true },
       });
-      settled.add(target);
+      settled.add(holder.path);
       winners.set(target, file.path);
       rename = false;
     }

@@ -304,6 +304,31 @@ const availablePaths = (title: string) =>
     .pluck()
     .all(title);
 
+test("a name that differs only in case is already the file's name, and a second copy is its duplicate", async () => {
+  const tags = { artist: "Tate McRae", album: "vicious", title: "vicious", track: "1" };
+  const named = await makeTrack(
+    path.join(root, "Tate McRae", "vicious", "01 - Vicious.flac"),
+    tags,
+  );
+  const copy = path.join(root, "loose", "track.flac");
+  await mkdir(path.dirname(copy), { recursive: true });
+  await copyFile(named, copy);
+  await scanMusicRoot({ rootPath: root, source: "aurral" });
+
+  const { id, items } = await cleanUp();
+
+  assert.deepEqual(
+    items.filter((item) => item.target).map((item) => [item.source, item.status, item.target]),
+    [[path.relative(root, copy), "duplicate", path.relative(root, named)]],
+  );
+
+  await operations.removeDuplicateFiles(id);
+  assert.equal(requireValue(await runUntilSettled(id)).status, "complete");
+
+  assert.equal(await exists(copy), false);
+  assert.deepEqual(availablePaths("vicious"), [named]);
+});
+
 test("a second copy of a track is a duplicate, removed only when asked, and playlists and favorites stay on the kept copy", async () => {
   const tags = { artist: "Twice", album: "Album", title: "Song", track: "1" };
   const first = await makeTrack(path.join(root, "loose a", "track.flac"), tags);
