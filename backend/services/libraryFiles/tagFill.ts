@@ -156,6 +156,9 @@ export function describeTagFields(tags: Record<string, unknown> = {}) {
   );
 }
 
+const TAG_IT_YOURSELF =
+  "To fix it, tag the file with MusicBrainz Picard and run a full scan. See how [here](https://docs.aurral.org/using/library/#tag-a-file-yourself).";
+
 // Which of a file's empty tags MusicBrainz can fill in. Tags the file already
 // has are never planned, and a file without a confident match gets none.
 export async function planTagFill(
@@ -202,9 +205,15 @@ export async function planTagFill(
     albums.delete(key);
     return { reason: "Metadata provider unavailable. Tags unchanged." };
   }
-  if (!mbAlbum) return { reason: "No confident album match in MusicBrainz. Tags unchanged." };
+  if (!mbAlbum)
+    return {
+      reason: `No confident album match in MusicBrainz. Tags unchanged. ${TAG_IT_YOURSELF}`,
+    };
   const match = matchMusicBrainzTrack(mbAlbum, file, current);
-  if (!match) return { reason: "No confident track match in MusicBrainz. Tags unchanged." };
+  if (!match)
+    return {
+      reason: `No confident track match in MusicBrainz. Tags unchanged. ${TAG_IT_YOURSELF}`,
+    };
   const tags = Object.fromEntries(
     Object.entries(musicBrainzTags(mbAlbum, match)).filter(
       ([field, value]) => !isEmpty(value) && isEmpty(current[field]),

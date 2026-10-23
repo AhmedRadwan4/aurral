@@ -140,6 +140,27 @@ function describeStatus(operation: FileOperation) {
   }
 }
 
+// A reason can link to the docs as [text](https://docs.aurral.org/...). Only
+// docs links render, so a file name that looks like a link stays text.
+const DOCS_LINK = /\[([^\]]+)\]\((https:\/\/docs\.aurral\.org\/[^)\s]*)\)/;
+
+function Reason({ text }: { text: string }) {
+  const parts = text.split(DOCS_LINK);
+  return (
+    <p className="library-file-op__notes">
+      {parts.map((part, index) => {
+        if (index % 3 === 0) return part;
+        if (index % 3 === 2) return null;
+        return (
+          <a key={index} href={parts[index + 1]} target="_blank" rel="noopener noreferrer">
+            {part}
+          </a>
+        );
+      })}
+    </p>
+  );
+}
+
 function OperationItem({ item }: { item: LibraryFileOperationItem }) {
   return (
     <li className={`library-file-op__item is-${item.status}`}>
@@ -152,7 +173,7 @@ function OperationItem({ item }: { item: LibraryFileOperationItem }) {
           </>
         ) : null}
       </div>
-      {item.reason ? <p className="library-file-op__notes">{item.reason}</p> : null}
+      {item.reason ? <Reason text={item.reason} /> : null}
     </li>
   );
 }

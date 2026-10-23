@@ -204,6 +204,17 @@ Aurral tags the music it downloads with the title, artist, album artist, album, 
 
 For music from elsewhere, importing and **Clean up Library** fill in the tags a file lacks. See [Bring your existing music](#bring-your-existing-music) and [Clean up the Library](#clean-up-the-library). Aurral cannot write tags to WavPack (`.wv`), Monkey's Audio (`.ape`), or fragmented MP4 (`.m4a`) files, and leaves their tags as they are.
 
+### Tag a file yourself
+
+When Aurral finds no confident MusicBrainz match for a file, it leaves the file's tags as they are and says so. The file then stays out of its album, or the album shows its track as missing. To fix it, tag the file yourself with [MusicBrainz Picard](https://picard.musicbrainz.org/) or another tag editor:
+
+1. Back up the file. A tag editor rewrites the file, and a save that fails or is interrupted can corrupt it. Aurral does not check or undo changes made outside it, so the files you edit are your responsibility.
+2. In Picard's **Options** menu, turn off **Rename Files** and **Move Files**, so the file stays where Aurral finds it.
+3. Match the file to the right album and track, and save it.
+4. In **Library**, open the **Refresh library** menu and select **Full scan (re-read every file)**.
+
+The scan matches the file by its new MusicBrainz tags, or by its disc and track number, and the track keeps its favorites and play counts.
+
 ## Add music Aurral only reads
 
 To have Aurral see music it should never change, such as a library you organize yourself, add it as a read-only folder. Open **Settings > Library files**, choose the folder under **Read-only folders**, and select **Add folder**. You can add as many folders as you like. Aurral scans each one, and the table shows how many tracks it found.
