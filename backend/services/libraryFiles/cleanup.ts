@@ -9,6 +9,7 @@ import {
   buildLibraryTrackPath,
   findLibraryFileVariant,
   isPathInsideRoot,
+  libraryPathKey,
   resolveDownloadRoot,
 } from "../downloadPaths.ts";
 import { downloadTracker } from "../downloadJobs/downloadTracker.ts";
@@ -182,8 +183,12 @@ const libraryTrackAt = (filePath: string) => {
 
 // A file whose name differs only in case holds the name too, as it does on a
 // case-insensitive drive.
-async function nameHolder(target: string, file: AlbumFileRow, context: CleanupPlanContext) {
-  const variant = findLibraryFileVariant(target);
+async function nameHolder(
+  target: string,
+  variant: string | null,
+  file: AlbumFileRow,
+  context: CleanupPlanContext,
+) {
   const existing = variant && (await fs.lstat(variant).catch(() => null));
   const sameFile =
     existing &&
@@ -270,11 +275,8 @@ async function planAlbum(albumId: number, context: CleanupPlanContext) {
       },
       path.extname(file.path),
     );
-    // A file whose name differs from its Library name only in case already has
-    // that name. On a case-insensitive drive the two names are one file.
-    let rename =
-      target !== path.resolve(file.path) &&
-      findLibraryFileVariant(target) !== path.resolve(file.path);
+    const variant = target === path.resolve(file.path) ? target : findLibraryFileVariant(target);
+    let rename = variant !== path.resolve(file.path);
     if (rename && !isPathInsideRoot(target, context.root)) {
       items.push({
         sourcePath: file.path,
@@ -289,7 +291,7 @@ async function planAlbum(albumId: number, context: CleanupPlanContext) {
       ? null
       : winner
         ? { path: winner, onDisk: false, trackId: libraryTrackAt(winner) }
-        : await nameHolder(target, file, context);
+        : await nameHolder(target, variant, file, context);
     if (holder) {
       const copy =
         holder.trackId === file.track_id ? await compareCopies(file.path, holder.path) : null;
@@ -403,7 +405,8 @@ async function renameLibraryFile(from: string, to: string, context: CleanupApply
       if (a.ino !== b.ino || a.dev !== b.dev) {
         throw Object.assign(new Error(TAKEN_NAME_REASON), { code: "EEXIST" });
       }
-      keptOld = true;
+      if (libraryPathKey(from) === libraryPathKey(to)) await fs.rename(from, to);
+      else keptOld = true;
     } else if (LINK_FALLBACK.has(String(failure?.code))) {
       keptOld = !(await context.deletionGuard().canDelete(from));
       await placeFile(from, to, keptOld ? "copy" : "move");
