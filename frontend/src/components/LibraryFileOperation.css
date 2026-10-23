@@ -150,6 +150,11 @@
   line-height: 1.4;
 }
 
+.library-file-op__notes a {
+  color: var(--aurral-text);
+  text-decoration: underline;
+}
+
 .library-file-op__pages {
   display: flex;
   align-items: center;

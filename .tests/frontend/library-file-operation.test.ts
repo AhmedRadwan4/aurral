@@ -9,14 +9,14 @@ type FileOperation = Parameters<
   typeof import("../../frontend/src/components/LibraryFileOperation.tsx").default
 >[0]["operation"];
 
-async function renderOperation(operation: FileOperation) {
+async function renderOperation(operation: FileOperation, client = new QueryClient()) {
   vi.resetModules();
   const { default: LibraryFileOperation } =
     await import("../../frontend/src/components/LibraryFileOperation.tsx");
   return renderToStaticMarkup(
     createElement(
       QueryClientProvider,
-      { client: new QueryClient() },
+      { client },
       createElement(LibraryFileOperation, { operation }),
     ),
   );
@@ -87,4 +87,35 @@ test("a finished clean up offers to remove the duplicate copies it found and lis
     /aria-pressed="true"[^>]*>Duplicates <span class="library-file-op__count">2</,
   );
   assert.doesNotMatch(markup, /source file/);
+});
+
+test("a skipped file's reason links to the docs as here, and links elsewhere stay text", async () => {
+  const client = new QueryClient();
+  client.setQueryData(["library-files", "items", 1, "skipped", 0, 0], {
+    items: [
+      {
+        position: 0,
+        status: "skipped",
+        source: "/music/a.flac",
+        target: null,
+        reason:
+          "No confident track match. See how [here](https://docs.aurral.org/using/library/#tag-a-file-yourself).",
+      },
+      {
+        position: 1,
+        status: "skipped",
+        source: "/music/b.flac",
+        target: null,
+        reason: "Matches [here](https://example.com/), but differs by 9 seconds.",
+      },
+    ],
+  });
+  const markup = await renderOperation(finishedIngest({ counts: { skipped: 2 } }), client);
+
+  assert.match(
+    markup,
+    /See how <a href="https:\/\/docs\.aurral\.org\/using\/library\/#tag-a-file-yourself" target="_blank" rel="noopener noreferrer">here<\/a>\./,
+  );
+  assert.match(markup, /Matches \[here\]\(https:\/\/example\.com\/\), but differs/);
+  assert.doesNotMatch(markup, /href="https:\/\/example\.com/);
 });
