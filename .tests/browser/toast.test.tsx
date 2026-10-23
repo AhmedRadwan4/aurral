@@ -3,7 +3,7 @@ import { page, userEvent } from "vite-plus/test/browser/context";
 import { createRoot } from "react-dom/client";
 import { Toast } from "../../frontend/src/components/Toast.tsx";
 
-let root;
+let root: ReturnType<typeof createRoot> | undefined;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -24,6 +24,7 @@ test("a toast still dismisses after the pointer leaves it for outside the app", 
   const toast = page.getByRole("status");
   await userEvent.hover(toast);
   const element = container.querySelector(".app-toast");
+  if (!element) throw new Error("Toast did not render");
   element.dispatchEvent(
     new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
   );
